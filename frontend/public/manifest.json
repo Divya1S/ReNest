@@ -1,0 +1,42 @@
+{
+  "name": "ReNest — Campus Move-Out Rescue",
+  "short_name": "ReNest",
+  "description": "Turn dorm room photos into rescue-ready listings. Keep usable essentials out of the dumpster.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f5f5f7",
+  "theme_color": "#8a1d45",
+  "icons": [
+    {
+      "src": "/images/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/images/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "categories": ["shopping", "lifestyle", "utilities"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "Post a Listing",
+      "short_name": "Post",
+      "description": "Post a new dorm item",
+      "url": "/listings/new",
+      "icons": [{ "src": "/images/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Browse Listings",
+      "short_name": "Browse",
+      "description": "Find items near you",
+      "url": "/browse",
+      "icons": [{ "src": "/images/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}

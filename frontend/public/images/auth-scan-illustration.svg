@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800" fill="none">
+  <!-- ReNest nest motif: concentric, slightly irregular loops. Drawn in white
+       for use over the brand gradient at low CSS opacity (.auth-aside::after). -->
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+    <ellipse cx="400" cy="430" rx="330" ry="248" stroke-width="9" stroke-opacity="0.4" transform="rotate(-8 400 430)"/>
+    <ellipse cx="406" cy="444" rx="272" ry="198" stroke-width="9" stroke-opacity="0.5" transform="rotate(7 406 444)"/>
+    <ellipse cx="394" cy="456" rx="212" ry="150" stroke-width="9" stroke-opacity="0.6" transform="rotate(-15 394 456)"/>
+    <ellipse cx="404" cy="466" rx="152" ry="104" stroke-width="9" stroke-opacity="0.72" transform="rotate(11 404 466)"/>
+    <ellipse cx="398" cy="474" rx="98" ry="70" stroke-width="9" stroke-opacity="0.85" transform="rotate(-6 398 474)"/>
+  </g>
+</svg>

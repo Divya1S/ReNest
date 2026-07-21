@@ -1,0 +1,1052 @@
+@import "tailwindcss";
+
+/* The app's dark mode is the `.dark` class the toggle puts on <html> — key
+   every `dark:` utility to it. Without this, Tailwind v4 defaults dark: to
+   the OS `prefers-color-scheme`, so a user whose system theme disagrees with
+   the in-app toggle gets a half-dark UI (vars flip, utilities don't). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-paper: var(--bg-paper);
+  --color-paper-deep: var(--bg-paper-deep);
+  --color-ink: var(--text-ink);
+  --color-box: var(--accent-box);
+  --color-tag: var(--accent-tag);
+  --color-tag-deep: var(--accent-tag-deep);
+  --color-tag-soft: var(--bg-tag-soft);
+  --color-teal: var(--accent-teal);
+  --color-teal-soft: var(--bg-teal-soft);
+  --color-urgent: var(--accent-urgent);
+  --color-night: var(--text-night);
+  --color-gold: #f2c766;
+  --color-emerald: #10b981;
+  --color-amber-warm: #f59e0b;
+  --color-free: var(--accent-free);
+  --color-free-soft: var(--bg-free-soft);
+  --color-box-soft: var(--bg-box-soft);
+  --color-surface: var(--bg-surface);
+  --color-surface-2: var(--bg-surface-2);
+  --color-line: var(--border-line);
+  --color-line-strong: var(--border-line-strong);
+
+  --font-display: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+
+:root {
+  /* Stitch DESIGN.md tokens */
+  --bg-paper: #f5f5f7;
+  --bg-paper-deep: #e8e8ed;
+  --bg-surface: #ffffff;
+  --bg-surface-warm: #fff8f7;
+  --bg-surface-2: #fff0f2;
+  --text-ink: #23191b;
+  --text-night: #23191b;
+  --text-muted: #564146;
+
+  /* Primary: deep maroon (#6a002f) + container maroon (#8a1d45) */
+  --accent-tag-deep: #6a002f;
+  --accent-tag: #8a1d45;
+  --bg-tag-soft: rgba(138, 29, 69, 0.08);
+
+  /* Secondary: navy */
+  --accent-teal: #1e304a;
+  --bg-teal-soft: rgba(30, 48, 74, 0.08);
+
+  --accent-box: #d9a441;
+  --accent-urgent: #b85228; /* darkened from #c96444 for WCAG AA 4.5:1 on white */
+  --accent-free: #005620;
+  --bg-free-soft: rgba(0, 86, 32, 0.1);
+  --bg-box-soft: rgba(217, 164, 65, 0.12);
+
+  --border-line: rgba(0, 0, 0, 0.06);
+  --border-line-strong: rgba(0, 0, 0, 0.12);
+}
+
+html.dark {
+  --bg-paper: #000000;
+  --bg-paper-deep: #0a0a0a;
+  --bg-surface: #1c1c1e;
+  --bg-surface-2: #2c2c2e;
+  --text-ink: #f5f5f7;
+  --text-night: #ffffff;
+  --text-muted: #8e8e93;
+
+  --accent-box: #e2b45d;
+  --accent-free: #7fca86;
+  --bg-free-soft: rgba(127, 202, 134, 0.12);
+  --bg-box-soft: rgba(226, 180, 93, 0.18);
+  --accent-tag: #e17a9b;
+  --bg-tag-soft: rgba(225, 122, 155, 0.14);
+  --accent-teal: #9ab6d5;
+  --bg-teal-soft: rgba(154, 182, 213, 0.12);
+  --accent-urgent: #ff8f6a;
+
+  --border-line: rgba(255, 255, 255, 0.08);
+  --border-line-strong: rgba(255, 255, 255, 0.14);
+}
+
+html {
+  transition: background-color 0.3s ease, color 0.3s ease;
+  scroll-behavior: smooth;
+}
+
+:root {
+  color: var(--color-ink);
+  background-color: var(--bg-paper);
+  /* Native controls (date-picker popups, scrollbars, form widgets) follow
+     color-scheme, not our CSS vars — keep them in step with the app theme. */
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-size: 17px;
+  line-height: 1.47059;
+  color: var(--color-ink);
+  background-color: transparent;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(138, 29, 69, 0.12);
+  color: var(--color-night);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@layer base {
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.08;
+    text-wrap: balance;
+  }
+
+  p,
+  a,
+  button,
+  input,
+  textarea,
+  select,
+  label {
+    font-family: var(--font-sans);
+  }
+
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+
+  /* Global keyboard focus indicator — visible only on keyboard navigation.
+     Components override this with their own focus-visible styles. */
+  :focus-visible {
+    outline: 3px solid var(--color-tag);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-muted);
+    opacity: 0.7;
+  }
+}
+
+/* ─── Navigation ─────────────────────────────────────────────────────────── */
+
+.nav-shell {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  border-bottom: 1px solid var(--color-line-strong);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: none;
+  /* Sticky must live here: this unlayered rule outranks Tailwind's layered
+     `sticky` utility, so `position: relative` silently un-stuck the nav and
+     left a transparent gap above the browse search bar while scrolling. */
+  position: sticky;
+  top: 0;
+  transition: background 0.3s ease;
+}
+
+.nav-shell.shrink {
+  border-radius: 0;
+  box-shadow: none;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+html.dark .nav-shell {
+  background: rgba(22, 22, 22, 0.85);
+  border-bottom-color: var(--color-line-strong);
+  box-shadow: none;
+}
+
+html.dark .nav-shell.shrink {
+  background: rgba(22, 22, 22, 0.96);
+}
+
+/* ─── Brand ──────────────────────────────────────────────────────────────── */
+
+.brand-mark {
+  @apply flex h-10 w-10 items-center justify-center rounded-[0.875rem] text-sm font-black transition-all duration-200 relative overflow-hidden;
+  background: var(--color-tag);
+  color: white;
+  box-shadow: none;
+}
+
+.brand-mark::after {
+  content: none;
+}
+
+.brand-mark:hover::after {
+  content: none;
+}
+
+/* ─── Paper panel ────────────────────────────────────────────────────────── */
+
+.paper-panel {
+  @apply rounded-[1.25rem] border transition-colors duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
+}
+
+html.dark .paper-panel {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+/* ─── Sticker ────────────────────────────────────────────────────────────── */
+
+.sticker {
+  @apply inline-flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[0.68rem] font-semibold uppercase transition-colors duration-200;
+  letter-spacing: 0.1em;
+  border: none;
+  background: var(--bg-tag-soft);
+  color: var(--color-tag);
+  box-shadow: none;
+}
+
+html.dark .sticker {
+  background: var(--bg-tag-soft);
+  color: var(--accent-tag);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* ─── Bulletin card ──────────────────────────────────────────────────────── */
+
+.bulletin-card {
+  @apply relative overflow-hidden rounded-[1.5rem] border p-6 transition-all duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
+}
+
+html.dark .bulletin-card {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.bulletin-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Label title ────────────────────────────────────────────────────────── */
+
+.label-title {
+  @apply text-[0.66rem] font-semibold uppercase transition-colors duration-200;
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+}
+
+/* ─── Form fields ────────────────────────────────────────────────────────── */
+
+.field {
+  @apply w-full appearance-none rounded-[0.875rem] border px-4 py-3 text-[15px] outline-none transition duration-200;
+  min-height: 3.25rem;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--color-ink);
+  box-shadow: none;
+}
+
+.field-label {
+  display: block;
+  margin-bottom: 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+html.dark .field {
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+.field:hover {
+  border-color: rgba(138, 29, 69, 0.4);
+}
+
+html.dark .field:hover {
+  border-color: rgba(225, 122, 155, 0.35);
+}
+
+.field:focus {
+  border-color: var(--color-tag);
+  box-shadow: 0 0 0 3px rgba(138, 29, 69, 0.1);
+  outline: none;
+}
+
+.field:-webkit-autofill,
+.field:-webkit-autofill:hover,
+.field:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-surface) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+html.dark .field:-webkit-autofill,
+html.dark .field:-webkit-autofill:hover,
+html.dark .field:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-surface) inset;
+}
+
+/* ─── Buttons ────────────────────────────────────────────────────────────── */
+
+.primary-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-[0.65rem] text-[0.875rem] font-medium relative overflow-hidden;
+  min-height: 2.75rem; /* 44px — WCAG 2.5.5 touch target */
+  letter-spacing: normal;
+  text-transform: none;
+  border: 1px solid transparent;
+  background: var(--color-tag);
+  color: white;
+  box-shadow: none;
+  transition: opacity 0.15s ease;
+}
+
+.primary-button::after {
+  content: none;
+}
+
+.primary-button:hover:not(:disabled) {
+  transform: none;
+  opacity: 0.84;
+  box-shadow: none;
+}
+
+.primary-button:active:not(:disabled) {
+  opacity: 0.7;
+}
+
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.primary-button:focus-visible {
+  outline: 3px solid var(--color-box);
+  outline-offset: 3px;
+}
+
+.secondary-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-[0.65rem] text-[0.875rem] font-medium;
+  min-height: 2.75rem; /* 44px — WCAG 2.5.5 touch target */
+  letter-spacing: normal;
+  text-transform: none;
+  border: 1px solid var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--color-tag);
+  box-shadow: none;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+html.dark .secondary-button {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.14);
+  color: var(--accent-tag);
+}
+
+.secondary-button:hover:not(:disabled) {
+  transform: none;
+  background: var(--bg-tag-soft);
+  border-color: var(--color-tag);
+  color: var(--color-tag);
+  box-shadow: none;
+}
+
+.secondary-button:focus-visible {
+  outline: 3px solid var(--color-tag);
+  outline-offset: 3px;
+}
+
+.ghost-button {
+  @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-[0.875rem] font-medium;
+  letter-spacing: normal;
+  text-transform: none;
+  border: 1px solid var(--color-line-strong);
+  background: transparent;
+  color: var(--color-tag);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+html.dark .ghost-button {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: var(--accent-tag);
+}
+
+.ghost-button:hover:not(:disabled) {
+  transform: none;
+  background: var(--bg-tag-soft);
+  border-color: var(--color-tag);
+}
+
+.ghost-button:focus-visible {
+  outline: 3px solid var(--color-tag);
+  outline-offset: 3px;
+}
+
+/* ─── Hero panel ─────────────────────────────────────────────────────────── */
+
+.hero-panel {
+  @apply relative overflow-hidden rounded-[1.5rem] border p-8 sm:p-10 transition-colors duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
+  isolation: isolate;
+}
+
+html.dark .hero-panel {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.hero-panel::before {
+  content: none;
+}
+
+.hero-panel::after {
+  content: none;
+}
+
+.hero-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* SVG illustration override — scan hero is the only page still using a
+   corner illustration; the rest were retired with the quiet redesign. */
+.visual-scan-hero::before {
+  content: "";
+  position: absolute;
+  right: -1.25rem;
+  bottom: -1rem;
+  width: min(34%, 19rem);
+  aspect-ratio: 1 / 1;
+  background: url("/images/scan-room-workflow.svg") no-repeat center / contain;
+  opacity: 0.45;
+  pointer-events: none;
+  animation: drift-float 16s ease-in-out infinite;
+  z-index: 0;
+  /* Fade the illustration out toward the text so long headlines can wrap
+     across it without the two ever visually colliding. */
+  mask-image: radial-gradient(145% 145% at 100% 100%, black 45%, transparent 78%);
+  -webkit-mask-image: radial-gradient(145% 145% at 100% 100%, black 45%, transparent 78%);
+}
+
+/* Hero copy always paints above the decoration (positioned deco at z-index 0
+   otherwise covers inline text of static siblings). */
+.visual-scan-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* The SVG has baked-in light colors — as a near-opaque light blob it glares
+   on the dark panel; ghost it back. */
+html.dark .visual-scan-hero::before {
+  opacity: 0.16;
+  filter: saturate(0.85) brightness(0.9);
+}
+
+/* ─── Soft panel ─────────────────────────────────────────────────────────── */
+
+.soft-panel {
+  @apply rounded-[1.25rem] border transition-colors duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+html.dark .soft-panel {
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* ─── Browse ─────────────────────────────────────────────────────────────── */
+
+.browse-filter-panel {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+
+html.dark .browse-filter-panel {
+  background: var(--bg-surface);
+}
+
+.browse-filter-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.02) 1px, transparent 1px);
+  background-size: 38px 38px;
+  opacity: 0.15;
+  pointer-events: none;
+}
+
+.browse-filter-panel > * {
+  position: relative;
+  z-index: 1;
+}
+
+.browse-search-shell {
+  @apply rounded-[1.25rem] border p-1;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+html.dark .browse-search-shell {
+  background: var(--bg-surface);
+  border-color: var(--color-line-strong);
+}
+
+.browse-chip {
+  @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-[0.8rem] font-medium transition duration-150;
+  letter-spacing: normal;
+  border: 1px solid var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--color-ink);
+}
+
+.browse-chip:hover:not(:disabled) {
+  transform: none;
+  border-color: var(--color-tag);
+  color: var(--color-tag);
+}
+
+.browse-chip--active {
+  border-color: var(--color-tag);
+  background: var(--color-tag);
+  color: white;
+  box-shadow: none;
+}
+
+.browse-result-pill {
+  @apply rounded-[1rem] border px-4 py-3 text-sm font-medium transition-colors duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface-2);
+  color: var(--color-night);
+}
+
+/* ─── Dash card ──────────────────────────────────────────────────────────── */
+
+.dash-card {
+  @apply rounded-[1rem] border p-5 transition-all duration-150;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface-2);
+  box-shadow: none;
+}
+
+.dash-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  border-color: var(--color-line-strong);
+}
+
+/* ─── Tag chip ───────────────────────────────────────────────────────────── */
+
+.tag-chip {
+  @apply inline-flex items-center gap-2 rounded-full px-3 py-1 text-[0.66rem] font-semibold uppercase;
+  letter-spacing: 0.1em;
+  background: var(--color-tag);
+  color: white;
+}
+
+/* ─── Metric ─────────────────────────────────────────────────────────────── */
+
+.metric-number {
+  @apply text-4xl font-bold leading-none;
+  font-family: var(--font-display);
+  color: var(--color-night);
+}
+
+/* ─── Scan ───────────────────────────────────────────────────────────────── */
+
+.scan-stage {
+  @apply relative overflow-hidden rounded-[1.25rem] border shadow-sm;
+  background: var(--bg-surface-2);
+  border-color: var(--color-line-strong);
+  cursor: crosshair;
+}
+
+.scan-grid {
+  @apply grid items-start gap-6 xl:grid-cols-[1.08fr_0.92fr];
+}
+
+.board-column {
+  @apply rounded-[1.25rem] border p-4;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+html.dark .board-column {
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+.scan-chip {
+  @apply inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[0.64rem] font-semibold uppercase;
+  letter-spacing: 0.1em;
+  border: 1px solid var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--color-tag);
+}
+
+html.dark .scan-chip {
+  background: var(--bg-surface);
+  color: var(--accent-tag);
+}
+
+.studio-card {
+  @apply rounded-[1rem] border p-4 transition duration-150;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+html.dark .studio-card {
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+.studio-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+/* ─── Icon tile ──────────────────────────────────────────────────────────── */
+
+.icon-tile {
+  @apply flex items-center justify-center rounded-[0.875rem] border;
+  width: 3rem;
+  height: 3rem;
+}
+
+.icon-tile--tag {
+  border-color: rgba(138, 29, 69, 0.14);
+  background: rgba(138, 29, 69, 0.06);
+  color: var(--color-tag);
+}
+
+.icon-tile--navy {
+  border-color: rgba(30, 48, 74, 0.14);
+  background: rgba(30, 48, 74, 0.06);
+  color: var(--color-teal);
+}
+
+.icon-tile--gold {
+  border-color: rgba(217, 164, 65, 0.18);
+  background: rgba(217, 164, 65, 0.08);
+  color: var(--color-box);
+}
+
+.icon-tile--urgent {
+  border-color: rgba(201, 100, 68, 0.16);
+  background: rgba(201, 100, 68, 0.07);
+  color: var(--color-urgent);
+}
+
+/* ─── Notice panel ───────────────────────────────────────────────────────── */
+
+.notice-panel {
+  @apply rounded-[1rem] border px-4 py-4;
+}
+
+.notice-panel--urgent {
+  border-color: rgba(201, 100, 68, 0.2);
+  background: rgba(201, 100, 68, 0.06);
+}
+
+.notice-panel--gold {
+  border-color: rgba(217, 164, 65, 0.2);
+  background: rgba(217, 164, 65, 0.06);
+}
+
+.notice-panel--navy {
+  border-color: rgba(30, 48, 74, 0.14);
+  background: rgba(30, 48, 74, 0.05);
+}
+
+/* ─── Empty / stat / ink panels ──────────────────────────────────────────── */
+
+.empty-dashed-panel {
+  @apply rounded-[1.25rem] border border-dashed px-5 py-8 text-center;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+}
+
+html.dark .empty-dashed-panel {
+  background: var(--bg-surface);
+  border-color: var(--color-line-strong);
+}
+
+.stat-tile {
+  @apply rounded-[1.25rem] border p-5;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+html.dark .stat-tile {
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+.ink-panel {
+  @apply rounded-[1.5rem] border;
+  border-color: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(145deg, var(--color-teal) 0%, var(--color-tag) 100%);
+  color: white;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+}
+
+html.dark .ink-panel {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: linear-gradient(145deg, #1a1f2e 0%, #0a0d14 100%);
+}
+
+/* ─── Action tray ────────────────────────────────────────────────────────── */
+
+.action-tray {
+  @apply fixed inset-x-4 bottom-4 z-30 rounded-[1.25rem] border p-3 backdrop-blur sm:hidden;
+  border-color: var(--color-line-strong);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.1);
+}
+
+html.dark .action-tray {
+  background: rgba(28, 28, 30, 0.94);
+}
+
+/* ─── Auth ───────────────────────────────────────────────────────────────── */
+
+.auth-grid {
+  @apply mx-auto grid max-w-6xl items-start gap-6 lg:grid-cols-[0.92fr_1.08fr];
+}
+
+.auth-aside {
+  @apply rounded-[1.5rem] border p-8;
+  border-color: rgba(138, 29, 69, 0.08);
+  background: linear-gradient(155deg, var(--color-teal) 0%, var(--color-tag) 100%);
+  color: white;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.auth-aside .label-title {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.auth-aside > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-aside::after {
+  content: "";
+  position: absolute;
+  right: -2.75rem;
+  bottom: -1.75rem;
+  width: min(72%, 22rem);
+  aspect-ratio: 1 / 1;
+  background: url("/images/auth-scan-illustration.svg") no-repeat center / contain;
+  opacity: 0.18;
+  pointer-events: none;
+  animation: drift-float 17s ease-in-out infinite reverse;
+  z-index: 0;
+}
+
+.auth-aside--register::after {
+  content: none;
+}
+
+.auth-point {
+  @apply rounded-[1.25rem] border px-4 py-4;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ─── Listing ────────────────────────────────────────────────────────────── */
+
+.listing-media-shell::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 45%;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.14) 100%);
+  pointer-events: none;
+}
+
+.listing-meta-band {
+  @apply rounded-[1rem] p-4;
+  background: rgba(138, 29, 69, 0.05);
+  border: 1px solid rgba(138, 29, 69, 0.08);
+}
+
+html.dark .listing-meta-band {
+  background: rgba(225, 122, 155, 0.08);
+  border-color: rgba(225, 122, 155, 0.1);
+}
+
+.listing-footer-note {
+  @apply rounded-full px-3 py-2 text-[0.68rem] font-semibold uppercase;
+  letter-spacing: 0.1em;
+  background: var(--bg-tag-soft);
+  color: var(--color-tag);
+}
+
+/* ─── Glass card ─────────────────────────────────────────────────────────── */
+
+.glass-card {
+  @apply relative overflow-hidden rounded-[1.5rem] border transition-all duration-200;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
+}
+
+/* ─── Shimmer skeleton ───────────────────────────────────────────────────── */
+
+.shimmer-skeleton {
+  @apply relative overflow-hidden bg-gray-200 dark:bg-gray-800 rounded-xl;
+}
+
+.shimmer-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.2) 20%,
+    rgba(255, 255, 255, 0.5) 60%,
+    rgba(255, 255, 255, 0)
+  );
+  animation: shimmer 2s infinite;
+}
+
+html.dark .shimmer-skeleton::after {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0,
+    rgba(255, 255, 255, 0.05) 20%,
+    rgba(255, 255, 255, 0.1) 60%,
+    rgba(255, 255, 255, 0)
+  );
+}
+
+/* ─── Glow ring ──────────────────────────────────────────────────────────── */
+
+.glow-ring {
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* ─── Floating label ─────────────────────────────────────────────────────── */
+
+.floating-label-group {
+  @apply relative;
+}
+
+.floating-label-group input {
+  @apply w-full appearance-none rounded-[0.875rem] border px-4 py-3.5 text-[15px] outline-none transition duration-200 pt-6 pb-2;
+  min-height: 3.25rem;
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  color: var(--color-ink);
+  box-shadow: none;
+}
+
+html.dark .floating-label-group input {
+  border-color: var(--color-line-strong);
+  background: var(--bg-surface);
+  box-shadow: none;
+}
+
+.floating-label-group input:hover {
+  border-color: rgba(138, 29, 69, 0.4);
+}
+
+html.dark .floating-label-group input:hover {
+  border-color: rgba(225, 122, 155, 0.35);
+}
+
+.floating-label-group label {
+  @apply absolute left-4 top-3.5 transition-all pointer-events-none text-[15px];
+  color: var(--text-muted);
+}
+
+.floating-label-group input:focus ~ label,
+.floating-label-group input:not(:placeholder-shown) ~ label,
+.floating-label-group input:-webkit-autofill ~ label {
+  @apply top-1.5 text-xs font-semibold;
+  color: var(--color-tag);
+}
+
+.floating-label-group input:-webkit-autofill,
+.floating-label-group input:-webkit-autofill:hover,
+.floating-label-group input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-surface) inset;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+html.dark .floating-label-group input:-webkit-autofill,
+html.dark .floating-label-group input:-webkit-autofill:hover,
+html.dark .floating-label-group input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--color-ink);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-surface) inset;
+}
+
+.floating-label-group input:focus {
+  border-color: var(--color-tag);
+  box-shadow: 0 0 0 3px rgba(138, 29, 69, 0.1);
+  outline: none;
+}
+
+.floating-label-group:focus-within svg {
+  color: var(--color-tag) !important;
+}
+
+/* ─── Keyframes ──────────────────────────────────────────────────────────── */
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(138, 29, 69, 0.42);
+  }
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 12px rgba(138, 29, 69, 0);
+  }
+  100% {
+    transform: scale(0.8);
+    box-shadow: 0 0 0 0 rgba(138, 29, 69, 0);
+  }
+}
+
+@keyframes drift-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -10px, 0);
+  }
+}
+
+/* ─── Reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-aside::after,
+  .visual-scan-hero::before {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Mobile ─────────────────────────────────────────────────────────────── */
+
+/* ─── Nav height token ───────────────────────────────────────────────────── */
+/* Fallback only — AppFrame measures the rendered header and overwrites this
+   at runtime (ResizeObserver), keeping under-nav sticky elements flush. */
+:root {
+  --nav-h: 69px;
+}
+
+@media (max-width: 640px) {
+  .hero-panel,
+  .soft-panel,
+  .paper-panel,
+  .bulletin-card,
+  .board-column {
+    border-radius: 1.25rem;
+  }
+
+  .visual-scan-hero::before {
+    width: 9.25rem;
+    right: -1.75rem;
+    bottom: -1.5rem;
+    opacity: 0.14;
+  }
+
+  .auth-aside::after,
+  .auth-aside--register::after {
+    width: 12rem;
+    right: -2rem;
+    bottom: -1.75rem;
+    opacity: 0.08;
+  }
+
+  /* Ensure filter chips and compact controls meet 44px tap target on touch */
+  .filter-chip {
+    min-height: 2.75rem;
+  }
+}
