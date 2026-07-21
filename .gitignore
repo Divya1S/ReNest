@@ -1,0 +1,40 @@
+# ── OS ───────────────────────────────────────────────────────────────
+.DS_Store
+._*
+Thumbs.db
+
+# ── Editors / local tooling ──────────────────────────────────────────
+.idea/
+.vscode/
+.claude/
+*.swp
+
+# ── Environment & secrets ────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+backend/.env
+
+# ── Python ───────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Local databases & runtime data ───────────────────────────────────
+*.sqlite3
+backend/media/
+backend/staticfiles/
+*.log
+
+# ── Node / frontend build output ─────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+.vite/
+.eslintcache
