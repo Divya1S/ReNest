@@ -1,0 +1,176 @@
+# ReNest — Render Blueprint (https://render.com/docs/blueprint-spec)
+#
+# One-click deploy: Render Dashboard → New → Blueprint → pick this repo.
+# Creates: web (Django+SPA, uvicorn/ASGI for SSE), Celery worker, Celery beat,
+# Redis, Postgres. After the first deploy, fill in the sync:false secrets and
+# follow the post-deploy checklist in docs/deployment.md.
+
+databases:
+  - name: renest-db
+    plan: basic-256mb
+    databaseName: renest
+    user: renest
+
+services:
+  # ── Redis: sessions, caches, concierge breaker/semantic cache, Celery broker ─
+  - type: keyvalue
+    name: renest-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []          # internal connections only
+
+  # ── Web: Django API + built SPA, served same-origin ──────────────────────────
+  - type: web
+    name: renest-web
+    runtime: python
+    plan: starter
+    buildCommand: ./scripts/render-build.sh
+    startCommand: >
+      cd backend && uvicorn dormcycle.asgi:application
+      --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /api/health/live
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: renest-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: renest-redis
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "0"
+      # Set these three to your real domain once you attach one; the
+      # onrender.com hostname works out of the box for a first deploy.
+      - key: DJANGO_ALLOWED_HOSTS
+        value: renest-web.onrender.com
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: APP_BASE_URL
+        value: https://renest-web.onrender.com
+      - key: DJANGO_SECURE_SSL_REDIRECT
+        value: "1"
+      - key: DJANGO_SECURE_HSTS_SECONDS
+        value: "31536000"
+      # ── Secrets: fill these in the dashboard after the blueprint creates them
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+      - key: AWS_S3_ENDPOINT_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_CDN_DOMAIN
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+
+  # ── Celery worker: emails, AI detection, notifications, receipts ─────────────
+  - type: worker
+    name: renest-worker
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && celery -A dormcycle worker -l info --concurrency 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: renest-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: renest-redis
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        fromService:
+          type: web
+          name: renest-web
+          envVarKey: DJANGO_SECRET_KEY
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: renest-web.onrender.com
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: APP_BASE_URL
+        value: https://renest-web.onrender.com
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_HOST_USER
+        sync: false
+      - key: EMAIL_HOST_PASSWORD
+        sync: false
+      - key: DEFAULT_FROM_EMAIL
+        sync: false
+      - key: AWS_S3_BUCKET_NAME
+        sync: false
+      - key: AWS_S3_ENDPOINT_URL
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_S3_CDN_DOMAIN
+        sync: false
+
+  # ── Celery beat: the 10 scheduled jobs (expiry, reminders, digests, alerts) ──
+  - type: worker
+    name: renest-beat
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && celery -A dormcycle beat -l info
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: renest-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: renest-redis
+          property: connectionString
+      - key: DJANGO_SECRET_KEY
+        fromService:
+          type: web
+          name: renest-web
+          envVarKey: DJANGO_SECRET_KEY
+      - key: DJANGO_DEBUG
+        value: "0"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: renest-web.onrender.com
+      - key: DJANGO_CSRF_TRUSTED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://renest-web.onrender.com
+      - key: APP_BASE_URL
+        value: https://renest-web.onrender.com

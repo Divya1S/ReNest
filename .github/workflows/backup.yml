@@ -1,0 +1,47 @@
+name: Database backup
+
+on:
+  # Daily at 02:00 UTC.
+  schedule:
+    - cron: "0 2 * * *"
+  # Allow manual trigger from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  pg_dump:
+    name: pg_dump → artifact
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install postgres client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Dump database
+        env:
+          PGPASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+        run: |
+          TIMESTAMP="$(date -u +%Y-%m-%d_%H-%M)"
+          FILENAME="dormcycle_${TIMESTAMP}.sql.gz"
+          pg_dump \
+            -h "${{ secrets.POSTGRES_HOST }}" \
+            -p "${{ secrets.POSTGRES_PORT || '5432' }}" \
+            -U "${{ secrets.POSTGRES_USER }}" \
+            "${{ secrets.POSTGRES_DB }}" \
+            | gzip -9 > "$FILENAME"
+          echo "BACKUP_FILE=$FILENAME" >> "$GITHUB_ENV"
+          SIZE="$(du -sh "$FILENAME" | cut -f1)"
+          echo "Dump complete: $FILENAME ($SIZE)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_FILE }}
+          path: ${{ env.BACKUP_FILE }}
+          # Artifacts are retained for 7 days, matching the rolling retention policy.
+          retention-days: 7
+          if-no-files-found: error
