@@ -1,0 +1,105 @@
+x-django-env: &django-env
+  POSTGRES_DB: ${POSTGRES_DB:-dormcycle}
+  POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-insecure-key-change-in-production}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
+  CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+  DJANGO_CSRF_TRUSTED_ORIGINS: ${DJANGO_CSRF_TRUSTED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+  APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: dormcycle-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dormcycle}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - dormcycle_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dormcycle"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./backend
+    container_name: dormcycle-web
+    restart: unless-stopped
+    environment:
+      <<: *django-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - dormcycle_media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+
+  maintenance:
+    build:
+      context: ./backend
+    container_name: dormcycle-maintenance
+    restart: unless-stopped
+    environment:
+      <<: *django-env
+    volumes:
+      - ./backend:/app
+      - dormcycle_media:/app/media
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs manage.py run_maintenance every 30 minutes (sleep loop; output goes
+    # to container stdout so it appears in `docker compose logs maintenance`).
+    entrypoint: ["/bin/sh", "/app/docker-entrypoint-cron.sh"]
+
+  backup:
+    image: postgres:16
+    container_name: dormcycle-backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dormcycle}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      # Override to keep more or fewer dumps (default: 7 days).
+      RETAIN_DAYS: ${BACKUP_RETAIN_DAYS:-7}
+      BACKUP_DIR: /backups
+    volumes:
+      - dormcycle_backups:/backups
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Runs backup.sh daily at 02:00 UTC. A sleep loop is used because the
+    # postgres image ships no cron daemon. Output appears in
+    # `docker compose logs backup`.
+    command: >
+      bash -c "
+        echo \"[backup] Scheduled daily at 02:00 UTC, $${RETAIN_DAYS:-7}-day retention.\";
+        while true; do
+          target=$$(date -d '02:00' +%s); now=$$(date +%s);
+          if [ $$target -le $$now ]; then target=$$(date -d 'tomorrow 02:00' +%s); fi;
+          sleep $$((target - now));
+          /usr/local/bin/backup.sh || echo '[backup] backup failed' >&2;
+        done
+      "
+
+volumes:
+  dormcycle_postgres_data:
+  dormcycle_media:
+  dormcycle_backups:

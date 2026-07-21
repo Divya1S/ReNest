@@ -1,0 +1,131 @@
+{
+  "router": [
+    {
+      "text": "hi there",
+      "expect": "chat"
+    },
+    {
+      "text": "thanks, that helped!",
+      "expect": "chat"
+    },
+    {
+      "text": "how do handoffs work",
+      "expect": "chat"
+    },
+    {
+      "text": "what does low cost mean",
+      "expect": "chat"
+    },
+    {
+      "text": "is it safe to meet people for pickup",
+      "expect": "chat"
+    },
+    {
+      "text": "how does the room scan work",
+      "expect": "chat"
+    },
+    {
+      "text": "what lamps are available right now",
+      "expect": "task"
+    },
+    {
+      "text": "find me free storage bins",
+      "expect": "task"
+    },
+    {
+      "text": "do I have any pickup requests on my listings?",
+      "expect": "task"
+    },
+    {
+      "text": "when is my pickup scheduled",
+      "expect": "task"
+    },
+    {
+      "text": "how is my move out going",
+      "expect": "task"
+    },
+    {
+      "text": "what's left in my publish queue",
+      "expect": "task"
+    },
+    {
+      "text": "think harder: what does low cost mean",
+      "expect": "task"
+    },
+    {
+      "text": "compare the free desk fans and tell me which to grab",
+      "expect": "task"
+    },
+    {
+      "text": "let me know when a mini fridge shows up",
+      "expect": "task"
+    }
+  ],
+  "retrieval": [
+    {
+      "query": "what is the handoff PIN",
+      "expect_title_contains": "handoff PIN"
+    },
+    {
+      "query": "can I sell items or charge money",
+      "expect_title_contains": "Pricing rules"
+    },
+    {
+      "query": "how do I reserve something I found",
+      "expect_title_contains": "reserve"
+    },
+    {
+      "query": "is meeting up for pickup safe",
+      "expect_title_contains": "Safety"
+    },
+    {
+      "query": "how does the room scan publish queue work",
+      "expect_title_contains": "Room Scan"
+    },
+    {
+      "query": "how do saved search alerts notify me",
+      "expect_title_contains": "Alerts"
+    },
+    {
+      "query": "what happens to my personal data",
+      "expect_title_contains": "privacy"
+    }
+  ],
+  "live": [
+    {
+      "message": "how do handoffs work?",
+      "must_contain_any": [
+        "PIN",
+        "pin"
+      ],
+      "must_not_contain": [
+        "as an AI",
+        "I cannot access"
+      ]
+    },
+    {
+      "message": "can I charge market price for my textbook stand?",
+      "must_contain_any": [
+        "low cost",
+        "low-cost",
+        "free"
+      ],
+      "must_not_contain": [
+        "bidding is supported"
+      ]
+    },
+    {
+      "message": "what free items are available right now?",
+      "must_contain_any": [
+        "listing",
+        "available",
+        "found",
+        "nothing",
+        "no items"
+      ],
+      "must_not_contain": [
+        "I cannot search"
+      ]
+    }
+  ]
+}

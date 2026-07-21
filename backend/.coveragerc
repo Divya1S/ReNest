@@ -1,0 +1,21 @@
+[run]
+source = .
+omit =
+    */migrations/*
+    */__pycache__/*
+    */tests*
+    # Legacy monolith superseded by the listings/views/ package
+    listings/views.py
+    # External AI API wrapper — not unit-testable without live credentials
+    listings/ai_detect.py
+    # Seed data script — not production code
+    listings/management/commands/seed_demo.py
+
+[report]
+omit =
+    */migrations/*
+    */__pycache__/*
+    */tests*
+    listings/views.py
+    listings/ai_detect.py
+    listings/management/commands/seed_demo.py

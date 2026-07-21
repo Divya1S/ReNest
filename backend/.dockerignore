@@ -1,0 +1,13 @@
+# Secrets and local state must never be baked into the image
+.env
+db.sqlite3
+media/
+staticfiles/
+
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.coverage
+.coveragerc
+tests/

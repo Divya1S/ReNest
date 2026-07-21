@@ -1,0 +1,4 @@
+# DormCycle maintenance — runs every 30 minutes.
+# Expires stale listings, syncs move-out tasks, and refreshes notifications.
+*/30 * * * * python /app/manage.py run_maintenance >> /proc/1/fd/1 2>> /proc/1/fd/2
+
