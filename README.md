@@ -153,16 +153,8 @@ The same gates run in CI on every push (`.github/workflows/ci.yml`): a backend j
 
 ## Deployment
 
-One-click deploy via the Render blueprint (`render.yaml`): web service (uvicorn/ASGI serving API + built SPA), Celery worker, Celery beat, Redis, and PostgreSQL. Full runbook, alternative-host notes, backup strategy, and load-testing guide in [docs/deployment.md](docs/deployment.md).
+One-click deploy via the Render blueprint (`render.yaml`): web service (uvicorn/ASGI serving API + built SPA), Celery worker, Celery beat, Redis, and PostgreSQL. Full runbook, alternative-host notes, backup strategy, and load-testing.
 
-## Documentation
-
-- [docs/deployment.md](docs/deployment.md) — production runbook (Render, email, media, backups, load testing)
-- [docs/concierge.md](docs/concierge.md) — AI assistant architecture and design decisions
-- [docs/mobile.md](docs/mobile.md) — Capacitor native shell (iOS/Android)
-- [docs/roadmap.md](docs/roadmap.md) — planned work
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development workflow and quality gates
-- [SECURITY.md](SECURITY.md) — reporting vulnerabilities
 
 ## Maintenance
 
