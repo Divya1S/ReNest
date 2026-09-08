@@ -1,6 +1,7 @@
 import { Bell, BellOff, Check, Clock, Mail, RefreshCw, Smartphone } from "lucide-react";
 import React from "react";
 import { useState } from "react";
+import { toast } from "sonner";
 
 import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -52,8 +53,10 @@ export default function NotificationPreferencesPage() {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-    } catch {
-      // leave saving=false so user can retry
+    } catch (error) {
+      // Silently swallowing this left the user unable to tell a failed save
+      // from one they never clicked.
+      toast.error(error?.message || "Could not save preferences.");
     } finally {
       setSaving(false);
     }

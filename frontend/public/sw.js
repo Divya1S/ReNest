@@ -34,7 +34,10 @@ self.addEventListener("notificationclick", (event) => {
 // v2: API responses are no longer written to Cache Storage — they can contain
 // personal data (profile, messages, pickup addresses) that must not persist on
 // shared devices. Only same-origin static assets and the offline page cache.
-const CACHE_VERSION = "v2";
+// v3: /media/ (room-scan photos, listing images, donation receipts) is excluded
+// too; the old extension-based match had been caching those uploads. The
+// version bump makes existing clients discard what v2 already stored.
+const CACHE_VERSION = "v3";
 const STATIC_CACHE = `renest-static-${CACHE_VERSION}`;
 
 // Static assets to pre-cache on install
@@ -95,11 +98,17 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Static assets (JS/CSS/images with content-hash filenames) → cache-first
+  // User uploads (room scans, listing photos, donation receipts) are personal
+  // data served from the same origin. They must never be written to Cache
+  // Storage, where they would outlive the session on a shared device.
+  if (url.pathname.startsWith("/media/")) return;
+
+  // Static app assets → cache-first. Scoped to the build output and bundled
+  // images; a bare extension match would have swept up /media/ uploads too.
   if (
     url.pathname.startsWith("/assets/") ||
     url.pathname.startsWith("/images/") ||
-    url.pathname.match(/\.(png|jpg|jpeg|svg|webp|woff2?|ttf)$/)
+    url.pathname.match(/\.(css|js|svg|woff2?|ttf)$/)
   ) {
     event.respondWith(cacheFirst(request, STATIC_CACHE));
     return;

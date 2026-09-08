@@ -203,6 +203,7 @@ export default function RequestsPage() {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [showCreate, setShowCreate] = React.useState(false);
+  const [posting, setPosting] = React.useState(false);
   const [matchSelections, setMatchSelections] = React.useState({});
   const [matchBusyId, setMatchBusyId] = React.useState(null);
   const [statusBusyId, setStatusBusyId] = React.useState(null);
@@ -268,6 +269,10 @@ export default function RequestsPage() {
 
   async function handleCreateRequest(event) {
     event.preventDefault();
+    // Without this guard a double-click (or Enter plus click on a slow
+    // connection) posts the same request twice; the backend has no dedupe.
+    if (posting) return;
+    setPosting(true);
     try {
       await apiFetch("/requests", {
         method: "POST",
@@ -282,6 +287,8 @@ export default function RequestsPage() {
       await loadData();
     } catch (requestError) {
       toast.error(requestError.message);
+    } finally {
+      setPosting(false);
     }
   }
 
@@ -570,9 +577,9 @@ export default function RequestsPage() {
               </select>
             </label>
             <div className="md:col-span-2 flex flex-wrap gap-3">
-              <button type="submit" className="primary-button">
+              <button type="submit" className="primary-button" disabled={posting}>
                 <Sparkles size={15} />
-                Post request
+                {posting ? "Posting…" : "Post request"}
               </button>
               <button type="button" onClick={() => setShowCreate(false)} className="secondary-button">
                 Cancel

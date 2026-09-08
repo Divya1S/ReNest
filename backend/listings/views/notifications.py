@@ -13,6 +13,32 @@ from ..notifications import sync_user_notifications
 from ..serializers import NotificationSerializer
 from dormcycle.typed import current_user
 
+
+class NotificationPreferenceWriteSerializer(drf_serializers.Serializer):
+    """Validates one incoming preference row.
+
+    Unvalidated writes used to persist arbitrary channel strings (silently
+    disabling delivery, since nothing matches them later) and to 500 on a
+    malformed time value.
+    """
+
+    notification_type = drf_serializers.ChoiceField(
+        choices=NotificationPreference.NotificationType.choices
+    )
+    channel = drf_serializers.ChoiceField(
+        choices=NotificationPreference.Channel.choices, required=False
+    )
+    quiet_hours_start = drf_serializers.TimeField(required=False, allow_null=True)
+    quiet_hours_end = drf_serializers.TimeField(required=False, allow_null=True)
+
+    def validate(self, attrs: dict) -> dict:
+        start, end = attrs.get("quiet_hours_start"), attrs.get("quiet_hours_end")
+        if (start is None) != (end is None) and ("quiet_hours_start" in attrs or "quiet_hours_end" in attrs):
+            raise drf_serializers.ValidationError(
+                "Set both quiet_hours_start and quiet_hours_end, or neither."
+            )
+        return attrs
+
 _NotificationListResponse = inline_serializer(
     "NotificationListResponse",
     fields={
@@ -139,21 +165,18 @@ class NotificationPreferenceView(APIView):
         if not isinstance(items, list):
             return Response({"detail": "preferences must be a list."}, status=400)
 
-        for item in items:
-            ntype = item.get("notification_type")
-            if not ntype:
-                continue
-            defaults = {}
-            if "channel" in item:
-                defaults["channel"] = item["channel"]
-            if "quiet_hours_start" in item:
-                defaults["quiet_hours_start"] = item["quiet_hours_start"]
-            if "quiet_hours_end" in item:
-                defaults["quiet_hours_end"] = item["quiet_hours_end"]
+        if len(items) > 20:
+            return Response({"detail": "Too many preferences in one request."}, status=400)
+
+        serializer = NotificationPreferenceWriteSerializer(data=items, many=True)
+        serializer.is_valid(raise_exception=True)
+
+        for item in serializer.validated_data:
+            ntype = item.pop("notification_type")
             NotificationPreference.objects.update_or_create(
                 user=current_user(request),
                 notification_type=ntype,
-                defaults=defaults,
+                defaults=item,
             )
 
         return Response({"updated": len(items)})

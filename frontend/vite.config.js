@@ -31,20 +31,25 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 650,
       rollupOptions: {
         output: {
+          // Match on package boundaries, not substrings. `id.includes("react")`
+          // also matched react-leaflet, which dragged all of Leaflet into the
+          // eagerly-loaded react chunk. recharts is deliberately NOT given its
+          // own chunk: a manual chunk is reachable from the entry, so the
+          // 400 kB charts bundle was preloaded on the landing and login pages.
+          // Left alone it stays inside the lazy Dashboard/Analytics chunks.
           manualChunks(id) {
             if (!id.includes("node_modules")) {
               return undefined;
             }
 
-            if (id.includes("recharts")) return "charts";
-            if (id.includes("framer-motion")) return "motion";
-            if (id.includes("lucide-react")) return "icons";
-            if (id.includes("@sentry")) return "sentry";
-            if (id.includes("sonner") || id.includes("clsx") || id.includes("tailwind-merge")) {
-              return "ui";
+            if (/node_modules\/framer-motion\//.test(id)) return "motion";
+            if (/node_modules\/lucide-react\//.test(id)) return "icons";
+            if (/node_modules\/@sentry\//.test(id)) return "sentry";
+            if (/node_modules\/(sonner|clsx|tailwind-merge)\//.test(id)) return "ui";
+            if (/node_modules\/(react|react-dom|scheduler|react-router|react-router-dom)\//.test(id)) {
+              return "react";
             }
-            if (id.includes("react") || id.includes("react-router-dom")) return "react";
-            return "vendor";
+            return undefined;
           },
         },
       },

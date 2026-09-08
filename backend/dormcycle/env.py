@@ -11,6 +11,45 @@ def env_bool(name, default=False):
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def env_int(name, default):
+    """int() an env var, tolerating an unset-but-present empty value.
+
+    Hosting dashboards inject declared-but-unfilled variables as empty strings.
+    A bare int("") raises at settings-import time, so the whole service fails
+    to boot because an optional value was left blank.
+    """
+    raw = os.getenv(name, "")
+    raw = raw.strip() if raw else ""
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except ValueError:
+        warnings.warn(
+            f"{name}={raw!r} is not an integer; falling back to {default}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return int(default)
+
+
+def env_float(name, default):
+    """float() an env var, tolerating an unset-but-present empty value."""
+    raw = os.getenv(name, "")
+    raw = raw.strip() if raw else ""
+    if not raw:
+        return float(default)
+    try:
+        return float(raw)
+    except ValueError:
+        warnings.warn(
+            f"{name}={raw!r} is not a number; falling back to {default}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return float(default)
+
+
 def env_list(name, default=""):
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -66,7 +105,7 @@ def validate_environment(
     if "console" in email_backend or not email_host:
         warnings.warn(
             "Production email is not configured: set EMAIL_HOST/EMAIL_HOST_USER/"
-            "EMAIL_HOST_PASSWORD (see docs/deployment.md). Password resets and "
+            "EMAIL_HOST_PASSWORD (see the Deployment section of README.md). Password resets and "
             "handoff reminders will not be delivered.",
             RuntimeWarning,
             stacklevel=2,
@@ -75,7 +114,7 @@ def validate_environment(
         warnings.warn(
             "Media storage is the local filesystem: uploaded photos will be lost "
             "on redeploy on ephemeral hosts. Set AWS_S3_BUCKET_NAME (S3 or "
-            "Cloudflare R2 — see docs/deployment.md).",
+            "Cloudflare R2; see the Deployment section of README.md).",
             RuntimeWarning,
             stacklevel=2,
         )

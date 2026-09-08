@@ -27,7 +27,6 @@ export function useApi<T = unknown>(
   { initialData, skip = false, ttl = DEFAULT_TTL_MS }: UseApiOptions<T> = {},
 ): UseApiResult<T> {
   const controllerRef = useRef<AbortController | null>(null);
-  const hasInitialData = initialData !== undefined && initialData !== null;
 
   const subscribe = useCallback(
     (onStoreChange: () => void) =>
@@ -37,8 +36,12 @@ export function useApi<T = unknown>(
   const getSnapshot = useCallback(() => getCachedApi<T>(path), [path]);
   const cacheRecord = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+  // initialData is a render fallback ("show an empty list, not a crash"), not
+  // fetched data. Treating it as fetched made `loading` permanently false, so
+  // pages that pass it rendered their empty state ("You're all caught up.")
+  // during the very first fetch and their skeleton branches were dead code.
   const [loading, setLoading] = useState<boolean>(
-    () => !skip && !!path && cacheRecord.data === undefined && !hasInitialData,
+    () => !skip && !!path && cacheRecord.data === undefined,
   );
 
   const execute = useCallback(
@@ -53,10 +56,7 @@ export function useApi<T = unknown>(
       controllerRef.current = new AbortController();
 
       const targetRecord = getCachedApi<T>(target);
-      const hasRenderableData =
-        targetRecord.data !== undefined || (target === path && hasInitialData);
-
-      if (!hasRenderableData) setLoading(true);
+      if (targetRecord.data === undefined) setLoading(true);
 
       try {
         return await prefetchApi<T>(target, {
@@ -71,14 +71,8 @@ export function useApi<T = unknown>(
         setLoading(false);
       }
     },
-    [hasInitialData, path, ttl],
+    [path, ttl],
   );
-
-  useEffect(() => {
-    if (path && hasInitialData && getCachedApi(path).data === undefined) {
-      primeApiCache(path, initialData);
-    }
-  }, [hasInitialData, initialData, path]);
 
   useEffect(() => {
     if (skip || !path) {

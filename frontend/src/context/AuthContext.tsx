@@ -44,8 +44,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const refreshUser = useCallback(async (): Promise<User | null> => {
     const data = await apiFetch<AuthMeResponse>("/auth/me");
+    const hadUser = userRef.current;
     setUser(data.user);
-    if (!data.user) {
+    // Only clear on a signed-in -> signed-out transition. Clearing for a
+    // visitor who was never signed in wipes public data the page just fetched
+    // (a listing detail loaded while auth was still bootstrapping), and
+    // nothing refetches it, and the page then reads "Listing not found".
+    if (!data.user && hadUser) {
       clearApiCache();
       setAuthNotice("");
     }
@@ -90,7 +95,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         await fetch("/api/auth/csrf", { credentials: "include" });
         const data = await apiFetch<AuthMeResponse>("/auth/me");
         if (active) {
-          if (!data.user) clearApiCache();
+          // No clearApiCache here: on first load the cache can only hold public
+          // data this same page just fetched, and dropping it strands the view.
           setUser(data.user);
         }
       } catch {

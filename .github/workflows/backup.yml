@@ -1,47 +1,84 @@
 name: Database backup
 
+# Daily pg_dump of the production database, stored as a workflow artifact
+# (7-day rolling retention). Works with any Postgres that accepts external
+# connections (Neon, Supabase, Render).
+#
+# Setup (Settings -> Secrets and variables -> Actions), either:
+#   secret DATABASE_URL   postgres://user:password@host:5432/dbname?sslmode=require
+# or the discrete values:
+#   secrets POSTGRES_HOST, POSTGRES_PORT (optional), POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD
+#
+# Until one of those is configured the job exits early without failing, and it
+# never reports success for an empty dump.
+
 on:
-  # Daily at 02:00 UTC.
   schedule:
     - cron: "0 2 * * *"
-  # Allow manual trigger from the Actions tab.
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   pg_dump:
-    name: pg_dump → artifact
+    name: pg_dump to artifact
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check configuration
+        id: config
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+        run: |
+          if [ -n "${DATABASE_URL}" ] || [ -n "${POSTGRES_HOST}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No DATABASE_URL or POSTGRES_* secrets configured; skipping backup."
+          fi
 
       - name: Install postgres client
+        if: steps.config.outputs.configured == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Dump database
+        if: steps.config.outputs.configured == 'true'
         env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PGHOST: ${{ secrets.POSTGRES_HOST }}
+          PGPORT: ${{ secrets.POSTGRES_PORT || '5432' }}
+          PGUSER: ${{ secrets.POSTGRES_USER }}
+          PGDATABASE: ${{ secrets.POSTGRES_DB }}
           PGPASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
         run: |
+          set -euo pipefail
           TIMESTAMP="$(date -u +%Y-%m-%d_%H-%M)"
-          FILENAME="dormcycle_${TIMESTAMP}.sql.gz"
-          pg_dump \
-            -h "${{ secrets.POSTGRES_HOST }}" \
-            -p "${{ secrets.POSTGRES_PORT || '5432' }}" \
-            -U "${{ secrets.POSTGRES_USER }}" \
-            "${{ secrets.POSTGRES_DB }}" \
-            | gzip -9 > "$FILENAME"
+          FILENAME="renest_${TIMESTAMP}.sql.gz"
+          if [ -n "${DATABASE_URL}" ]; then
+            pg_dump --no-owner --no-privileges "${DATABASE_URL}" | gzip -9 > "$FILENAME"
+          else
+            pg_dump --no-owner --no-privileges | gzip -9 > "$FILENAME"
+          fi
+          # A dump that failed upstream of gzip would be a few bytes; refuse to
+          # publish it as a "backup".
+          gzip -t "$FILENAME"
+          if ! gzip -dc "$FILENAME" | head -n 20 | grep -q "PostgreSQL database dump"; then
+            echo "::error::Dump does not look like a pg_dump output; refusing to upload."
+            exit 1
+          fi
           echo "BACKUP_FILE=$FILENAME" >> "$GITHUB_ENV"
-          SIZE="$(du -sh "$FILENAME" | cut -f1)"
-          echo "Dump complete: $FILENAME ($SIZE)"
+          echo "Dump complete: $FILENAME ($(du -sh "$FILENAME" | cut -f1))"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        if: steps.config.outputs.configured == 'true'
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.BACKUP_FILE }}
           path: ${{ env.BACKUP_FILE }}
-          # Artifacts are retained for 7 days, matching the rolling retention policy.
           retention-days: 7
           if-no-files-found: error

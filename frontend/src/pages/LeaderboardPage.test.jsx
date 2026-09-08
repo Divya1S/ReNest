@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
 
 import { clearApiCache } from "../lib/apiCache";
 
@@ -23,7 +25,13 @@ function mockErr() {
 }
 
 function renderPage() {
-  render(<LeaderboardPage />);
+  // The page links to /settings for the leaderboard opt-out, so it needs
+  // router context exactly as it has in the app.
+  render(
+    <MemoryRouter>
+      <LeaderboardPage />
+    </MemoryRouter>,
+  );
 }
 
 describe("LeaderboardPage", () => {

@@ -2,8 +2,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Calendar, CheckCircle2, Loader2, MapPin, Package, Plus, RefreshCw, Truck } from "lucide-react";
 import React from "react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { useApi } from "../hooks/useApi";
+import { usePageTitle } from "../hooks/usePageTitle";
 import { apiFetch, asResults } from "../lib/api";
 import { cn } from "../lib/cn";
 
@@ -135,9 +137,15 @@ function NewEventModal({ hubId, onCreated, onClose }) {
 }
 
 export default function HubDispatchPage() {
+  usePageTitle("Hub Dispatch");
   // Dependent fetch: first resolve which hub this manager owns, then load its events.
-  const { data: hubsData } = useApi("/hubs/mine");
-  const hubId = asResults(hubsData)[0]?.id ?? null;
+  const {
+    data: hubsData,
+    loading: loadingHubs,
+    error: hubsError,
+  } = useApi("/hubs/mine");
+  const managedHubs = asResults(hubsData);
+  const hubId = managedHubs[0]?.id ?? null;
 
   const eventsPath = hubId ? `/logistics/events?hub=${hubId}` : null;
   const {
@@ -190,6 +198,37 @@ export default function HubDispatchPage() {
     setEventsData((prev) => [event, ...(prev ?? [])]);
     setShowModal(false);
     selectEvent(event);
+  }
+
+  // /dispatch is only gated by RequireAuth, so a student who manages no hub
+  // reaches it. Say so, rather than showing an empty console that looks broken.
+  if (!loadingHubs && !hubsError && !hubId) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-16 text-center">
+        <Truck size={32} className="mx-auto mb-4 text-[color:var(--text-muted)]" />
+        <h1 className="text-xl font-bold text-[color:var(--color-ink)] dark:text-white">
+          Hub Dispatch is for donation hub managers
+        </h1>
+        <p className="mt-2 text-sm text-[color:var(--text-muted)]">
+          Your account does not manage a donation hub yet. Browse the hub directory to find one
+          near you, or ask a campus admin to add you as a manager.
+        </p>
+        <Link to="/hubs" className="primary-button mt-6 inline-flex">
+          Browse donation hubs
+        </Link>
+      </div>
+    );
+  }
+
+  if (hubsError) {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-16 text-center" role="alert">
+        <h1 className="text-xl font-bold text-[color:var(--color-ink)] dark:text-white">
+          Could not load your hubs
+        </h1>
+        <p className="mt-2 text-sm text-[color:var(--text-muted)]">{hubsError}</p>
+      </div>
+    );
   }
 
   return (

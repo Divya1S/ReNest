@@ -63,6 +63,10 @@ function buildSessionMetaFromSession(session) {
 }
 
 const TRIAGE_KEYS = { s: "sell", d: "donate", k: "keep", t: "toss" };
+// Mirrors the server: RoomScanImageUploadView caps a session at 4 photos and
+// image_utils rejects anything over 10 MB.
+const MAX_ROOM_PHOTOS = 4;
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const TRIAGE_ORDER = ["sell", "donate", "keep", "toss"];
 
 function imageBadgeStyle(items) {
@@ -76,6 +80,9 @@ function imageBadgeStyle(items) {
 export default function ScanStudioPage() {
   usePageTitle("Scan Studio");
   const { sessionId } = useParams();
+  // Bumped whenever the studio switches scans, so an in-flight AI-detect poll
+  // for the previous session stops instead of applying its result here.
+  const pollTokenRef = useRef(0);
   const [session, setSession] = useState(null);
   const [presets, setPresets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -109,6 +116,7 @@ export default function ScanStudioPage() {
   }
 
   useEffect(() => {
+    pollTokenRef.current += 1;
     let active = true;
     Promise.all([loadSession(), apiFetch("/publish-presets")])
       .then(([, presetData]) => { if (active) setPresets(presetData); })
@@ -166,6 +174,12 @@ export default function ScanStudioPage() {
       const tag = e.target?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       const key = e.key.toLowerCase();
+      // Single-letter shortcuts must not fire for Cmd/Ctrl/Alt combinations:
+      // Cmd+S, Ctrl+D, Cmd+K and Ctrl+T are universal browser shortcuts and
+      // used to silently re-triage the open draft. Cmd/Ctrl+Enter (save) is
+      // the one combination this handler owns.
+      const withModifier = e.metaKey || e.ctrlKey || e.altKey;
+      if (withModifier && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
       if (TRIAGE_KEYS[key] && activeDraft) {
         e.preventDefault();
         setDraftForm((cur) => ({ ...cur, triage_status: TRIAGE_KEYS[key] }));
@@ -201,20 +215,52 @@ export default function ScanStudioPage() {
 
   async function handleUpload(event) {
     const files = Array.from(event.target.files || []);
+    event.target.value = "";
     if (!files.length) return;
+
+    // Mirror the server's limits so the common rejections surface instantly
+    // instead of after a long upload (image_utils.py: 10 MB, images only;
+    // scan.py: 4 photos per session).
+    const remaining = MAX_ROOM_PHOTOS - (session?.images?.length ?? 0);
+    if (remaining <= 0) {
+      toast.error(`A scan holds up to ${MAX_ROOM_PHOTOS} room photos.`);
+      return;
+    }
+    const usable = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) {
+        toast.error(`${file.name} is not an image.`);
+      } else if (file.size > MAX_IMAGE_BYTES) {
+        toast.error(`${file.name} is larger than 10 MB.`);
+      } else {
+        usable.push(file);
+      }
+    }
+    if (!usable.length) return;
+    if (usable.length > remaining) {
+      toast.info(`Only ${remaining} more photo${remaining !== 1 ? "s" : ""} fit in this scan.`);
+    }
+
     const payload = new FormData();
-    files.forEach((f) => payload.append("images", f));
+    usable.slice(0, remaining).forEach((f) => payload.append("images", f));
     setUploading(true);
     try {
-      const response = await apiFetch(`/scan-sessions/${sessionId}/images`, { method: "POST", body: payload });
+      // Photo uploads routinely outlast the 15s default on a phone uplink.
+      const response = await apiFetch(`/scan-sessions/${sessionId}/images`, {
+        method: "POST",
+        body: payload,
+        timeout: 120_000,
+      });
       setSession(response);
       setSelectedImageId((cur) => cur || response.images[0]?.id || null);
       toast.success("Room photos uploaded.");
     } catch (err) {
       toast.error(err.message);
+      // A partial success (some photos saved before the failure) must still
+      // show up rather than leaving the studio out of sync with the server.
+      await loadSession(selectedDraftId, selectedImageId).catch(() => {});
     } finally {
       setUploading(false);
-      event.target.value = "";
     }
   }
 
@@ -289,15 +335,30 @@ export default function ScanStudioPage() {
 
   async function pollAiDetectStatus(imageId) {
     // Detection runs in a background worker; poll until it lands (~10-30s).
+    const token = pollTokenRef.current;
     const deadline = Date.now() + 120_000;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
+      // The session changed (navigated away, different scan), so stop polling
+      // so a late result is never applied to the wrong session.
+      if (pollTokenRef.current !== token) return { status: "cancelled" };
       try {
         const status = await apiFetch(
           `/scan-sessions/${sessionId}/ai-detect/status?image_id=${imageId}`,
         );
         if (status.status !== "processing") return status;
-      } catch {
+      } catch (pollError) {
+        // 404 means the job record is gone and 401/403 that the session ended:
+        // terminal states, not blips. Waiting the full two minutes for those
+        // just makes the user stare at a spinner.
+        if ([401, 403, 404].includes(pollError?.status)) {
+          return {
+            status: "error",
+            detail: pollError.status === 404
+              ? "AI detection did not complete. Try again."
+              : "Your session expired. Sign in and try again.",
+          };
+        }
         // transient network blip — keep polling until the deadline
       }
     }
@@ -316,6 +377,9 @@ export default function ScanStudioPage() {
       if (result.status === "processing") {
         toast.info("AI is scanning the photo — hotspots will appear here shortly.");
         result = await pollAiDetectStatus(imageId);
+      }
+      if (result.status === "cancelled") {
+        return;
       }
       if (result.status === "done") {
         setSession(result.session);
@@ -530,7 +594,9 @@ export default function ScanStudioPage() {
         <div className="flex-1 min-w-0 space-y-4">
 
           {/* Image stage */}
-          <div className="relative rounded-[24px] overflow-hidden bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.18)]" style={{ aspectRatio: "4/3" }}>
+          {/* The stage sizes itself to the photo's aspect ratio so hotspot
+              coordinates line up; forcing 4:3 here would crop it again. */}
+          <div className="relative rounded-[24px] overflow-hidden bg-[#111] shadow-[0_8px_40px_rgba(0,0,0,0.18)]">
             <HotspotStage
               image={activeImage}
               hotspots={visibleHotspots}

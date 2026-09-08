@@ -19,19 +19,62 @@ import hmac
 import json
 import logging
 
+from django.contrib.auth.models import AnonymousUser
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework import permissions
 from rest_framework.authentication import BaseAuthentication
-from rest_framework.exceptions import AuthenticationFailed
-from rest_framework.parsers import JSONParser
+from rest_framework.exceptions import AuthenticationFailed, Throttled
+
+from dormcycle.parsers import StrictJSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import PartnerAPIKey, WebhookDelivery, WebhookEndpoint
+from ..models import Listing, PartnerAPIKey, WebhookDelivery, WebhookEndpoint
+from .helpers import parse_int, visible_listing_queryset
 from typing import Any, cast
 
 logger = logging.getLogger(__name__)
+
+
+def validate_webhook_url(url: str) -> str | None:
+    """Reject webhook targets that would let a partner probe internal hosts.
+
+    Returns an error message, or None when the URL is acceptable. Deliveries
+    are made server-side, so an unvalidated URL is a server-side request
+    forgery primitive; only public HTTPS endpoints are allowed.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlsplit
+
+    from django.core.exceptions import ValidationError as DjangoValidationError
+    from django.core.validators import URLValidator
+
+    try:
+        URLValidator(schemes=["https"])(url)
+    except DjangoValidationError:
+        return "Enter a valid https:// URL."
+
+    host = urlsplit(url).hostname or ""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return "The webhook host could not be resolved."
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+            or address.is_unspecified
+        ):
+            return "The webhook host must be a public address."
+    return None
+
 
 _ALLOWED_FONTS = {"Inter", "Roboto", "Open Sans", "Lato", "Poppins", "system-ui"}
 
@@ -57,7 +100,9 @@ class PartnerKeyAuthentication(BaseAuthentication):
             raise AuthenticationFailed("Invalid or inactive API key.")
         key.last_used_at = timezone.now()
         key.save(update_fields=["last_used_at"])
-        return (key, None)
+        # DRF unpacks this as (request.user, request.auth). The key belongs in
+        # request.auth: it is a credential, not a user account.
+        return (AnonymousUser(), key)
 
     def authenticate_header(self, request: Any) -> Any:
         return "Bearer"
@@ -67,50 +112,87 @@ class PartnerKeyPermission(permissions.BasePermission):
     """Require a PartnerAPIKey (not a regular user session)."""
 
     def has_permission(self, request: Any, view: Any) -> bool:
-        return isinstance(request.auth, PartnerAPIKey) or (
-            hasattr(request, "_partner_key")
-        )
+        return isinstance(request.auth, PartnerAPIKey)
 
 
 def _require_scope(request: Any, scope: str) -> Response | None:
     key = cast(PartnerAPIKey, request.auth)
     if scope not in (key.scopes or []):
         return Response({"detail": f"Scope '{scope}' not granted for this key."}, status=403)
+    return _enforce_daily_quota(key)
+
+
+def _enforce_daily_quota(key: PartnerAPIKey) -> Response | None:
+    """Count calls per key per UTC day against PartnerAPIKey.rate_limit_per_day.
+
+    The counter lives in the cache (Redis in production, per-process memory in
+    development). A cache flush resets the window, which is acceptable for a
+    courtesy quota that is also reported back to the partner.
+    """
+    limit = key.rate_limit_per_day or 0
+    if limit <= 0:
+        return None
+    bucket = f"partner-quota:{key.pk}:{timezone.now():%Y-%m-%d}"
+    try:
+        used = cache.get_or_set(bucket, 0, 86400)
+        used = cache.incr(bucket)
+    except ValueError:
+        # Key expired between get_or_set and incr.
+        cache.set(bucket, 1, 86400)
+        used = 1
+    except Exception:
+        logger.warning("Partner quota counter unavailable", exc_info=True)
+        return None
+    if used > limit:
+        raise Throttled(detail=f"Daily quota of {limit} requests exceeded for this API key.")
     return None
 
 
 # ── Embed endpoint (no auth, CORS-open) ────────────────────────────────────────
 
+def embed_listing_payload(listing: Any) -> dict[str, Any]:
+    """The minimum a third-party widget needs. No personal data leaves here."""
+    return {
+        "id": listing.pk,
+        "title": listing.title,
+        "category": listing.category,
+        "condition": listing.condition,
+        "price_type": listing.price_type,
+        "price_amount": str(listing.price_amount),
+        "image_url": listing.image_cdn_url or (listing.image.url if listing.image else ""),
+        "pickup_zone": listing.pickup_zone,
+        "available_until": listing.available_until.isoformat() if listing.available_until else None,
+        "owner_display_name": listing.owner.display_name,
+    }
+
+
 class EmbedListingsView(APIView):
-    """GET /api/embed/:campus_slug/listings — unauthenticated public listing feed."""
+    """GET /api/embed/:campus_slug/listings: unauthenticated public listing feed.
+
+    Served to arbitrary third-party origins, so the payload is deliberately
+    narrow: no owner email, account flags or viewer-relative fields.
+    """
     permission_classes = [permissions.AllowAny]
-    authentication_classes = []
+    authentication_classes: list[Any] = []
 
     def get(self, request: Request, campus_slug: str) -> Response:
         from accounts.models import Campus
-
-        from ..models import Listing
-        from ..serializers import ListingSerializer
 
         try:
             campus = Campus.objects.get(slug=campus_slug, active=True)
         except Campus.DoesNotExist:
             return Response({"detail": "Campus not found."}, status=404)
 
-        listings = (
-            Listing.objects.filter(
-                owner__campus=campus,
-                status=Listing.Status.AVAILABLE,
-                deleted_at__isnull=True,
-            )
-            .select_related("owner")
+        listings = list(
+            visible_listing_queryset()
+            .filter(owner__campus=campus, status=Listing.Status.AVAILABLE)
             .order_by("-created_at")[:20]
         )
         return Response(
             {
                 "campus": campus.name,
-                "count": listings.count(),
-                "results": ListingSerializer(listings, many=True).data,
+                "count": len(listings),
+                "results": [embed_listing_payload(listing) for listing in listings],
             },
             headers={"Access-Control-Allow-Origin": "*"},
         )
@@ -128,28 +210,27 @@ class PartnerListingsView(APIView):
         if err:
             return err
 
-        from ..models import Listing
-        from ..serializers import ListingSerializer
-
         key = cast(PartnerAPIKey, request.auth)
         status_filter = request.query_params.get("status", "available")
+        if status_filter != "all" and status_filter not in Listing.Status.values:
+            return Response({"detail": "Unknown status filter."}, status=400)
         listings = (
-            Listing.objects.filter(
-                owner__campus=key.campus,
-                deleted_at__isnull=True,
-            )
+            Listing.objects.filter(owner__campus=key.campus, is_demo=False)
+            .select_related("owner")
             .order_by("-created_at")
         )
         if status_filter != "all":
             listings = listings.filter(status=status_filter)
 
-        page_size = min(int(request.query_params.get("page_size", "50")), 200)
-        page = max(int(request.query_params.get("page", "1")), 1)
+        page_size = parse_int(
+            request.query_params.get("page_size"), field="page_size", default=50, minimum=1, maximum=200
+        ) or 50
+        page = parse_int(request.query_params.get("page"), field="page", default=1, minimum=1) or 1
         offset = (page - 1) * page_size
         return Response({
             "page": page,
             "page_size": page_size,
-            "results": ListingSerializer(listings[offset: offset + page_size], many=True).data,
+            "results": [embed_listing_payload(listing) for listing in listings[offset: offset + page_size]],
         })
 
 
@@ -164,15 +245,27 @@ class PartnerReservationsView(APIView):
             return err
 
         from ..models import Reservation
-        from ..serializers import ReservationSerializer
 
         key = cast(PartnerAPIKey, request.auth)
         reservations = (
-            Reservation.objects.filter(listing__owner__campus=key.campus)
+            Reservation.objects.filter(listing__owner__campus=key.campus, listing__is_demo=False)
             .select_related("listing", "claimant")
             .order_by("-created_at")[:200]
         )
-        return Response({"results": ReservationSerializer(reservations, many=True).data})
+        return Response({
+            "results": [
+                {
+                    "id": reservation.pk,
+                    "listing_id": reservation.listing_id,
+                    "listing_title": reservation.listing.title,
+                    "status": reservation.status,
+                    "claimant_display_name": reservation.claimant.display_name,
+                    "created_at": reservation.created_at.isoformat(),
+                    "updated_at": reservation.updated_at.isoformat(),
+                }
+                for reservation in reservations
+            ]
+        })
 
 
 # ── Usage stats ────────────────────────────────────────────────────────────────
@@ -221,7 +314,7 @@ class PartnerWebhookListCreateView(APIView):
     """GET/POST /api/partner/webhooks"""
     authentication_classes = [PartnerKeyAuthentication]
     permission_classes = [PartnerKeyPermission]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def get(self, request: Request) -> Response:
         err = _require_scope(request, "webhook")
@@ -255,6 +348,10 @@ class PartnerWebhookListCreateView(APIView):
             return Response({"detail": "url is required."}, status=400)
         if not isinstance(events, list):
             return Response({"detail": "events must be a list."}, status=400)
+
+        url_error = validate_webhook_url(url)
+        if url_error:
+            return Response({"detail": url_error}, status=400)
 
         secret = secrets.token_hex(32)
         ep = WebhookEndpoint.objects.create(
@@ -297,7 +394,7 @@ class PartnerKeyProvisionView(APIView):
     Returns the raw key once — it is never stored.
     """
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request) -> Response:
         user = request.user

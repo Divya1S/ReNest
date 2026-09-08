@@ -18,7 +18,7 @@ _PROHIBITED_HINTS = [
 
 def moderate_listing(listing: ListingType) -> tuple[str, str]:
     """
-    Run a fast Claude Haiku pre-screen on the listing.
+    Run a fast model pre-screen on the listing.
     Returns (moderation_status, flag_reason) where status is one of:
       "approved" — looks fine
       "flagged"  — potential issue detected

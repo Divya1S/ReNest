@@ -61,6 +61,29 @@
 
   --border-line: rgba(0, 0, 0, 0.06);
   --border-line-strong: rgba(0, 0, 0, 0.12);
+
+  /* ── Aliases ──────────────────────────────────────────────────────────────
+     Several screens (Hub Dispatch, Leaderboard, Campus Landing, Announcements,
+     Unsubscribe) were written against a second naming scheme that was never
+     defined here, so ~110 references resolved to nothing: invisible buttons,
+     borderless cards and unreadable secondary text. Rather than rewrite every
+     call site, the alternative names are declared as aliases of the tokens
+     that do exist, which keeps both vocabularies in step in light and dark. */
+  --color-primary: var(--accent-tag);
+  --color-primary-muted: color-mix(in srgb, var(--accent-tag) 55%, transparent);
+  --color-primary-subtle: var(--bg-tag-soft);
+  --color-accent: var(--accent-box);
+  --color-success: var(--accent-free);
+  --color-warning: var(--accent-box);
+  --color-error: var(--accent-urgent);
+  --color-fg: var(--text-ink);
+  --color-text: var(--text-ink);
+  --text-primary: var(--text-ink);
+  --color-muted: var(--text-muted);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: color-mix(in srgb, var(--text-muted) 75%, transparent);
+  --color-border: var(--border-line-strong);
+  --color-surface-raised: var(--bg-surface);
 }
 
 html.dark {
@@ -84,6 +107,10 @@ html.dark {
 
   --border-line: rgba(255, 255, 255, 0.08);
   --border-line-strong: rgba(255, 255, 255, 0.14);
+
+  /* Aliases resolve through the tokens above; only the raised surface needs
+     its own dark value so stacked panels stay distinguishable. */
+  --color-surface-raised: #2c2c2e;
 }
 
 html {

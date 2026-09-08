@@ -148,7 +148,10 @@ def handle_ui_tool(user: Any, name: str, args: dict[str, Any], collector: UiColl
         return {"ok": True, "rendered": len(progress["scan_sessions"])}
     if name == "suggest_followups":
         cleaned = []
-        for entry in (args.get("suggestions") or [])[: MAX_SUGGESTIONS * 2]:
+        raw_suggestions = args.get("suggestions")
+        if not isinstance(raw_suggestions, list):
+            raw_suggestions = []
+        for entry in raw_suggestions[: MAX_SUGGESTIONS * 2]:
             if isinstance(entry, str):          # tolerate the old string shape
                 entry = {"label": entry}
             if not isinstance(entry, dict):
@@ -183,7 +186,10 @@ def handle_ui_tool(user: Any, name: str, args: dict[str, Any], collector: UiColl
     return {"ok": False, "error": f"Unknown UI tool: {name}"}
 
 
-def _hydrate_listing_cards(listing_ids: list[Any]) -> list[dict[str, Any]]:
+def _hydrate_listing_cards(listing_ids: Any) -> list[dict[str, Any]]:
+    # The model may hand back a bare int or a string instead of a list.
+    if not isinstance(listing_ids, list):
+        listing_ids = [listing_ids] if listing_ids is not None else []
     ids: list[int] = []
     for value in listing_ids[: MAX_CARDS * 2]:
         try:

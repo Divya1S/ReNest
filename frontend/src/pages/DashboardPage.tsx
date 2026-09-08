@@ -31,6 +31,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { toast } from "sonner";
 
 import Avatar from "../components/Avatar";
 import ListingPlaceholder from "../components/ListingPlaceholder";
@@ -210,7 +211,13 @@ export default function DashboardPage() {
 
   const firstName = user?.display_name?.split(" ")[0] || "there";
   const { canInstall, install, dismiss } = useInstallPrompt();
-  const { supported: pushSupported, permission, subscribed, loading: pushLoading, subscribe: subscribePush } = usePushNotifications(!!user);
+  const {
+    available: pushAvailable,
+    permission,
+    subscribed,
+    loading: pushLoading,
+    subscribe: subscribePush,
+  } = usePushNotifications(!!user);
 
   if (loading) {
     return (
@@ -287,8 +294,9 @@ export default function DashboardPage() {
           <OnboardingChecklist step={user.onboarding_step ?? 0} />
         )}
 
-        {/* Web Push opt-in — shown once, only when supported and not yet granted */}
-        {pushSupported && permission === "default" && !subscribed && !canInstall && (
+        {/* Web Push opt-in: only when the browser supports it AND the server
+            has VAPID keys, otherwise the button can never succeed. */}
+        {pushAvailable && permission === "default" && !subscribed && !canInstall && (
           <motion.div
             initial={{ opacity: 0, y: -12 }}
             animate={{ opacity: 1, y: 0 }}
@@ -306,7 +314,16 @@ export default function DashboardPage() {
               </p>
             </div>
             <button
-              onClick={subscribePush}
+              onClick={async () => {
+                const result = await subscribePush();
+                if (result.ok) {
+                  toast.success("Push notifications enabled.");
+                } else if (result.reason === "denied") {
+                  toast.error("Notifications are blocked. Enable them in your browser settings.");
+                } else {
+                  toast.error(result.message || "Could not enable push notifications.");
+                }
+              }}
               disabled={pushLoading}
               className="shrink-0 rounded-full bg-[color:var(--color-tag)] px-4 py-1.5 text-[13px] font-semibold text-white hover:opacity-90 transition-opacity disabled:opacity-50"
             >

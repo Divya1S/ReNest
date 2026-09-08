@@ -10,13 +10,14 @@ from typing import Any
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 from django.db import connection
-from django.db.models import Count, Q, QuerySet, Sum
+from django.db.models import Count, Prefetch, Q, QuerySet, Sum
 from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, permissions, serializers as drf_serializers
-from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.parsers import FormParser, MultiPartParser
+from dormcycle.parsers import StrictJSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -42,10 +43,15 @@ from dormcycle.typed import current_user
 
 logger = logging.getLogger(__name__)
 
+from rest_framework.exceptions import ValidationError
+
 from .helpers import (
     annotate_listing_queryset,
     _exclude_deadline_passed,
     _expire_for_user,
+    parse_int,
+    parse_int_list,
+    run_listing_created_hooks,
     user_can_post_update,
 )
 
@@ -55,7 +61,7 @@ class ListingListCreateView(generics.ListCreateAPIView):
     # Read is public so guests can browse the marketplace; creating listings
     # still requires a signed-in, email-verified account.
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsEmailVerified]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    parser_classes = [MultiPartParser, FormParser, StrictJSONParser]
     throttle_classes = [ListingCreateThrottle]
 
     def get_queryset(self) -> QuerySet[Listing]:
@@ -110,11 +116,22 @@ class ListingListCreateView(generics.ListCreateAPIView):
                 status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED]
             )
         elif status_param:
+            if status_param not in Listing.Status.values:
+                raise ValidationError({"status": "Unknown listing status."})
             queryset = queryset.filter(status=status_param)
+        elif not mine:
+            # Public browse shows the live marketplace. Without this, expired,
+            # picked-up and donated rows are returned, and because the default
+            # ordering is by deadline ascending, they sort to the very top.
+            queryset = queryset.filter(
+                status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED]
+            )
 
         scan_session_id = self.request.query_params.get("source_scan_session")
         if scan_session_id:
-            queryset = queryset.filter(source_scan_session_id=scan_session_id)  # type: ignore[misc]  # str pk is coerced by Django
+            queryset = queryset.filter(
+                source_scan_session_id=parse_int(scan_session_id, field="source_scan_session", minimum=1)
+            )
 
         building = self.request.query_params.get("building")
         if building:
@@ -172,30 +189,25 @@ class ListingListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer: Any) -> None:
         listing = serializer.save(owner=self.request.user)
-        from .dashboard import invalidate_user_dashboard_cache
-        invalidate_user_dashboard_cache(self.request.user.pk)
-        from ..tasks import post_create_tasks
-        post_create_tasks.delay(listing.pk)
-        try:
-            from .partner import dispatch_webhook_event
-            dispatch_webhook_event(
-                "listing_created",
-                {"id": listing.pk, "title": listing.title, "category": listing.category, "status": listing.status},
-                listing.owner.campus.name if listing.owner.campus else (listing.owner.campus_name or ""),
-            )
-        except Exception:
-            pass
+        run_listing_created_hooks(listing)
 
 
 class ListingDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ListingSerializer
     # Read is public (shareable listing URLs); edit/delete stays owner-only.
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsListingOwnerOrReadOnly]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    parser_classes = [MultiPartParser, FormParser, StrictJSONParser]
 
     def get_queryset(self) -> QuerySet[Listing]:
         qs = Listing.objects.select_related("owner", "source_scan_session").exclude(is_demo=True)
         user = current_user(self.request)
+        # A flagged listing stays reachable for its owner (so they can see the
+        # moderation notice) and for staff, but not by direct link for anyone else.
+        if not (user.is_authenticated and user.is_staff):
+            visible = ~Q(moderation_status=Listing.ModerationStatus.FLAGGED)
+            if user.is_authenticated:
+                visible |= Q(owner_id=user.id)
+            qs = qs.filter(visible)
         return annotate_listing_queryset(qs, user if user.is_authenticated else None)
 
     def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
@@ -316,9 +328,19 @@ class SavedListingListView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self) -> QuerySet[SavedListing]:
+        user = current_user(self.request)
         return (
-            SavedListing.objects.select_related("listing", "listing__owner")
-            .filter(user=current_user(self.request), listing__is_demo=False)
+            SavedListing.objects.filter(
+                user=user, listing__is_demo=False, listing__deleted_at__isnull=True
+            )
+            .prefetch_related(
+                Prefetch(
+                    "listing",
+                    queryset=annotate_listing_queryset(
+                        Listing.objects.select_related("owner", "source_scan_session"), user
+                    ),
+                )
+            )
             .order_by("-created_at")
         )
 
@@ -369,7 +391,9 @@ class ListingReportListCreateView(generics.ListCreateAPIView):
     def get_queryset(self) -> QuerySet[ListingReport]:
         listing = self.get_listing()
         queryset = listing.reports.select_related("listing", "reporter")
-        if self.request.user.id == listing.owner_id or self.request.user.is_staff:
+        # Only moderators see other people's reports: showing an owner who
+        # reported them turns a safety report into a retaliation target.
+        if self.request.user.is_staff:
             return queryset
         return queryset.filter(reporter=current_user(self.request))
 
@@ -402,7 +426,7 @@ class ListingReportListCreateView(generics.ListCreateAPIView):
 )
 class ListingBulkUpdateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def patch(self, request: Request) -> Response:
         pickup_zone = request.data.get("pickup_zone")
@@ -435,8 +459,7 @@ class ListingBulkUpdateView(APIView):
         )
 
         if listing_ids is not None:
-            if not isinstance(listing_ids, list) or not listing_ids:
-                return Response({"listing_ids": "Provide a non-empty list of listing IDs."}, status=400)
+            listing_ids = parse_int_list(listing_ids, field="listing_ids", max_items=200)
             queryset = queryset.filter(id__in=listing_ids)
             if queryset.count() != len(set(listing_ids)):
                 return Response(
@@ -446,7 +469,12 @@ class ListingBulkUpdateView(APIView):
 
         update_fields: dict[str, Any] = {}
         if pickup_zone is not None:
-            update_fields["pickup_zone"] = pickup_zone.strip()
+            if not isinstance(pickup_zone, str):
+                return Response({"pickup_zone": "Must be text."}, status=400)
+            pickup_zone = pickup_zone.strip()
+            if len(pickup_zone) > 160:
+                return Response({"pickup_zone": "Must be 160 characters or fewer."}, status=400)
+            update_fields["pickup_zone"] = pickup_zone
         if available_until is not None:
             update_fields["available_until"] = available_until
 
@@ -518,10 +546,10 @@ def _generate_copy(prompt: str, max_tokens: int = 300) -> str:
     },
 )
 class GenerateDescriptionView(APIView):
-    """Ask Claude Haiku to draft a listing description from title + metadata."""
+    """Ask the AI model to draft a listing description from title + metadata."""
 
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request) -> Response:
         title = str(request.data.get("title", "")).strip()
@@ -690,13 +718,13 @@ class PricingHintView(APIView):
 )
 class ParseSearchView(APIView):
     """
-    Parse a natural-language search query into structured filter params via Claude Haiku.
+    Parse a natural-language search query into structured filter params via the AI model.
     Example: "storage bins under $10 near north dorms"
       → { search: "storage bins", category: "storage", price_type: "low_cost", pickup_zone_hint: "north dorms" }
     """
 
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     _VALID_CATEGORIES = {"storage", "lighting", "toiletries", "comfort", "supplies", "other"}
     _VALID_PRICE_TYPES = {"free", "low_cost"}
@@ -791,7 +819,7 @@ class RepostListingView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     _EXTEND_DAYS = 7
 
@@ -847,7 +875,7 @@ class DonateListingView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request, pk: int) -> Response:
         listing = get_object_or_404(
@@ -985,7 +1013,7 @@ class ListingAnalyticsView(APIView):
 class VisionAutofillView(APIView):
     """
     POST /api/listings/vision-autofill
-    Accepts a publicly accessible image URL (S3 CDN) and asks Claude to return
+    Accepts a publicly accessible image URL (S3 CDN) and asks the vision model to return
     { title, category, condition, description } for a dorm-item listing.
     Called after the two-step S3 upload so the image is accessible before the
     listing is saved.
@@ -1159,7 +1187,7 @@ class DuplicateCheckView(APIView):
 class RescueSuggestionsView(APIView):
     """
     GET /api/listings/rescue-suggestions
-    For authenticated users with an open RescueRequest, fires the Claude matching
+    For authenticated users with an open RescueRequest, fires the AI matching
     task and returns the suggested listings immediately (or an empty list if no
     open request / no matches).
     """

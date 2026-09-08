@@ -167,23 +167,46 @@ def embed_query(text: str, space: str) -> list[float] | None:
 
 # ── Retrieval ────────────────────────────────────────────────────────────────
 
+def _hashed_document_vector(chunk: KnowledgeChunk) -> list[float]:
+    """Hashed-space vector for a stored chunk, derived from its text on demand.
+
+    Mirrors the document text used at seed time (title doubled) so a fallback
+    query scores exactly as it would against a hashed-space corpus.
+    """
+    return embed(f"{chunk.title}\n{chunk.title}\n{chunk.content}")
+
+
 def retrieve(query: str, limit: int = 3, min_score: float = 0.05) -> list[RetrievedChunk]:
-    """Return the best-matching knowledge chunks for a natural-language query."""
+    """Return the best-matching knowledge chunks for a natural-language query.
+
+    The corpus is compared in its own embedding space. When the corpus lives in
+    the remote space but the embedding API is unreachable (key removed, quota
+    exhausted, outage cooldown), retrieval degrades to the hashed space computed
+    from the stored text instead of returning nothing, so help answers keep
+    their grounding during provider outages.
+    """
     chunks = list(KnowledgeChunk.objects.all())
     if not chunks:
         return []
     space = chunks[0].vector_space or SPACE_HASHED
     query_vec = embed_query(query, space)
+    degraded = False
     if query_vec is None:
-        return []
+        degraded = True
+        space = SPACE_HASHED
+        query_vec = embed(query)
     # Real semantic vectors score higher across the board than lexical ones;
     # each space gets its own floor so thresholds stay meaningful.
     floor = min_score if space == SPACE_HASHED else 0.3
     scored: list[RetrievedChunk] = []
     for chunk in chunks:
-        if (chunk.vector_space or SPACE_HASHED) != space:
+        if degraded:
+            vector = _hashed_document_vector(chunk)
+        elif (chunk.vector_space or SPACE_HASHED) != space:
             continue
-        score = cosine(query_vec, list(chunk.vector))
+        else:
+            vector = list(chunk.vector)
+        score = cosine(query_vec, vector)
         if score >= floor:
             scored.append(
                 {

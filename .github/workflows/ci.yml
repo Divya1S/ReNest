@@ -6,8 +6,18 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
-  DJANGO_SECRET_KEY: ci-test-secret-key-not-for-production
+  # Long enough that Django's own deploy check is satisfied; CI only.
+  DJANGO_SECRET_KEY: ci-only-key-4f9c1d7b0a83e526h9k2m4p6r8t1v3x5z7b9d2f4g6j8l0n2q4s6u8w0y2a4c6e8
+  MAINTENANCE_TOKEN: ci-only-maintenance-token
   DJANGO_DEBUG: "0"
   DJANGO_ALLOWED_HOSTS: ci.renest.test
   CORS_ALLOWED_ORIGINS: https://ci.renest.test
@@ -21,9 +31,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -32,8 +42,20 @@ jobs:
       - name: Install dependencies
         run: pip install -r backend/requirements-dev.txt
 
+      - name: Check for missing migrations
+        working-directory: backend
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Deployment checks (DEBUG=0)
+        working-directory: backend
+        run: python manage.py check --deploy --fail-level ERROR
+
       - name: Run tests (SQLite)
         working-directory: backend
+        # AI keys stay unset so no test can reach a live provider.
+        env:
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
         run: python manage.py test --verbosity 2
 
       - name: Type check (mypy — whole backend)
@@ -55,9 +77,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -83,14 +105,19 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Audit production dependencies
+        working-directory: frontend
+        # Advisory: fails only on a high/critical issue in shipped code.
+        run: npm audit --omit=dev --audit-level=high
+
   e2e:
     name: End-to-end (Playwright)
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -110,7 +137,7 @@ jobs:
 
       - name: Upload report on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report
           path: frontend/playwright-report/

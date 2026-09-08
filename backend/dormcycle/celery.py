@@ -18,6 +18,23 @@ _DLQ_KEY = "celery:dlq"
 _DLQ_MAX = 500  # cap the list so Redis memory is bounded
 
 
+def redis_client():
+    """Low-level Redis client for the dead-letter list, or None without Redis.
+
+    Django's built-in RedisCache exposes no public client (the ``.client``
+    attribute belongs to django-redis, which this project does not use), so
+    connect directly with the broker URL instead.
+    """
+    from django.conf import settings
+
+    url = getattr(settings, "CELERY_BROKER_URL", "") or os.getenv("REDIS_URL", "")
+    if not url:
+        return None
+    import redis
+
+    return redis.Redis.from_url(url, socket_timeout=2, socket_connect_timeout=2)
+
+
 @task_failure.connect
 def on_task_failure(sender, task_id, exception, args, kwargs, traceback, einfo, **_kw):
     """
@@ -35,9 +52,10 @@ def on_task_failure(sender, task_id, exception, args, kwargs, traceback, einfo, 
     )
     try:
         import json
-        from django.core.cache import cache
-        # cache client is the Redis connection when REDIS_URL is set
-        client = cache.client.get_client()  # django-redis low-level client
+
+        client = redis_client()
+        if client is None:
+            return
         payload = json.dumps({
             "task": sender.name,
             "task_id": task_id,
@@ -46,7 +64,8 @@ def on_task_failure(sender, task_id, exception, args, kwargs, traceback, einfo, 
         client.lpush(_DLQ_KEY, payload)
         client.ltrim(_DLQ_KEY, 0, _DLQ_MAX - 1)
     except Exception:
-        pass  # DLQ write is best-effort; the log line is the primary signal
+        # DLQ write is best-effort; the log line above is the primary signal.
+        logger.warning("Could not record task failure in the dead-letter queue", exc_info=True)
 
 
 @task_prerun.connect

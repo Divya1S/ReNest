@@ -60,7 +60,7 @@ export default function ListingFormPage() {
   const editing = Boolean(listingId);
   const { user } = useAuth();
   usePageTitle(editing ? "Edit Listing" : "Create Listing");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const createDraft = usePersistentDraftState({
     key: "listing-create",
     initialValue: initialForm,
@@ -82,6 +82,7 @@ export default function ListingFormPage() {
   const [extraFiles, setExtraFiles] = useState<File[]>([]);
   const [galleryImages, setGalleryImages] = useState<ListingGalleryImage[]>([]);
   const MAX_EXTRA_PHOTOS = 4;
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const form = editing ? editingForm : createDraft.state;
   const setForm = editing ? setEditingForm : createDraft.setState;
 
@@ -218,16 +219,32 @@ export default function ListingFormPage() {
       : "Your listing draft is still in progress. Leaving now may interrupt posting, even though the text fields are autosaved locally.",
   });
 
+  // Mirrors the server's limits (listings/image_utils.py) so the common
+  // rejections are caught before a slow upload, not after it.
+  function rejectUnusableImage(file: File): boolean {
+    if (!file.type.startsWith("image/")) {
+      toast.error(`${file.name} is not an image.`);
+      return true;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      toast.error(`${file.name} is larger than 10 MB. Try a smaller photo.`);
+      return true;
+    }
+    return false;
+  }
+
   function handleAddExtraPhotos(files: File[]) {
     const room = MAX_EXTRA_PHOTOS - galleryImages.length - extraFiles.length;
     if (room <= 0) {
       toast.error(`You can attach up to ${MAX_EXTRA_PHOTOS} extra photos.`);
       return;
     }
-    if (files.length > room) {
+    const usable = files.filter((file) => !rejectUnusableImage(file));
+    if (!usable.length) return;
+    if (usable.length > room) {
       toast.info(`Only ${room} more photo${room !== 1 ? "s" : ""} can be added.`);
     }
-    setExtraFiles((current) => [...current, ...files.slice(0, room)]);
+    setExtraFiles((current) => [...current, ...usable.slice(0, room)]);
   }
 
   async function handleRemoveGalleryImage(imageId: number) {
@@ -328,14 +345,26 @@ export default function ListingFormPage() {
         body: metaPayload,
       });
 
-      // Step 2: upload image via presigned S3 URL, or fall back to multipart PATCH
+      // Step 2: upload image via presigned S3 URL, or fall back to multipart PATCH.
+      // The listing already exists at this point, so a rejected photo must not
+      // send the user back to an empty create form, because resubmitting there would
+      // create a second listing.
       if (form.image) {
-        const uploaded = await _uploadImage(form.image, listing.id);
-        if (!uploaded) {
-          // Fallback: send as multipart
-          const fd = new FormData();
-          fd.append("image", form.image as File);
-          listing = await apiFetch<Listing>(`/listings/${listing.id}`, { method: "PATCH", body: fd });
+        try {
+          const uploaded = await _uploadImage(form.image, listing.id);
+          if (!uploaded) {
+            // Fallback: send as multipart
+            const fd = new FormData();
+            fd.append("image", form.image as File);
+            listing = await apiFetch<Listing>(`/listings/${listing.id}`, { method: "PATCH", body: fd });
+          }
+        } catch (imageError) {
+          toast.error(
+            `Listing saved, but the cover photo was rejected: ${(imageError as Error).message}`,
+          );
+          if (!editing) createDraft.clearDraft({ reset: true });
+          navigate(`/listings/${listing.id}/edit`, { replace: true });
+          return;
         }
       }
 
@@ -619,16 +648,23 @@ export default function ListingFormPage() {
           {fieldErrors.available_until && <p className="text-xs font-semibold text-red-500">{fieldErrors.available_until}</p>}
         </label>
         <div className="sm:col-span-2 space-y-3">
-          <label className="soft-panel flex cursor-pointer items-center gap-3 px-5 py-4 text-sm font-bold text-[color:var(--color-ink)] dark:text-white">
+          {/* sr-only rather than hidden: display:none removes the input from
+              the tab order, leaving no keyboard path to the file picker. */}
+          <label className="soft-panel flex cursor-pointer items-center gap-3 px-5 py-4 text-sm font-bold text-[color:var(--color-ink)] focus-within:ring-2 focus-within:ring-[color:var(--color-tag)] dark:text-white">
             <ImagePlus size={18} />
             <span>{localPreview || previewUrl ? "Replace cover photo" : "Add cover photo"}</span>
             <input
-              className="hidden"
+              className="sr-only"
               type="file"
               accept="image/*"
-              onChange={(event) =>
-                setForm((current) => ({ ...current, image: event.target.files?.[0] || null }))
-              }
+              onChange={(event) => {
+                const file = event.target.files?.[0] || null;
+                if (file && rejectUnusableImage(file)) {
+                  event.target.value = "";
+                  return;
+                }
+                setForm((current) => ({ ...current, image: file }));
+              }}
             />
           </label>
           {localPreview || previewUrl ? (
@@ -639,7 +675,7 @@ export default function ListingFormPage() {
             />
           ) : null}
 
-          <label className="soft-panel flex cursor-pointer items-center gap-3 px-5 py-4 text-sm font-bold text-[color:var(--color-ink)] dark:text-white">
+          <label className="soft-panel flex cursor-pointer items-center gap-3 px-5 py-4 text-sm font-bold text-[color:var(--color-ink)] focus-within:ring-2 focus-within:ring-[color:var(--color-tag)] dark:text-white">
             <Images size={18} />
             <span>
               Add more photos
@@ -648,7 +684,7 @@ export default function ListingFormPage() {
               </span>
             </span>
             <input
-              className="hidden"
+              className="sr-only"
               type="file"
               accept="image/*"
               multiple

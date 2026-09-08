@@ -1,5 +1,5 @@
 import { motion } from "framer-motion";
-import React, { useRef, useState, useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 function clamp(v, lo = 0, hi = 1) {
   return Math.min(hi, Math.max(lo, v));
@@ -62,6 +62,13 @@ export default function HotspotStage({
 }) {
   const stageRef = useRef(null);
 
+  // Hotspot coordinates are normalised against the *image* (both AI detection
+  // and manual drags), while the overlay is positioned against the *stage*.
+  // Those two only agree when the stage has the photo's own aspect ratio: with
+  // a fixed 4:3 box and object-cover, a 3:4 phone photo is cropped and every
+  // AI-detected box lands in the wrong place. Adopt the image's ratio on load.
+  const [imageRatio, setImageRatio] = useState(null);
+
   // Drawing state — for creating a brand-new hotspot
   const [drawStart, setDrawStart] = useState(null);
   const [draftBox, setDraftBox] = useState(null);
@@ -72,6 +79,10 @@ export default function HotspotStage({
   const [liveBox, setLiveBox] = useState(null); // { id, box } live preview while dragging
 
   const resolvedHotspots = useMemo(() => hotspots || [], [hotspots]);
+
+  useEffect(() => {
+    setImageRatio(null);
+  }, [image?.image_url]);
 
   function getPos(event) {
     const bounds = stageRef.current?.getBoundingClientRect();
@@ -162,7 +173,10 @@ export default function HotspotStage({
   return (
     <div
       ref={stageRef}
-      className="scan-stage aspect-[4/3] touch-none select-none"
+      className="scan-stage touch-none select-none"
+      style={{ aspectRatio: imageRatio || "4 / 3" }}
+      role="group"
+      aria-label="Room photo with item hotspots"
       onPointerDown={onStageDown}
       onPointerMove={onMove}
       onPointerUp={onUp}
@@ -174,6 +188,10 @@ export default function HotspotStage({
           alt={`Room scan ${image.position}`}
           className="h-full w-full object-cover pointer-events-none"
           draggable={false}
+          onLoad={(event) => {
+            const { naturalWidth, naturalHeight } = event.currentTarget;
+            if (naturalWidth && naturalHeight) setImageRatio(`${naturalWidth} / ${naturalHeight}`);
+          }}
         />
       ) : (
         /* Empty stage teaches the gesture: a ghost hotspot with a gold handle */

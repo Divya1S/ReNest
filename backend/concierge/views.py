@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import queue
@@ -119,7 +120,19 @@ class ConciergeChatStreamView(APIView):
             while (item := events.get()) is not None:
                 yield f"data: {json.dumps(item)}\n\n"
 
-        response = StreamingHttpResponse(stream(), content_type="text/event-stream")
+        async def astream() -> Any:
+            # Under ASGI (uvicorn in production) Django buffers a *synchronous*
+            # iterator completely before sending anything, which defeats the
+            # point of SSE: the client would receive every phase event at once
+            # when the turn finished. An async generator streams as intended.
+            # The blocking queue read is offloaded so the event loop stays free.
+            while (item := await asyncio.to_thread(events.get)) is not None:
+                yield f"data: {json.dumps(item)}\n\n"
+
+        is_asgi = getattr(request, "scope", None) is not None
+        response = StreamingHttpResponse(
+            astream() if is_asgi else stream(), content_type="text/event-stream"
+        )
         response["Cache-Control"] = "no-cache"
         response["X-Accel-Buffering"] = "no"  # never proxy-buffer SSE
         return response

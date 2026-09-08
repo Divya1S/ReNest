@@ -9,6 +9,8 @@ from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.tokens import default_token_generator
 from django.core import signing
 from django.core.mail import send_mail
+from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
@@ -163,6 +165,7 @@ class MeView(APIView):
                 "onboarding_step": drf_serializers.IntegerField(min_value=0, max_value=3, required=False),
                 "display_name": drf_serializers.CharField(max_length=120, required=False),
                 "campus_name": drf_serializers.CharField(max_length=120, required=False, allow_blank=True),
+                "show_on_leaderboard": drf_serializers.BooleanField(required=False),
             },
         ),
         responses={200: UserSerializer},
@@ -190,6 +193,13 @@ class MeView(APIView):
                 return Response({"campus_name": "Keep it under 120 characters."}, status=400)
             request.user.campus_name = campus_name
             update_fields.append("campus_name")
+
+        show_on_leaderboard = request.data.get("show_on_leaderboard")
+        if show_on_leaderboard is not None:
+            if not isinstance(show_on_leaderboard, bool):
+                return Response({"show_on_leaderboard": "Must be true or false."}, status=400)
+            request.user.show_on_leaderboard = show_on_leaderboard
+            update_fields.append("show_on_leaderboard")
 
         step = request.data.get("onboarding_step")
         if step is not None:
@@ -227,27 +237,30 @@ class PasswordResetRequestView(APIView):
         serializer.is_valid(raise_exception=True)
         email = serializer.validated_data["email"]
 
-        try:
-            user = User.objects.get(email=email)
+        user = User.objects.filter(email__iexact=email).first()
+        if user is not None:
             uid = urlsafe_base64_encode(force_bytes(user.pk))
             token = default_token_generator.make_token(user)
             reset_url = (
                 f"{settings.APP_BASE_URL}/password-reset/confirm?uid={uid}&token={token}"
             )
-            send_mail(
-                subject="Reset your ReNest password",
-                message=(
-                    f"Hi {user.display_name or user.email},\n\n"
-                    f"Click the link below to reset your password. "
-                    f"It expires in 1 hour.\n\n{reset_url}\n\n"
-                    "If you didn't request this, you can safely ignore this email."
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[email],
-                fail_silently=False,
-            )
-        except User.DoesNotExist:
-            pass  # Don't reveal whether the email exists
+            try:
+                send_mail(
+                    subject="Reset your ReNest password",
+                    message=(
+                        f"Hi {user.display_name or user.email},\n\n"
+                        f"Click the link below to reset your password. "
+                        f"It expires in 1 hour.\n\n{reset_url}\n\n"
+                        "If you didn't request this, you can safely ignore this email."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+            except Exception:
+                # A mail-server failure must not turn into a 500 that tells the
+                # caller this address is registered.
+                logger.warning("Password reset email failed for %s", email, exc_info=True)
 
         return Response(
             {"detail": "If an account exists with that email, a reset link has been sent."}
@@ -358,21 +371,45 @@ _UNSUBSCRIBE_SALT = "email-unsubscribe"
 _UNSUBSCRIBE_MAX_AGE = 90 * 24 * 3600  # 90 days
 
 
+def make_unsubscribe_token(user: User) -> str:
+    return signing.dumps(user.pk, salt=_UNSUBSCRIBE_SALT)
+
+
 def make_unsubscribe_url(user: User) -> str:
-    token = signing.dumps(user.pk, salt=_UNSUBSCRIBE_SALT)
-    return f"{settings.APP_BASE_URL}/unsubscribe?token={token}"
+    """Human-facing link: the SPA page that confirms the opt-out."""
+    return f"{settings.APP_BASE_URL}/unsubscribe?token={make_unsubscribe_token(user)}"
+
+
+def make_unsubscribe_api_url(user: User) -> str:
+    """Machine-facing link for the RFC 8058 List-Unsubscribe header.
+
+    Mail providers POST to this URL, so it must be the API endpoint (the SPA
+    catch-all only answers GET).
+    """
+    return f"{settings.APP_BASE_URL}/api/auth/unsubscribe?token={make_unsubscribe_token(user)}"
 
 
 class EmailUnsubscribeView(APIView):
     """
-    GET /api/auth/unsubscribe?token=...
+    GET/POST /api/auth/unsubscribe?token=...
     One-click unsubscribe link embedded in every transactional email.
     The token is a signed user PK (valid 90 days).
+
+    POST is what RFC 8058 mail providers use for their one-click button; both
+    verbs are idempotent and the signed token is the only credential, so no
+    session or CSRF token is involved.
     """
     permission_classes = [permissions.AllowAny]
+    authentication_classes: list[Any] = []
 
     def get(self, request: Request) -> Response:
-        token = request.query_params.get("token", "")
+        return self._unsubscribe(request)
+
+    def post(self, request: Request) -> Response:
+        return self._unsubscribe(request)
+
+    def _unsubscribe(self, request: Request) -> Response:
+        token = request.query_params.get("token", "") or str(request.data.get("token", ""))
         try:
             pk = signing.loads(token, salt=_UNSUBSCRIBE_SALT, max_age=_UNSUBSCRIBE_MAX_AGE)
         except (signing.SignatureExpired, signing.BadSignature):
@@ -400,6 +437,7 @@ class AccountDeleteView(APIView):
         ),
         responses={200: MessageSerializer},
     )
+    @transaction.atomic
     def delete(self, request: Request) -> Response:
         password = request.data.get("password", "")
         if not request.user.check_password(password):
@@ -408,39 +446,68 @@ class AccountDeleteView(APIView):
         user = current_user(request)
         anon_id = _uuid.uuid4().hex[:12]
 
-        # Anonymise PII in-place
+        from listings.models import (
+            Listing,
+            NotificationPreference,
+            PushSubscription,
+            Reservation,
+            SavedListing,
+            SavedSearch,
+        )
+        from listings.services import cancel_reservation
+
+        # 1. Release anything the counterparty is waiting on: an account that
+        #    disappears must not leave a listing stuck RESERVED forever.
+        live = [Reservation.Status.REQUESTED, Reservation.Status.CONFIRMED]
+        open_reservations = Reservation.objects.filter(
+            Q(claimant=user) | Q(listing__owner=user), status__in=live
+        ).select_related("listing")
+        for reservation in open_reservations:
+            try:
+                cancel_reservation(reservation, previous_status=Reservation.Status.REQUESTED)
+            except Exception:
+                logger.exception("Could not cancel reservation %s during account deletion", reservation.pk)
+
+        # 2. Soft-delete the user's listings and drop their uploaded files.
+        owned = Listing.objects.filter(owner=user, deleted_at__isnull=True)
+        for listing in owned.iterator(chunk_size=200):
+            for image in listing.images.all():
+                image.image.delete(save=False)
+            if listing.image:
+                listing.image.delete(save=False)
+        owned.update(deleted_at=timezone.now())
+
+        # 3. Delete the personal records that carry no value to anyone else.
+        PushSubscription.objects.filter(user=user).delete()
+        NotificationPreference.objects.filter(user=user).delete()
+        SavedListing.objects.filter(user=user).delete()
+        SavedSearch.objects.filter(user=user).delete()
+        user.notifications.all().delete()
+        try:
+            from concierge.models import ConciergeThread
+
+            ConciergeThread.objects.filter(user=user).delete()
+        except Exception:
+            logger.exception("Could not remove concierge history during account deletion")
+
+        # 4. Anonymise what must stay for the counterparties' own records
+        #    (handoff history, feedback), and lock the account out.
         User.objects.filter(pk=user.pk).update(
-            email=f"deleted-{anon_id}@dormcycle.invalid",
+            email=f"deleted-{anon_id}@renest.invalid",
             display_name="Deleted User",
             campus_name="",
+            campus=None,
             is_active=False,
             email_notifications=False,
+            email_verified=False,
             referred_by=None,
+            category_affinity={},
         )
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
 
-        # Remove sessions and push subscriptions
-        try:
-            engine = import_module(settings.SESSION_ENGINE)
-            engine.SessionStore.clear_expired()
-        except Exception:
-            pass
+        # 5. End the session on this device.
         request.session.flush()
-
-        try:
-            from listings.models import PushSubscription
-            PushSubscription.objects.filter(user=user).delete()
-        except Exception:
-            pass
-
-        # Soft-delete all the user's listings
-        try:
-            from listings.models import Listing
-            Listing.objects.filter(owner=user, deleted_at__isnull=True).update(
-                deleted_at=timezone.now()
-            )
-        except Exception:
-            pass
-
         logout(request)
 
         return Response({"detail": "Account deleted."})
@@ -457,38 +524,75 @@ class DataExportView(APIView):
     def get(self, request: Request) -> Response:
         user = current_user(request)
 
-        try:
-            from listings.models import Listing, Reservation, ReservationMessage
-            listings = list(
-                Listing.objects.filter(owner=user, is_demo=False)
-                .values("id", "title", "description", "category", "condition",
-                        "status", "price_type", "price_amount", "pickup_zone",
-                        "available_until", "created_at")
-            )
-            reservations = list(
-                Reservation.objects.filter(claimant=user)
-                .values("id", "status", "pickup_time_window", "created_at",
-                        "listing__title", "listing__owner__display_name")
-            )
-            messages = list(
-                ReservationMessage.objects.filter(sender=user)
-                .values("id", "body", "created_at", "reservation_id")
-            )
-        except Exception:
-            listings, reservations, messages = [], [], []
+        # No blanket try/except here: a query error must surface as a logged
+        # 500, not as a plausible-looking but empty archive.
+        from listings.models import (
+            Listing,
+            Notification,
+            Reservation,
+            ReservationMessage,
+            RoomScanSession,
+            SavedListing,
+            SavedSearch,
+        )
 
-        return Response({
+        payload = {
+            "exported_at": timezone.now().isoformat(),
             "user": {
                 "id": user.pk,
                 "email": user.email,
                 "display_name": user.display_name,
                 "campus_name": user.campus_name,
+                "campus": user.campus.name if user.campus else None,
+                "email_verified": user.email_verified,
                 "created_at": user.created_at.isoformat() if user.created_at else None,
             },
-            "listings": listings,
-            "reservations": reservations,
-            "messages": messages,
-        })
+            "listings": list(
+                Listing.objects.filter(owner=user, is_demo=False).values(
+                    "id", "title", "description", "category", "condition",
+                    "status", "price_type", "price_amount", "pickup_zone",
+                    "available_until", "created_at",
+                )
+            ),
+            "reservations": list(
+                Reservation.objects.filter(Q(claimant=user) | Q(listing__owner=user)).values(
+                    "id", "status", "pickup_time_window", "created_at",
+                    "listing__title", "listing__owner__display_name",
+                )
+            ),
+            "messages": list(
+                ReservationMessage.objects.filter(sender=user).values(
+                    "id", "body", "created_at", "reservation_id"
+                )
+            ),
+            "saved_listings": list(
+                SavedListing.objects.filter(user=user).values("listing_id", "listing__title", "created_at")
+            ),
+            "saved_searches": list(
+                SavedSearch.objects.filter(user=user).values(
+                    "id", "label", "keyword", "category", "price_type", "created_at"
+                )
+            ),
+            "scan_sessions": list(
+                RoomScanSession.objects.filter(owner=user, is_demo=False).values(
+                    "id", "name", "room_label", "status", "move_out_deadline", "created_at"
+                )
+            ),
+            "notifications": list(
+                Notification.objects.filter(user=user).values("id", "type", "title", "body", "created_at")
+            ),
+        }
+        try:
+            from concierge.models import ConciergeMessage
+
+            payload["concierge_messages"] = list(
+                ConciergeMessage.objects.filter(thread__user=user).values("id", "role", "content", "created_at")
+            )
+        except Exception:
+            logger.exception("Concierge history could not be included in the data export")
+            payload["concierge_messages"] = []
+
+        return Response(payload)
 
 
 # ---------- Phase 17 — Impact Card ----------
@@ -648,7 +752,7 @@ class CampusPublicStatsView(APIView):
             .annotate(count=Count("id"))
             .order_by("-count")[:3]
         )
-        top_categories = [{"category": r["listing__category"], "count": r["count"]} for r in top_cats]  # type: ignore[index]  # .values() rows are dicts
+        top_categories = [{"category": r["listing__category"], "count": r["count"]} for r in top_cats]
 
         data = {
             "id": campus.id,

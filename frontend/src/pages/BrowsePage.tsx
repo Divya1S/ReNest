@@ -33,6 +33,8 @@ const CATEGORIES = [
   { label: "Toiletries", value: "toiletries" },
   { label: "Comfort", value: "comfort" },
   { label: "Supplies", value: "supplies" },
+  { label: "Decor", value: "decor" },
+  { label: "Other", value: "other" },
 ];
 
 const PRICE_OPTIONS = [
@@ -58,6 +60,7 @@ export default function BrowsePage() {
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState("");
   const [error, setError] = useState("");
   const [retryKey, setRetryKey] = useState(0);
   const [page, setPage] = useState(1);
@@ -96,9 +99,10 @@ export default function BrowsePage() {
     const controller = new AbortController();
 
     async function load() {
+      setError("");
+      setLoadMoreError("");
       if (page === 1) {
         setLoading(true);
-        setError("");
       } else {
         setLoadingMore(true);
       }
@@ -121,7 +125,15 @@ export default function BrowsePage() {
         setHasMore(!!data.next);
       } catch (requestError) {
         const re = requestError as Error;
-        if (re.name !== "AbortError") setError(re.message);
+        if (re.name === "AbortError") {
+          // Superseded by a newer request; not a user-visible failure.
+        } else if (page === 1) {
+          setError(re.message);
+        } else {
+          // Keep the loaded grid and offer a retry inline instead of replacing
+          // everything the user is already looking at with an error panel.
+          setLoadMoreError(re.message);
+        }
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
@@ -182,7 +194,7 @@ export default function BrowsePage() {
     } finally {
       setNlParsing(false);
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);  
 
   const removeNlChip = useCallback((field: string) => {
     setNlChips((prev) => prev.filter((c) => c.field !== field));
@@ -190,7 +202,7 @@ export default function BrowsePage() {
       if (field === "category") setCategory("");
       if (field === "price_type") setPriceType("");
     });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);  
 
   const resetFilters = useCallback(() => {
     setSearchInput("");
@@ -605,6 +617,19 @@ export default function BrowsePage() {
         {loadingMore && (
           <div className="mt-6 flex justify-center">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-[color:var(--color-tag)] border-t-transparent" />
+          </div>
+        )}
+        {loadMoreError && !loadingMore && (
+          <div role="alert" className="mt-6 flex flex-col items-center gap-2 text-center">
+            <p className="text-[13px] text-[color:var(--text-muted)]">
+              Could not load more listings. {loadMoreError}
+            </p>
+            <button
+              onClick={() => setRetryKey((k) => k + 1)}
+              className="rounded-full border border-black/10 px-5 py-2 text-[13px] font-semibold transition-colors hover:bg-[color:var(--color-surface)] dark:border-white/10"
+            >
+              Retry
+            </button>
           </div>
         )}
 

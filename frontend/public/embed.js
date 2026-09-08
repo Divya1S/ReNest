@@ -7,15 +7,24 @@
  *
  * The script finds every [data-renest-campus] element and renders
  * a live listing grid inside it. No authentication required.
+ *
+ * This runs on third-party pages, so every value from the API is inserted
+ * through DOM APIs (textContent / setAttribute) rather than by building an
+ * HTML string. Concatenating listing text or image URLs into innerHTML would
+ * make any listing a stored-XSS vector on every partner site.
  */
 (function () {
   "use strict";
 
   var API_BASE = (function () {
-    var scripts = document.getElementsByTagName("script");
-    var src = scripts[scripts.length - 1].src || "";
-    var m = src.match(/^(https?:\/\/[^/]+)/);
-    return m ? m[1] : "";
+    // document.currentScript is the script being executed, which is correct
+    // whether the tag is deferred, async or inline. Reading the *last* script
+    // in the document (the previous approach) resolves to an unrelated script
+    // under the documented `defer` usage.
+    var self = document.currentScript;
+    var src = (self && self.src) || "";
+    var match = src.match(/^(https?:\/\/[^/]+)/);
+    return match ? match[1] : "";
   })();
 
   var CARD_CSS = [
@@ -38,55 +47,93 @@
     document.head.appendChild(s);
   }
 
+  function el(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function setMessage(container, text) {
+    container.textContent = "";
+    container.appendChild(el("p", "dc-empty", text));
+  }
+
+  /** Only http(s) image URLs are allowed; anything else renders a placeholder. */
+  function safeImageUrl(value) {
+    if (typeof value !== "string" || !value) return "";
+    try {
+      var parsed = new URL(value, API_BASE || window.location.origin);
+      return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+    } catch (err) {
+      return "";
+    }
+  }
+
   function renderGrid(container, data, baseUrl) {
-    var items = data.results || [];
+    var items = (data && data.results) || [];
     if (!items.length) {
-      container.innerHTML = '<p class="dc-empty">No items available right now.</p>';
+      setMessage(container, "No items available right now.");
       return;
     }
     var limit = parseInt(container.dataset.renestLimit, 10) || 6;
     items = items.slice(0, limit);
-    var html = '<div class="dc-grid">';
-    items.forEach(function (item) {
-      var price = item.price_type === "free" ? "Free" : ("$" + parseFloat(item.price_amount || 0).toFixed(0));
-      var img = item.image_cdn_url
-        ? '<img class="dc-img" src="' + item.image_cdn_url + '" alt="" loading="lazy">'
-        : '<div class="dc-img"></div>';
-      html += [
-        '<a class="dc-card" href="' + baseUrl + '/listings/' + item.id + '" target="_blank" rel="noopener">',
-        img,
-        '<div class="dc-body">',
-        '<p class="dc-title">' + escHtml(item.title) + "</p>",
-        '<div class="dc-meta">',
-        '<span class="dc-cat">' + escHtml(item.category || "") + "</span>",
-        "<span>" + escHtml(price) + "</span>",
-        "</div></div></a>",
-      ].join("");
-    });
-    html += "</div>";
-    container.innerHTML = html;
-  }
 
-  function escHtml(str) {
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    var grid = el("div", "dc-grid");
+    items.forEach(function (item) {
+      var id = parseInt(item.id, 10);
+      if (!id) return;
+
+      var price =
+        item.price_type === "free"
+          ? "Free"
+          : "$" + (parseFloat(item.price_amount) || 0).toFixed(0);
+
+      var card = el("a", "dc-card");
+      card.href = baseUrl + "/listings/" + id;
+      card.target = "_blank";
+      card.rel = "noopener";
+
+      var imageUrl = safeImageUrl(item.image_url || item.image_cdn_url);
+      if (imageUrl) {
+        var img = el("img", "dc-img");
+        img.src = imageUrl;
+        img.alt = "";
+        img.loading = "lazy";
+        card.appendChild(img);
+      } else {
+        card.appendChild(el("div", "dc-img"));
+      }
+
+      var body = el("div", "dc-body");
+      body.appendChild(el("p", "dc-title", item.title || "Untitled"));
+      var meta = el("div", "dc-meta");
+      meta.appendChild(el("span", "dc-cat", item.category || ""));
+      meta.appendChild(el("span", null, price));
+      body.appendChild(meta);
+      card.appendChild(body);
+      grid.appendChild(card);
+    });
+
+    container.textContent = "";
+    container.appendChild(grid);
   }
 
   function init() {
     injectStyles();
     var containers = document.querySelectorAll("[data-renest-campus]");
-    containers.forEach(function (el) {
-      var slug = el.dataset.renestCampus;
+    Array.prototype.forEach.call(containers, function (node) {
+      var slug = node.dataset.renestCampus;
       if (!slug) return;
-      el.innerHTML = '<p class="dc-empty">Loading…</p>';
+      setMessage(node, "Loading…");
       fetch(API_BASE + "/api/embed/" + encodeURIComponent(slug) + "/listings")
-        .then(function (r) { return r.json(); })
-        .then(function (data) { renderGrid(el, data, API_BASE); })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (data) { renderGrid(node, data, API_BASE); })
         .catch(function () {
-          el.innerHTML = '<p class="dc-empty">Could not load listings.</p>';
+          setMessage(node, "Could not load listings.");
         });
     });
   }

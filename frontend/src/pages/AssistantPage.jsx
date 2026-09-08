@@ -7,8 +7,7 @@ import { useConciergeChat } from "../components/concierge/useConciergeChat";
 /**
  * Full-page surface for the Nest Concierge. Same thread, same backend, same
  * conversation core as the floating widget — this page just gives long
- * conversations room to breathe (and replaces the retired Claude-based
- * move-out assistant that used to live at this route).
+ * conversations room to breathe.
  */
 export default function AssistantPage() {
   const chat = useConciergeChat(true);

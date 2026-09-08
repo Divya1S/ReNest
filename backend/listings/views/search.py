@@ -5,6 +5,7 @@ import logging
 import math
 
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.db.models import Count, Q
 from django.utils import timezone
 from rest_framework import serializers, status
@@ -13,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import BuildingCoord, Listing, ListingViewEvent, SavedSearch
+from .helpers import parse_int, visible_listing_queryset
 from dormcycle.typed import current_user
 from typing import Any
 
@@ -73,15 +75,14 @@ class SemanticSearchView(APIView):
     """
 
     def post(self, request: Request) -> Response:
-        query = request.data.get("query", "").strip()
-        limit = min(int(request.data.get("limit", 20)), 50)
+        query = str(request.data.get("query", "")).strip()[:200]
+        limit = parse_int(request.data.get("limit"), field="limit", default=20, minimum=1, maximum=50) or 20
         if not query:
             return Response({"detail": "query is required."}, status=400)
 
-        campus = current_user(request).campus
-        qs = Listing.objects.filter(
-            status=Listing.Status.AVAILABLE,
-        )
+        user = current_user(request)
+        campus = user.campus
+        qs = visible_listing_queryset(user).filter(status=Listing.Status.AVAILABLE)
         if campus:
             qs = qs.filter(owner__campus=campus)
 
@@ -124,8 +125,9 @@ class MapDataView(APIView):
     """
 
     def get(self, request: Request) -> Response:
-        campus = current_user(request).campus
-        qs = Listing.objects.filter(
+        user = current_user(request)
+        campus = user.campus
+        qs = visible_listing_queryset(user).filter(
             status=Listing.Status.AVAILABLE,
             building__gt="",
         )
@@ -188,16 +190,22 @@ class BuildingCoordListCreateView(APIView):
         if not campus:
             return Response({"detail": "No campus assigned."}, status=400)
 
-        building = request.data.get("building", "").strip()
+        building = str(request.data.get("building", "")).strip()[:120]
         lat = request.data.get("latitude")
         lng = request.data.get("longitude")
         if not building or lat is None or lng is None:
             return Response({"detail": "building, latitude, and longitude required."}, status=400)
+        try:
+            lat_value, lng_value = float(lat), float(lng)
+        except (TypeError, ValueError):
+            return Response({"detail": "latitude and longitude must be numbers."}, status=400)
+        if not (-90 <= lat_value <= 90) or not (-180 <= lng_value <= 180):
+            return Response({"detail": "latitude/longitude are out of range."}, status=400)
 
         coord, _ = BuildingCoord.objects.update_or_create(
             campus=campus,
             building=building,
-            defaults={"latitude": float(lat), "longitude": float(lng)},
+            defaults={"latitude": lat_value, "longitude": lng_value},
         )
         return Response(BuildingCoordSerializer(coord).data, status=201)
 
@@ -225,26 +233,32 @@ class TrendingListingsView(APIView):
         from datetime import timedelta as _timedelta
 
         cutoff = timezone.now() - _timedelta(hours=6)
+        events = ListingViewEvent.objects.filter(
+            viewed_at__gte=cutoff,
+            listing__is_demo=False,
+            listing__status=Listing.Status.AVAILABLE,
+        )
+        if campus:
+            # Scope the aggregate itself: taking a global top-20 and filtering
+            # afterwards leaves smaller campuses with an empty strip.
+            events = events.filter(listing__owner__campus=campus)
         qs = (
-            ListingViewEvent.objects.filter(viewed_at__gte=cutoff)
-            .values("listing_id")
+            events.values("listing_id")
             .annotate(view_count=Count("id"))
             .order_by("-view_count")[:20]
         )
 
-        listing_ids = [row["listing_id"] for row in qs]  # type: ignore[index]  # .values() rows are dicts
+        listing_ids = [row["listing_id"] for row in qs]
         listings_map = {
             l.id: l
-            for l in Listing.objects.filter(
-                pk__in=listing_ids,
-                status=Listing.Status.AVAILABLE,
-                **({} if not campus else {"owner__campus": campus}),
+            for l in visible_listing_queryset(current_user(request)).filter(
+                pk__in=listing_ids, status=Listing.Status.AVAILABLE
             )
         }
 
         results = []
         for row in qs:
-            listing = listings_map.get(row["listing_id"])  # type: ignore[index]  # .values() rows are dicts
+            listing = listings_map.get(row["listing_id"])
             if listing:
                 results.append({
                     "id": listing.id,
@@ -253,7 +267,7 @@ class TrendingListingsView(APIView):
                     "price_type": listing.price_type,
                     "price_amount": str(listing.price_amount),
                     "image": listing.image_cdn_url,
-                    "view_count": row["view_count"],  # type: ignore[index]  # .values() rows are dicts
+                    "view_count": row["view_count"],
                 })
             if len(results) >= 6:
                 break
@@ -277,12 +291,17 @@ class SavedSearchListCreateView(APIView):
         return Response(SavedSearchSerializer(qs, many=True).data)
 
     def post(self, request: Request) -> Response:
-        if SavedSearch.objects.filter(user=current_user(request)).count() >= 5:
+        user = current_user(request)
+        if SavedSearch.objects.filter(user=user).count() >= 5:
             return Response({"detail": "Maximum 5 saved searches allowed."}, status=400)
 
         ser = SavedSearchSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        ser.save(user=request.user)
+        try:
+            ser.save(user=request.user)
+        except IntegrityError:
+            # unique_saved_search: the same preset already exists.
+            return Response({"detail": "You already saved this search."}, status=409)
         return Response(ser.data, status=201)
 
 

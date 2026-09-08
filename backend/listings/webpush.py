@@ -86,9 +86,10 @@ def send_push(subscription: PushSubscription, *, title: str, body: str, url: str
         )
         return True
     except Exception as exc:
-        # 410 Gone means the subscription is no longer valid — delete it
+        # 404/410 mean the endpoint no longer exists, so delete the subscription
+        # so the same dead endpoint is not retried on every future send.
         status = getattr(exc, "response", None)
-        if status is not None and getattr(status, "status_code", None) == 410:
+        if status is not None and getattr(status, "status_code", None) in (404, 410):
             logger.info("Push subscription expired, deleting: %s", subscription.pk)
             subscription.delete()
         else:
@@ -120,7 +121,9 @@ def send_push_to_user(user: Any, *, title: str, body: str, url: str = "/dashboar
         _enqueue_quiet(user, title=title, body=body, url=url, notification_type=notification_type)
         return 0
 
-    subs = PS.objects.filter(user=user)
+    # Native (APNs/FCM) tokens are not VAPID endpoints; sending to them always
+    # fails. They are delivered by the mobile shell's own channel.
+    subs = PS.objects.filter(user=user, platform=PS.Platform.WEB)
     return sum(send_push(s, title=title, body=body, url=url) for s in subs)
 
 
@@ -136,7 +139,6 @@ def _get_push_channel(user: Any, notification_type: str) -> str:
 
 def _is_quiet_hours(user: Any, notification_type: str) -> bool:
     """Return True if current campus-local time is within the user's quiet window."""
-    import datetime
     from django.utils import timezone
     from .models import NotificationPreference
 
@@ -149,9 +151,10 @@ def _is_quiet_hours(user: Any, notification_type: str) -> bool:
     end = pref.quiet_hours_end if pref else None
 
     if start is None or end is None:
-        # Default quiet window: 23:00–08:00
-        start = datetime.time(23, 0)
-        end = datetime.time(8, 0)
+        # No quiet window configured: deliver. Applying a default window here
+        # would silently hold notifications for every user who never opened
+        # the preferences page.
+        return False
 
     tz_name = getattr(getattr(user, "campus", None), "timezone", None) or "America/Los_Angeles"
     try:

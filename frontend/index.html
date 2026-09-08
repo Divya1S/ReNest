@@ -42,18 +42,9 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <!-- Weight 800 is unused in the app; loading only the weights we render -->
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet" />
-    <script>
-      (function() {
-        try {
-          var theme = localStorage.getItem('renest-theme');
-          // No saved choice yet → follow the OS preference
-          if (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            theme = 'dark';
-          }
-          if (theme === 'dark') document.documentElement.classList.add('dark');
-        } catch(e) {}
-      })();
-    </script>
+    <!-- Same-origin (not inline) so it runs under script-src 'self'. Must stay
+         a blocking classic script: it sets the theme class before first paint. -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

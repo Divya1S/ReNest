@@ -21,10 +21,18 @@ function safeReadDraft(storageKey) {
   }
 }
 
-function valuesMatch(left, right) {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
+/**
+ * Form state that survives a reload, autosaved to localStorage.
+ *
+ * Callers pass `serialize`/`deserialize` as inline arrow functions, so those
+ * props change identity on every render. Everything derived from them is
+ * therefore keyed on the serialized *value* (a JSON string), never on object
+ * identity: a previous version depended on the freshly-built object and wrote a
+ * new `lastSavedAt` on each run, so the effect re-triggered itself in a render
+ * loop bounded only by wall-clock time. That showed up as a per-keystroke
+ * localStorage write storm in the browser and as a 5-second test timeout under
+ * load in CI.
+ */
 export function usePersistentDraftState({
   key,
   initialValue,
@@ -34,16 +42,29 @@ export function usePersistentDraftState({
   deserialize = (storedValue, fallback) => ({ ...fallback, ...storedValue }),
 } = {}) {
   const storageKey = useMemo(() => getStorageKey(key, version), [key, version]);
-  const initialSnapshot = useMemo(() => serialize(initialValue), [initialValue, serialize]);
-  const initialSnapshotRef = useRef(initialSnapshot);
+
+  // Held in refs so an inline arrow prop cannot invalidate memos or effects.
+  const serializeRef = useRef(serialize);
+  const deserializeRef = useRef(deserialize);
+  serializeRef.current = serialize;
+  deserializeRef.current = deserialize;
+
+  const initialValueRef = useRef(initialValue);
+  initialValueRef.current = initialValue;
+
   const hydratedKeyRef = useRef("");
   const [state, setState] = useState(initialValue);
   const [lastSavedAt, setLastSavedAt] = useState(null);
   const [restoredAt, setRestoredAt] = useState(null);
 
-  useEffect(() => {
-    initialSnapshotRef.current = initialSnapshot;
-  }, [initialSnapshot]);
+  const serializedState = useMemo(() => serializeRef.current(state), [state]);
+  const serializedJson = useMemo(() => JSON.stringify(serializedState), [serializedState]);
+  // Captured once: the pristine form the draft is compared against.
+  const initialJsonRef = useRef(null);
+  if (initialJsonRef.current === null) {
+    initialJsonRef.current = JSON.stringify(serializeRef.current(initialValue));
+  }
+  const isDirty = serializedJson !== initialJsonRef.current;
 
   useEffect(() => {
     if (!enabled) {
@@ -58,16 +79,16 @@ export function usePersistentDraftState({
     const stored = safeReadDraft(storageKey);
 
     if (!stored?.data) {
-      setState(initialValue);
+      setState(initialValueRef.current);
       setLastSavedAt(null);
       setRestoredAt(null);
       return;
     }
 
-    setState(deserialize(stored.data, initialValue));
+    setState(deserializeRef.current(stored.data, initialValueRef.current));
     setLastSavedAt(stored.savedAt || null);
     setRestoredAt(Date.now());
-  }, [deserialize, enabled, initialValue, storageKey]);
+  }, [enabled, storageKey]);
 
   const clearDraft = useCallback(
     ({ reset = false } = {}) => {
@@ -77,27 +98,22 @@ export function usePersistentDraftState({
       setLastSavedAt(null);
       setRestoredAt(null);
       if (reset) {
-        setState(initialValue);
+        setState(initialValueRef.current);
       }
     },
-    [initialValue, storageKey],
+    [storageKey],
   );
 
-  const serializedState = useMemo(() => serialize(state), [serialize, state]);
-  const isDirty = !valuesMatch(serializedState, initialSnapshotRef.current);
-
+  // Autosave. Keyed on the serialized JSON, so it runs when the form's content
+  // actually changes and not merely because a prop was re-created.
   useEffect(() => {
-    if (!enabled) {
-      return;
-    }
-
-    if (!canUseStorage()) {
+    if (!enabled || !canUseStorage()) {
       return;
     }
 
     if (!isDirty) {
       window.localStorage.removeItem(storageKey);
-      setLastSavedAt(null);
+      setLastSavedAt((current) => (current === null ? current : null));
       return;
     }
 
@@ -105,16 +121,13 @@ export function usePersistentDraftState({
     try {
       window.localStorage.setItem(
         storageKey,
-        JSON.stringify({
-          savedAt,
-          data: serializedState,
-        }),
+        JSON.stringify({ savedAt, data: JSON.parse(serializedJson) }),
       );
       setLastSavedAt(savedAt);
     } catch {
       // Ignore quota/storage errors so the form stays fully usable.
     }
-  }, [enabled, isDirty, serializedState, storageKey]);
+  }, [enabled, isDirty, serializedJson, storageKey]);
 
   return {
     state,

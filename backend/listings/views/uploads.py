@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 
@@ -14,6 +15,8 @@ from ..models import Listing
 from ..permissions import IsEmailVerified
 from dormcycle.typed import current_user
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME", "")
 _S3_REGION = os.getenv("AWS_S3_REGION_NAME", "us-east-1")
@@ -114,10 +117,14 @@ class ListingUploadUrlView(APIView):
                 },
                 ExpiresIn=_UPLOAD_EXPIRY,
             )
-        except Exception as exc:
-            return Response({"detail": f"Could not generate upload URL: {exc}"}, status=502)
+        except Exception:
+            # The boto3 message can name buckets, regions and credentials.
+            logger.exception("Presigned upload URL generation failed for listing %s", pk)
+            return Response({"detail": "Could not generate an upload URL. Try again shortly."}, status=502)
 
-        cdn_base = os.getenv("AWS_S3_CDN_BASE_URL", f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com")
+        from django.conf import settings
+
+        cdn_base = settings.MEDIA_CDN_BASE_URL or f"https://{_S3_BUCKET}.s3.{_S3_REGION}.amazonaws.com"
         cdn_url = f"{cdn_base.rstrip('/')}/{key}"
 
         return Response({"upload_url": upload_url, "cdn_url": cdn_url, "key": key})

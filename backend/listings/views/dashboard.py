@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from django.core.cache import cache
 from django.http import StreamingHttpResponse
-from django.db.models import Count, DecimalField, F, FloatField, Q, Sum, Value
+from django.db.models import Count, DecimalField, F, FloatField, Min, Q, Sum, Value
 from django.db.models.functions import Greatest, TruncDate, TruncWeek
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
@@ -40,10 +40,13 @@ from ..serializers import (
     compute_scan_summary,
 )
 from ..trust import build_user_trust_summary, get_pending_feedback_queryset
-from .helpers import get_rescue_request_queryset
+from .helpers import get_rescue_request_queryset, parse_int
 from .requests import build_match_center_payload
 from .scan import get_scan_session_queryset, get_task_queryset, serialize_summary
 from dormcycle.typed import current_user
+
+# Cross-campus benchmark aggregate; refreshed every 15 minutes.
+_BENCHMARK_CACHE_KEY = "impact-benchmark:campus-stats:v1"
 
 
 def _build_percentage(numerator: int, denominator: int) -> int:
@@ -722,8 +725,19 @@ class CampusAnalyticsView(APIView):
     permission_classes = [IsCampusManager]
 
     def get(self, request: Request) -> Response:
-        campus = request.query_params.get("campus", "") or getattr(request.user, "campus_name", "")
-        weeks = min(int(request.query_params.get("weeks", 12)), 52)
+        # Only staff may aggregate across campuses; a campus manager is scoped
+        # to their own campus regardless of what ?campus= asks for.
+        if request.user.is_staff:
+            campus = request.query_params.get("campus", "") or getattr(request.user, "campus_name", "")
+        else:
+            campus = getattr(request.user, "campus_name", "") or ""
+            if not campus:
+                return Response(
+                    {"detail": "Your account is not linked to a campus yet."}, status=400
+                )
+        weeks = parse_int(
+            request.query_params.get("weeks"), field="weeks", default=12, minimum=1, maximum=52
+        ) or 12
         now = timezone.now()
         since = now - timedelta(weeks=weeks)
 
@@ -751,14 +765,14 @@ class CampusAnalyticsView(APIView):
 
         # Merge into a single list keyed by ISO week string
         volume_map: dict[str, dict] = {}
-        for row in weekly_volume:
-            key = row["week"].strftime("%Y-%m-%d")
+        for posted_row in weekly_volume:
+            key = posted_row["week"].strftime("%Y-%m-%d")
             volume_map.setdefault(key, {"week": key, "posted": 0, "rescued": 0})
-            volume_map[key]["posted"] = row["posted"]
-        for row in weekly_rescued:
-            key = row["week"].strftime("%Y-%m-%d")
+            volume_map[key]["posted"] = posted_row["posted"]
+        for rescued_row in weekly_rescued:
+            key = rescued_row["week"].strftime("%Y-%m-%d")
             volume_map.setdefault(key, {"week": key, "posted": 0, "rescued": 0})
-            volume_map[key]["rescued"] = row["rescued"]
+            volume_map[key]["rescued"] = rescued_row["rescued"]
         weekly_chart = sorted(volume_map.values(), key=lambda r: r["week"])
 
         # ── Category breakdown ────────────────────────────────────────────
@@ -848,31 +862,48 @@ class CampusAnalyticsExportView(APIView):
         import csv
 
         campus = getattr(request.user, "campus", None)
+        if campus is None:
+            return Response({"detail": "Your account is not linked to a campus yet."}, status=400)
+
+        rescued_statuses = {Listing.Status.PICKED_UP, Listing.Status.DONATED}
         qs = (
-            Listing.all_objects.filter(owner__campus=campus)
+            Listing.objects.filter(owner__campus=campus, is_demo=False)
             .select_related("owner")
-            .prefetch_related("reservations")
+            # One aggregate instead of a per-row reservation lookup.
+            .annotate(
+                claimed_at_ann=Min(
+                    "reservations__updated_at",
+                    filter=Q(reservations__status=Reservation.Status.COMPLETED),
+                )
+            )
             .order_by("-created_at")
         )
 
-        rescued_statuses = {Listing.Status.PICKED_UP, Listing.Status.DONATED}
+        def csv_safe(value: Any) -> Any:
+            """Neutralise spreadsheet formula injection.
+
+            Excel and Sheets execute a cell that starts with =, +, - or @, so a
+            listing titled "=HYPERLINK(...)" would run in the manager's
+            spreadsheet. Prefixing with an apostrophe keeps it as text.
+            """
+            if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+                return f"'{value}"
+            return value
 
         def row_iter() -> Any:
             header = [
                 "id", "title", "category", "condition", "status",
                 "price_type", "price_amount", "estimated_retail_value",
-                "pickup_zone", "building", "owner_email",
+                "pickup_zone", "building", "owner_display_name",
                 "created_at", "claimed_at", "value_rescued",
             ]
             yield header
             for listing in qs.iterator(chunk_size=200):
-                claimed_at = ""
-                if listing.status in rescued_statuses:
-                    completed = listing.reservations.filter(
-                        status=Reservation.Status.COMPLETED
-                    ).order_by("updated_at").first()
-                    if completed:
-                        claimed_at = completed.updated_at.isoformat()
+                claimed_at = (
+                    listing.claimed_at_ann.isoformat()
+                    if listing.status in rescued_statuses and listing.claimed_at_ann
+                    else ""
+                )
                 value_rescued = (
                     float(listing.estimated_retail_value)
                     if listing.status in rescued_statuses
@@ -880,16 +911,16 @@ class CampusAnalyticsExportView(APIView):
                 )
                 yield [
                     listing.id,
-                    listing.title,
+                    csv_safe(listing.title),
                     listing.category,
                     listing.condition,
                     listing.status,
                     listing.price_type,
                     float(listing.price_amount),
                     float(listing.estimated_retail_value),
-                    listing.pickup_zone,
-                    listing.building,
-                    listing.owner.email,
+                    csv_safe(listing.pickup_zone),
+                    csv_safe(listing.building),
+                    csv_safe(listing.owner.display_name),
                     listing.created_at.isoformat(),
                     claimed_at,
                     value_rescued,
@@ -904,7 +935,7 @@ class CampusAnalyticsExportView(APIView):
             (writer.writerow(row) for row in row_iter()),
             content_type="text/csv",
         )
-        response["Content-Disposition"] = 'attachment; filename="dormcycle-analytics.csv"'
+        response["Content-Disposition"] = 'attachment; filename="renest-analytics.csv"'
         return response
 
 
@@ -918,14 +949,29 @@ class ImpactBenchmarkView(APIView):
 
         from accounts.models import Campus
 
-        # Aggregate per campus
-        campus_stats = []
-        for c in Campus.objects.filter(active=True, onboarding_status="approved"):
-            member_count = c.members.count() or 1
-            claimed = Reservation.objects.filter(
-                listing__owner__campus=c, status=Reservation.Status.COMPLETED
-            ).count()
-            campus_stats.append({"campus_id": c.id, "per_member": claimed / member_count})
+        # Aggregate per campus. Cached for 15 minutes: the numbers move slowly
+        # and the uncached version ran two queries per campus on every request.
+        campus_stats = cache.get(_BENCHMARK_CACHE_KEY)
+        if campus_stats is None:
+            members = dict(
+                Campus.objects.filter(active=True, onboarding_status="approved")
+                .annotate(n=Count("members", distinct=True))
+                .values_list("id", "n")
+            )
+            claims = dict(
+                Reservation.objects.filter(
+                    status=Reservation.Status.COMPLETED,
+                    listing__owner__campus_id__in=members.keys(),
+                )
+                .values("listing__owner__campus_id")
+                .annotate(n=Count("id"))
+                .values_list("listing__owner__campus_id", "n")
+            )
+            campus_stats = [
+                {"campus_id": campus_id, "per_member": claims.get(campus_id, 0) / (member_count or 1)}
+                for campus_id, member_count in members.items()
+            ]
+            cache.set(_BENCHMARK_CACHE_KEY, campus_stats, timeout=900)
 
         if not campus_stats:
             return Response({"detail": "Not enough data."}, status=200)

@@ -25,6 +25,7 @@ export function useNotificationBadge(enabled = true) {
 
   const [sseCount, setSseCount] = useState(null);
   const sseRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
   const fallbackTimerRef = useRef(null);
   const refetchRef = useRef(refetch);
   refetchRef.current = refetch;
@@ -46,6 +47,10 @@ export function useNotificationBadge(enabled = true) {
   }, []);
 
   const closeSse = useCallback(() => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (sseRef.current) {
       sseRef.current.close();
       sseRef.current = null;
@@ -88,8 +93,10 @@ export function useNotificationBadge(enabled = true) {
         // Connection never established — fall back to polling
         startPolling();
       } else {
-        // Transient error after a good connection; retry after a short delay
-        setTimeout(openSse, 5_000);
+        // Transient error after a good connection; retry after a short delay.
+        // The handle is kept so cleanup (logout, unmount) can cancel it,
+        // otherwise a stream reopens after the hook is gone.
+        reconnectTimerRef.current = setTimeout(openSse, 5_000);
       }
     };
   }, [enabled, closeSse, startPolling, stopPolling]);  
@@ -113,6 +120,10 @@ export function useNotificationBadge(enabled = true) {
     return () => {
       closeSse();
       stopPolling();
+      // Drop the live count: it belongs to the session that is ending, and
+      // it takes precedence over the REST snapshot, so the next user in this
+      // tab would otherwise see the previous user's unread badge.
+      setSseCount(null);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [enabled, openSse, closeSse, stopPolling]);

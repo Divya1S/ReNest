@@ -55,11 +55,14 @@ class ReservationDetailView(generics.RetrieveUpdateAPIView):
         ).filter(Q(claimant=user) | Q(listing__owner=user))
 
     def perform_update(self, serializer: Any) -> None:
+        previous_status = serializer.instance.status
         reservation = serializer.save()
         from .dashboard import invalidate_user_dashboard_cache
         invalidate_user_dashboard_cache(reservation.claimant_id)
         invalidate_user_dashboard_cache(reservation.listing.owner_id)
-        if reservation.status == "confirmed":
+        # Only on the transition: a partial PATCH that leaves the status alone
+        # used to re-fire the webhook to every partner endpoint.
+        if reservation.status == "confirmed" and previous_status != "confirmed":
             try:
                 from .partner import dispatch_webhook_event
                 dispatch_webhook_event(
@@ -117,6 +120,11 @@ class ReservationFeedbackListCreateView(generics.ListCreateAPIView):
 class ReservationMessageListCreateView(generics.ListCreateAPIView):
     serializer_class = ReservationMessageSerializer
     permission_classes = [permissions.IsAuthenticated]
+    # A pickup thread is a bounded two-party conversation and the client renders
+    # it whole. With the global paginator it returned the 24 OLDEST messages
+    # (Meta.ordering is created_at ascending) and never a page token, so every
+    # message after the 24th was invisible to both parties.
+    pagination_class = None
 
     def _get_reservation(self) -> Reservation:
         queryset = Reservation.objects.filter(

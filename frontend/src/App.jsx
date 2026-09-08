@@ -1,5 +1,5 @@
 import { MotionConfig } from "framer-motion";
-import React, { lazy, useEffect } from "react";
+import React, { lazy } from "react";
 import {
   createBrowserRouter,
   createRoutesFromElements,
@@ -13,9 +13,7 @@ import { Toaster } from "sonner";
 import AppFrame from "./components/AppFrame";
 import RequireAuth from "./components/RequireAuth";
 import { AuthProvider } from "./context/AuthContext";
-import { apiFetch } from "./lib/api";
 import { routeLoaders } from "./lib/routeLoaders";
-import { initOfflineReplay } from "./lib/scanQueue";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import NotFoundPage from "./pages/NotFoundPage";
@@ -31,6 +29,7 @@ import VerifyEmailPage from "./pages/VerifyEmailPage";
 const BrowsePage = lazy(routeLoaders.browse);
 const CampusAnalyticsPage = lazy(routeLoaders.campusAnalytics);
 const CampusLandingPage = lazy(routeLoaders.campusLanding);
+const CampusOnboardPage = lazy(routeLoaders.campusOnboard);
 const LeaderboardPage = lazy(routeLoaders.leaderboard);
 const AssistantPage = lazy(routeLoaders.assistant);
 const HubDispatchPage = lazy(routeLoaders.hubDispatch);
@@ -75,6 +74,8 @@ const router = createBrowserRouter(
         <Route path="/unsubscribe" element={<UnsubscribePage />} />
         <Route path="/hubs" element={<HubsPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
+        {/* Declared before /campus/:slug so "onboard" is not read as a slug. */}
+        <Route path="/campus/onboard" element={<CampusOnboardPage />} />
         <Route path="/campus/:slug" element={<CampusLandingPage />} />
         {/* Public marketplace — browsing and listing details need no account;
             reserve/save/report actions inside are gated on auth in-page */}
@@ -116,14 +117,6 @@ const router = createBrowserRouter(
 );
 
 export default function App() {
-  useEffect(() => {
-    return initOfflineReplay(apiFetch, (count) => {
-      import("sonner").then(({ toast }) =>
-        toast.success(`Synced ${count} queued item${count !== 1 ? "s" : ""} from offline mode`)
-      );
-    });
-  }, []);
-
   return (
     // reducedMotion="user": every framer-motion animation collapses to a
     // no-op for people with prefers-reduced-motion set — one switch, app-wide.

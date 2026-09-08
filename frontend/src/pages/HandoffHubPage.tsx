@@ -21,6 +21,7 @@ import PageSection from "../components/PageSection";
 import RatingStars from "../components/RatingStars";
 import SkeletonLoader from "../components/SkeletonLoader";
 import StatusPill from "../components/StatusPill";
+import UnsavedChangesDialog from "../components/UnsavedChangesDialog";
 import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { apiFetch } from "../lib/api";
@@ -43,6 +44,12 @@ function localDateTimeMin(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const ACTION_LABELS: Record<string, string> = {
+  confirmed: "Approve request",
+  completed: "Mark handed off",
+  cancelled: "Cancel reservation",
+};
+
 function ReservationChat({ reservationId }: { reservationId: string | undefined }) {
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const [body, setBody] = useState("");
@@ -61,7 +68,9 @@ function ReservationChat({ reservationId }: { reservationId: string | undefined 
         // Only replace state when something changed so the scroll effect
         // doesn't fire on every poll tick.
         setMessages((prev) =>
-          prev !== null && prev.length === next.length ? prev : next,
+          prev !== null && prev.length === next.length && prev.at(-1)?.id === next.at(-1)?.id
+            ? prev
+            : next,
         );
       } catch {
         if (active && initial) setMessages([]);
@@ -217,6 +226,10 @@ export default function HandoffHubPage() {
   const [optimisticReservation, setOptimisticReservation] = React.useState<ReservationDetail | null>(null);
   const reservation = optimisticReservation ?? serverReservation;
   const [savingStatus, setSavingStatus] = React.useState("");
+  // Cancelling is irreversible: it releases the listing, re-opens any matched
+  // rescue request and (for an owner backing out after confirming) records a
+  // trust strike. Confirm before doing it.
+  const [pendingCancel, setPendingCancel] = React.useState(false);
   const [pinInput, setPinInput] = React.useState("");
   const [verifyingPin, setVerifyingPin] = React.useState(false);
   const [sendingEnRoute, setSendingEnRoute] = React.useState(false);
@@ -293,7 +306,13 @@ export default function HandoffHubPage() {
     if (!filled.length || !reservation) return;
     setProposingSlots(true);
     try {
-      await apiFetch(`/reservations/${reservation.id}/slots`, { method: "PATCH", body: { slots: filled } });
+      // datetime-local yields a naive "2026-09-10T14:00"; the server would
+      // interpret that in its own timezone, shifting the slot for everyone
+      // outside it. Send an explicit UTC instant instead.
+      await apiFetch(`/reservations/${reservation.id}/slots`, {
+        method: "PATCH",
+        body: { slots: filled.map((value) => new Date(value).toISOString()) },
+      });
       await refetch();
       toast.success("Pickup times sent.");
     } catch (err) {
@@ -394,6 +413,24 @@ export default function HandoffHubPage() {
 
   return (
     <div className="space-y-6">
+      <UnsavedChangesDialog
+        open={pendingCancel}
+        kicker="Cancel reservation"
+        title="Cancel this pickup?"
+        message={
+          isOwner
+            ? "The item goes back on the board, the other person is notified, and cancelling a handoff you already confirmed counts against your reliability score."
+            : "The item goes back on the board and the owner is notified. You can request it again if it is still available."
+        }
+        confirmLabel="Cancel reservation"
+        cancelLabel="Keep it"
+        onCancel={() => setPendingCancel(false)}
+        onConfirm={() => {
+          setPendingCancel(false);
+          handleAction("cancelled");
+        }}
+      />
+
       {/* Compact header: what, with whom, where, by when. */}
       <PageSection className="paper-panel p-6 sm:p-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -447,7 +484,7 @@ export default function HandoffHubPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => handleAction("cancelled")}
+                      onClick={() => setPendingCancel(true)}
                       disabled={savingStatus !== ""}
                       className="text-sm font-semibold text-[color:var(--text-muted)] hover:text-[color:var(--color-urgent)] transition-colors"
                     >
@@ -631,8 +668,14 @@ export default function HandoffHubPage() {
                 </p>
                 <div className="mt-3 flex flex-wrap gap-3">
                   {reservation.allowed_actions.map((action) => (
-                    <button key={action} type="button" onClick={() => handleAction(action)} disabled={savingStatus === action} className="primary-button">
-                      {savingStatus === action ? "Working…" : formatLabel(action)}
+                    <button
+                      key={action}
+                      type="button"
+                      onClick={() => (action === "cancelled" ? setPendingCancel(true) : handleAction(action))}
+                      disabled={savingStatus === action}
+                      className="primary-button"
+                    >
+                      {savingStatus === action ? "Working…" : ACTION_LABELS[action] ?? formatLabel(action)}
                     </button>
                   ))}
                 </div>
@@ -643,7 +686,7 @@ export default function HandoffHubPage() {
             {canCancel && reservation.status === "confirmed" && (
               <button
                 type="button"
-                onClick={() => handleAction("cancelled")}
+                onClick={() => setPendingCancel(true)}
                 disabled={savingStatus !== ""}
                 className="mt-4 text-[12px] font-semibold text-[color:var(--text-muted)] hover:text-[color:var(--color-urgent)] transition-colors"
               >
