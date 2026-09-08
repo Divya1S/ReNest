@@ -170,7 +170,18 @@ export default function ClearoutBoardPage() {
       setSelectedIds((current) => current.filter((value) => !ids.includes(value)));
       toast.success("Selected drafts were published.");
     } catch (requestError) {
-      toast.error(requestError.message);
+      // The endpoint is all-or-nothing and names the drafts that are not ready.
+      // Surfacing only "Only publish-ready drafts can go live." left the user
+      // hunting for which ones.
+      const blocked = requestError?.data?.blocked_items;
+      if (Array.isArray(blocked) && blocked.length) {
+        const names = blocked.map((item) => item.title || `Draft ${item.id}`).join(", ");
+        toast.error(`Not ready yet: ${names}. Add the missing details first.`);
+        const blockedIds = blocked.map((item) => item.id);
+        setSelectedIds((current) => current.filter((value) => !blockedIds.includes(value)));
+      } else {
+        toast.error(requestError.message);
+      }
     } finally {
       setPublishing(false);
     }

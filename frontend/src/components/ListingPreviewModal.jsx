@@ -10,16 +10,48 @@ import ListingPlaceholder from "./ListingPlaceholder";
 export default function ListingPreviewModal({ listing, isOpen, onClose }) {
   const titleId = "preview-modal-title";
   const closeRef = useRef(null);
+  const dialogRef = useRef(null);
+  const restoreFocusRef = useRef(null);
 
-  // Move focus to close button when modal opens; restore on close via browser
+  // Move focus into the dialog on open and put it back where it was on close.
+  // Browsers do not restore focus for us: when the dialog unmounts, focus
+  // falls to <body> and a keyboard user loses their place in the grid.
   useEffect(() => {
-    if (isOpen) closeRef.current?.focus();
+    if (!isOpen) return undefined;
+    restoreFocusRef.current = document.activeElement;
+    closeRef.current?.focus();
+    return () => {
+      const previous = restoreFocusRef.current;
+      if (previous && typeof previous.focus === "function" && document.contains(previous)) {
+        previous.focus();
+      }
+    };
   }, [isOpen]);
 
-  // Close on Escape
+  // Escape closes; Tab stays inside the dialog (aria-modal alone does not
+  // stop the browser tabbing into the obscured page behind it).
   useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    if (!isOpen) return undefined;
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+      const focusable = dialogRef.current.querySelectorAll(
+        'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [isOpen, onClose]);
@@ -39,6 +71,7 @@ export default function ListingPreviewModal({ listing, isOpen, onClose }) {
             className="fixed inset-0 z-[60] bg-slate-900/40 backdrop-blur-sm dark:bg-slate-900/60"
           />
           <motion.div
+            ref={dialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}

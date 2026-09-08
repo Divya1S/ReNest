@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { Building2, Medal, RefreshCw, Trophy } from "lucide-react";
 import React from "react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
@@ -218,7 +219,10 @@ export default function LeaderboardPage() {
             </p>
           )}
           <p className="text-center text-xs text-[color:var(--color-muted)]">
-            Opt out of the leaderboard in your account settings.
+            <Link to="/settings" className="font-semibold text-[color:var(--color-tag)] hover:opacity-70">
+              Opt out of the leaderboard
+            </Link>{" "}
+            any time in your account settings.
           </p>
         </>
       ) : (

@@ -69,6 +69,19 @@ class SuperAdminCampusSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class PublicUserSerializer(serializers.ModelSerializer):
+    """The profile another user is allowed to see.
+
+    Nested into listings, reservations, reports, updates and feeds. Never
+    expose email or account flags here: those belong to /api/auth/me only.
+    """
+
+    class Meta:
+        model = User
+        fields = ("id", "display_name", "campus_name", "milestone", "is_campus_manager", "created_at")
+        read_only_fields = fields
+
+
 class UserSerializer(serializers.ModelSerializer):
     campus = CampusSerializer(read_only=True)
 
@@ -91,6 +104,10 @@ class RegisterSerializer(serializers.ModelSerializer):
         model = User
         fields = ("email", "display_name", "campus_name", "password", "confirm_password", "referral_code")
 
+    def validate_email(self, value: str) -> str:
+        # Accounts are keyed on the canonical lower-case address.
+        return User.objects.normalize_email(value)
+
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         allowed_domains: list[str] = getattr(settings, "CAMPUS_EMAIL_DOMAINS", [])
         if allowed_domains:
@@ -102,7 +119,15 @@ class RegisterSerializer(serializers.ModelSerializer):
                 )
         if attrs["password"] != attrs["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Passwords do not match."})
-        validate_password(attrs["password"])
+        # Pass the prospective user so UserAttributeSimilarityValidator can
+        # reject passwords that echo the email or display name.
+        validate_password(
+            attrs["password"],
+            User(
+                email=attrs.get("email", ""),
+                display_name=attrs.get("display_name", ""),
+            ),
+        )
 
         ref_code = attrs.pop("referral_code", "") or ""
         if ref_code:
@@ -143,9 +168,15 @@ class LoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField()
 
+    def validate_email(self, value: str) -> str:
+        return User.objects.normalize_email(value)
+
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+
+    def validate_email(self, value: str) -> str:
+        return User.objects.normalize_email(value)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):

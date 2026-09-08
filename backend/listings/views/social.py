@@ -10,6 +10,7 @@ Trust & Safety social endpoints:
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
+from django.db.models import F
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers as drf_serializers, status
@@ -111,7 +112,21 @@ class ReservationDisputeView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        reason = str(request.data.get("reason", "")).strip()
+        # A dispute is about a handoff that went wrong, so there has to have
+        # been a handoff: opening one on a brand-new request would let anyone
+        # strike a stranger's trust score by reserving and immediately disputing.
+        disputable = {
+            Reservation.Status.CONFIRMED,
+            Reservation.Status.COMPLETED,
+            Reservation.Status.EXPIRED_UNRESOLVED,
+        }
+        if reservation.status not in disputable:
+            return Response(
+                {"detail": "Disputes can only be opened on confirmed, completed or unresolved handoffs."},
+                status=400,
+            )
+
+        reason = str(request.data.get("reason", "")).strip()[:1000]
         if not reason:
             return Response({"reason": "This field is required."}, status=400)
 
@@ -126,25 +141,28 @@ class ReservationDisputeView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        # Increment trust_strikes on the other party
+        # Increment trust_strikes on the other party (F() so concurrent
+        # disputes cannot overwrite each other's increment).
         if request.user.pk == reservation.claimant_id:
             other = reservation.listing.owner
         else:
             other = reservation.claimant
-        User.objects.filter(pk=other.pk).update(trust_strikes=other.trust_strikes + 1)
+        User.objects.filter(pk=other.pk).update(trust_strikes=F("trust_strikes") + 1)
 
-        # Notify staff
-        Notification.objects.get_or_create(
-            dedupe_key=f"dispute:staff:{dispute.pk}",
-            defaults={
-                "user_id": request.user.pk,  # staff will see it in admin; placeholder
-                "type": Notification.Type.SYSTEM,
-                "title": "New dispute opened",
-                "body": f"Dispute on reservation #{reservation.pk}: {reason[:120]}",
-                "link_path": f"/reservations/{reservation.pk}",
-                "priority": Notification.Priority.HIGH,
-            },
-        )
+        # Notify the actual moderators. The previous version addressed the row
+        # to the person who opened the dispute, so staff were never told.
+        for staff_user in User.objects.filter(is_staff=True, is_active=True):
+            Notification.objects.get_or_create(
+                dedupe_key=f"dispute:staff:{dispute.pk}:{staff_user.pk}",
+                defaults={
+                    "user": staff_user,
+                    "type": Notification.Type.SYSTEM,
+                    "title": "New dispute opened",
+                    "body": f"Dispute on reservation #{reservation.pk}: {reason[:120]}",
+                    "link_path": f"/handoffs/{reservation.pk}",
+                    "priority": Notification.Priority.HIGH,
+                },
+            )
 
         return Response(_dispute_to_dict(dispute), status=status.HTTP_201_CREATED)
 

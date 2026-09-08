@@ -9,7 +9,7 @@ import PageSection from "../components/PageSection";
 import SkeletonLoader from "../components/SkeletonLoader";
 import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
-import { apiFetch } from "../lib/api";
+import { apiFetch, asResults } from "../lib/api";
 
 function ListingCardSkeleton() {
   return (
@@ -52,21 +52,13 @@ function BulkUpdateModal({ activeCount, onClose, onSuccess }) {
     if (availableUntil) body.available_until = new Date(availableUntil).toISOString();
 
     try {
-      const res = await fetch("/api/listings/bulk-update", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", "X-CSRFToken": getCsrfToken() },
-        credentials: "include",
-        body: body,
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        const msg = data.detail || data.pickup_zone || data.available_until || "Update failed.";
-        setError(typeof msg === "string" ? msg : JSON.stringify(msg));
-        return;
-      }
+      // apiFetch JSON-serialises the body and attaches the CSRF header. Calling
+      // fetch() directly with an object body sent the literal "[object Object]",
+      // so this modal could never succeed.
+      const data = await apiFetch("/listings/bulk-update", { method: "PATCH", body });
       onSuccess(data);
-    } catch {
-      setError("Network error — please try again.");
+    } catch (err) {
+      setError(err?.message || "Update failed. Please try again.");
     } finally {
       setSubmitting(false);
     }
@@ -267,20 +259,10 @@ function ListingAnalyticsPanel({ listingId }) {
   );
 }
 
-function getCsrfToken() {
-  return document.cookie
-    .split("; ")
-    .find((row) => row.startsWith("csrftoken="))
-    ?.split("=")[1] ?? "";
-}
-
 export default function MyListingsPage() {
   usePageTitle("My Listings");
-  const { data, loading, error, refetch } = useApi("/listings?mine=1", {
-    initialData: { results: [], count: 0 },
-  });
+  const { data, loading, error, refetch, setData } = useApi("/listings?mine=1&page_size=100");
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [listings, setListings] = useState(null);
   const [repostingId, setRepostingId] = useState(null);
   const [donatingId, setDonatingId] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -301,10 +283,7 @@ export default function MyListingsPage() {
         method: "POST",
         body: { token },
       });
-      setListings((prev) => {
-        const base = prev ?? [];
-        return base.map((l) => (l.id === listingId ? data.listing : l));
-      });
+      updateListing(listingId, () => data.listing);
       toast.success(`Relisted for ${data.extended_days} more days.`);
     } catch (err) {
       toast.error(err.message || "Could not relist — try editing the listing directly.");
@@ -317,10 +296,7 @@ export default function MyListingsPage() {
     setDonatingId(listingId);
     try {
       await apiFetch(`/listings/${listingId}/donate`, { method: "POST", body: {} });
-      setListings((prev) => {
-        const base = prev ?? [];
-        return base.map((l) => (l.id === listingId ? { ...l, status: "donated" } : l));
-      });
+      updateListing(listingId, (listing) => ({ ...listing, status: "donated" }));
       toast.success("Item marked as donated. Receipt emailed to you.");
     } catch (err) {
       toast.error(err.message || "Could not mark as donated.");
@@ -329,14 +305,28 @@ export default function MyListingsPage() {
     }
   }
 
-  const displayListings = listings ?? (data?.results ?? []);
+  const displayListings = asResults(data);
   const activeCount = displayListings.filter((l) => ["available", "reserved"].includes(l.status)).length;
   const urgentCount = displayListings.filter((l) => l.is_urgent).length;
   const rescuedCount = displayListings.filter((l) => l.status === "picked_up").length;
 
-  function handleBulkSuccess(responseData) {
-    setListings(responseData.listings);
+  // Edit one listing inside the cached envelope. The page used to keep a
+  // separate `listings` array seeded from nothing, so the first donate or
+  // repost replaced the whole page with an empty list.
+  function updateListing(listingId, replacer) {
+    setData((current) => {
+      const results = asResults(current).map((listing) =>
+        listing.id === listingId ? replacer(listing) : listing,
+      );
+      return current && !Array.isArray(current) ? { ...current, results } : results;
+    });
+  }
+
+  function handleBulkSuccess() {
     setShowBulkModal(false);
+    // The bulk endpoint returns only active listings; refetch so expired and
+    // picked-up rows stay on the page.
+    refetch();
   }
 
   if (loading) {
@@ -413,7 +403,10 @@ export default function MyListingsPage() {
         <PageSection className="grid gap-6 lg:grid-cols-2" delay={0.08}>
           {displayListings.map((listing) => (
             <div key={listing.id} className="flex flex-col gap-2">
-              <ListingCard listing={listing} />
+              <ListingCard
+                listing={listing}
+                onListingChange={(updated) => updateListing(listing.id, () => updated)}
+              />
               <ListingAnalyticsPanel listingId={listing.id} />
               {listing.status === "expired" && listing.repost_token && (
                 <button

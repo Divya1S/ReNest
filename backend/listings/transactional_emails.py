@@ -20,21 +20,32 @@ _REMINDER_WINDOW_HOURS = 24
 _REMINDER_LOOKAHEAD_HOURS = 4  # ± window so 30-min cron cadence never double-fires
 
 
+def _sanitise_subject(subject: Any) -> str:
+    """Collapse newlines: a header value containing CR/LF is silently dropped
+    (or, worse, injects headers). Listing titles flow straight into subjects."""
+    text = " ".join(str(subject).splitlines()).strip()
+    return text[:200]
+
+
 def _send(*, subject: Any, message: Any, recipient: Any, user: Any = None) -> Any:
     if user is not None and not getattr(user, "email_notifications", True):
         return
+    subject = _sanitise_subject(subject)
     try:
         footer = ""
         headers: dict[str, str] = {}
         if user is not None:
             from accounts.views import make_unsubscribe_url
 
+            from accounts.views import make_unsubscribe_api_url
+
             unsubscribe_url = make_unsubscribe_url(user)
             footer = f"\n\n---\nTo stop receiving emails from ReNest: {unsubscribe_url}"
-            # RFC 8058 one-click unsubscribe — Gmail/Yahoo require these
-            # headers for bulk senders, and they materially help inbox placement.
+            # RFC 8058 one-click unsubscribe: Gmail/Yahoo require these headers
+            # for bulk senders. The header URL must accept POST, so it points at
+            # the API endpoint; the footer link stays on the SPA confirmation page.
             headers = {
-                "List-Unsubscribe": f"<{unsubscribe_url}>",
+                "List-Unsubscribe": f"<{make_unsubscribe_api_url(user)}>",
                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
             }
         EmailMessage(
@@ -81,6 +92,7 @@ def send_reservation_confirmed_email(reservation: Any) -> Any:
         title="Reservation confirmed!",
         body=f'{owner.display_name} confirmed your pickup for "{listing.title}".',
         url=path,
+        notification_type="reservation",
     )
 
     _send(
@@ -142,10 +154,16 @@ def send_handoff_reminder_emails() -> Any:
     )
 
     sent = 0
-    for reservation in reservations:
-        dedupe_key = f"email_handoff_reminder:{reservation.id}"
-        _, created = Notification.objects.get_or_create(
-            dedupe_key=dedupe_key,
+    for reservation in reservations.filter(reminder_sent_at__isnull=True):
+        # Claim the reservation before sending: a conditional UPDATE means two
+        # overlapping runs can never both send the same reminder.
+        claimed = Reservation.objects.filter(
+            pk=reservation.pk, reminder_sent_at__isnull=True
+        ).update(reminder_sent_at=now)
+        if not claimed:
+            continue
+        Notification.objects.get_or_create(
+            dedupe_key=f"email_handoff_reminder:{reservation.id}",
             defaults={
                 "user": reservation.claimant,
                 "type": Notification.Type.HANDOFF_URGENT,
@@ -155,8 +173,6 @@ def send_handoff_reminder_emails() -> Any:
                 "priority": Notification.Priority.HIGH,
             },
         )
-        if not created:
-            continue
 
         listing = reservation.listing
         owner = listing.owner
@@ -184,6 +200,7 @@ def send_handoff_reminder_emails() -> Any:
                 title="Pickup reminder — 24 h left",
                 body=f'Your handoff for "{listing.title}" closes around {deadline}.',
                 url=f"/handoffs/{reservation.pk}",
+                notification_type="handoff_urgent",
             )
         sent += 1
 

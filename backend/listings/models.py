@@ -511,8 +511,15 @@ class Reservation(models.Model):
         blank=True,
         help_text="6-digit PIN shown to claimant; owner enters it at pickup to auto-complete.",
     )
+    reminder_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the 24h handoff reminder was delivered; the idempotency guard for the reminder job.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    ACTIVE_STATUSES = ("requested", "confirmed")
 
     class Meta:
         ordering = ("-updated_at",)
@@ -521,6 +528,16 @@ class Reservation(models.Model):
             models.Index(fields=["claimant", "status"], name="reservation_claim_status_idx"),
             # Incoming reservations by status (incoming action queue)
             models.Index(fields=["listing", "status"], name="reservation_listing_status_idx"),
+        ]
+        constraints = [
+            # One live claim per listing, enforced by the database so two
+            # concurrent requests cannot both win (partial unique index; works
+            # on PostgreSQL and SQLite).
+            models.UniqueConstraint(
+                fields=["listing"],
+                condition=models.Q(status__in=("requested", "confirmed")),
+                name="unique_active_reservation_per_listing",
+            ),
         ]
 
     def __str__(self):
@@ -862,6 +879,25 @@ class DemandForecast(models.Model):
 
     def __str__(self) -> str:
         return f"{self.category} w{self.week_number}/{self.year} — {self.predicted_views:.0f} views"
+
+
+class ListingBoostPayment(models.Model):
+    """A redeemed Stripe payment for a listing boost.
+
+    Exists purely to make redemption idempotent: the unique payment intent id
+    is what stops one succeeded payment from being confirmed repeatedly.
+    """
+
+    listing = models.ForeignKey(Listing, on_delete=models.CASCADE, related_name="boost_payments")
+    payment_intent_id = models.CharField(max_length=120, unique=True)
+    amount_cents = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self) -> str:
+        return f"Boost {self.payment_intent_id} for listing {self.listing_id}"
 
 
 class Organization(models.Model):

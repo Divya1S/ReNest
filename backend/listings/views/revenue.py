@@ -4,6 +4,8 @@ import logging
 import os
 
 from django.shortcuts import get_object_or_404
+from django.conf import settings
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
@@ -138,12 +140,18 @@ class StripeWebhookView(APIView):
             except Exception as exc:
                 logger.warning("Stripe webhook signature verification failed: %s", exc)
                 return Response({"detail": "Invalid signature."}, status=400)
-        else:
+        elif settings.DEBUG:
+            # Local development against `stripe trigger` without a secret.
             import json
             try:
                 event = json.loads(payload)
             except Exception:
                 return Response({"detail": "Invalid JSON."}, status=400)
+        else:
+            # Unsigned events are forgeable: anyone could POST a
+            # checkout.session.completed and upgrade any campus for free.
+            logger.error("Stripe webhook received but STRIPE_WEBHOOK_SECRET is not configured.")
+            return Response({"detail": "Webhook is not configured."}, status=503)
 
         if event.get("type") == "checkout.session.completed":
             self._handle_checkout_completed(event["data"]["object"])
@@ -165,19 +173,32 @@ class StripeWebhookView(APIView):
         except Campus.DoesNotExist:
             return
 
+        session_id = session.get("id", "")
+        if session_id and CampusSubscription.objects.filter(stripe_session_id=session_id).exists():
+            # Stripe retries delivery until it sees a 2xx; applying the same
+            # session twice would extend the licence twice.
+            logger.info("Ignoring duplicate Stripe session %s", session_id)
+            return
+
         now = timezone.now()
         # License valid for ~120 days (one semester)
         expires = now + timedelta(days=120)
-        Campus.objects.filter(pk=campus.pk).update(
-            subscription_tier=tier,
-            license_expires_at=expires,
-        )
-        CampusSubscription.objects.create(
-            campus=campus,
-            stripe_session_id=session.get("id", ""),
-            tier=tier,
-            amount_cents=session.get("amount_total", _TIER_AMOUNTS.get(tier, 0)),
-        )
+        try:
+            with transaction.atomic():
+                CampusSubscription.objects.create(
+                    campus=campus,
+                    stripe_session_id=session_id,
+                    tier=tier,
+                    amount_cents=session.get("amount_total", _TIER_AMOUNTS.get(tier, 0)),
+                )
+                Campus.objects.filter(pk=campus.pk).update(
+                    subscription_tier=tier,
+                    license_expires_at=expires,
+                )
+        except IntegrityError:
+            # Concurrent redelivery lost the race on the unique session id.
+            logger.info("Concurrent duplicate Stripe session %s ignored", session_id)
+            return
         logger.info("Campus %s upgraded to %s tier, expires %s", campus.slug, tier, expires.date())
 
 
@@ -249,21 +270,25 @@ class ListingBoostConfirmView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request: Request, pk: int) -> Response:
-        from ..models import Listing
+        from ..models import Listing, ListingBoostPayment
         from datetime import timedelta
 
         listing = get_object_or_404(Listing, pk=pk, owner=request.user)
-        pi_id = request.data.get("payment_intent_id", "")
+        pi_id = str(request.data.get("payment_intent_id", "")).strip()
 
         secret_key = os.getenv("STRIPE_SECRET_KEY", "")
         if not secret_key:
             return Response({"detail": "Stripe is not configured."}, status=503)
 
+        if not pi_id:
+            return Response({"detail": "payment_intent_id is required."}, status=400)
+
         try:
             stripe = _stripe()
             intent = stripe.PaymentIntent.retrieve(pi_id)
-        except Exception as exc:
-            return Response({"detail": str(exc)}, status=502)
+        except Exception:
+            logger.exception("Could not retrieve payment intent %s", pi_id)
+            return Response({"detail": "Payment could not be verified. Try again shortly."}, status=502)
 
         if intent.status != "succeeded":
             return Response({"detail": "Payment not confirmed yet."}, status=400)
@@ -274,11 +299,24 @@ class ListingBoostConfirmView(APIView):
 
         boost_hours = (intent.amount // 100) * 24
         now = timezone.now()
-        current_boost = listing.boosted_until
-        base = current_boost if (current_boost and current_boost > now) else now
-        new_boosted_until = base + timedelta(hours=boost_hours)
 
-        Listing.objects.filter(pk=pk).update(boosted_until=new_boosted_until)
+        # A payment may be redeemed exactly once. Without this record the same
+        # succeeded intent could be POSTed repeatedly, each call stacking
+        # another day of boosted placement onto a single $1 payment.
+        try:
+            with transaction.atomic():
+                ListingBoostPayment.objects.create(
+                    listing=listing,
+                    payment_intent_id=pi_id,
+                    amount_cents=intent.amount,
+                )
+                current_boost = listing.boosted_until
+                base = current_boost if (current_boost and current_boost > now) else now
+                new_boosted_until = base + timedelta(hours=boost_hours)
+                Listing.objects.filter(pk=pk).update(boosted_until=new_boosted_until)
+        except IntegrityError:
+            return Response({"detail": "This payment has already been redeemed."}, status=409)
+
         return Response({"boosted_until": new_boosted_until.isoformat(), "boost_hours": boost_hours})
 
 

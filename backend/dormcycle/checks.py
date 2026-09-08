@@ -24,17 +24,19 @@ def dormcycle_runtime_checks(app_configs, **kwargs):
             )
         )
 
-    # E001 — SMTP backend with no password means outbound email will fail silently
+    # W004: SMTP backend with no password means outbound email will almost certainly
+    # fail. A warning rather than an error so `migrate` and CI still run
+    # (staging deploys and unauthenticated relays are legitimate).
     if not settings.DEBUG and settings.EMAIL_BACKEND == _SMTP_BACKEND:
         if not settings.EMAIL_HOST_PASSWORD:
             checks.append(
-                Error(
+                Warning(
                     "EMAIL_HOST_PASSWORD is empty but EMAIL_BACKEND is set to SMTP.",
                     hint=(
                         "Set EMAIL_HOST_PASSWORD (and EMAIL_HOST_USER) to your SMTP credentials, "
                         "or switch EMAIL_BACKEND to the console backend for local testing."
                     ),
-                    id="dormcycle.E001",
+                    id="dormcycle.W004",
                 )
             )
 

@@ -12,7 +12,14 @@ except ImportError:  # pragma: no cover - optional helper for local env files
 if load_dotenv:
     load_dotenv(BASE_DIR / ".env")
 
-from .env import DEFAULT_DEV_SECRET_KEY, env_bool, env_list, validate_environment
+from .env import (
+    DEFAULT_DEV_SECRET_KEY,
+    env_bool,
+    env_float,
+    env_int,
+    env_list,
+    validate_environment,
+)
 
 DEBUG = env_bool("DJANGO_DEBUG", True)
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", DEFAULT_DEV_SECRET_KEY)
@@ -31,13 +38,28 @@ CORS_ALLOWED_ORIGINS = env_list(
 CORS_ALLOW_CREDENTIALS = True
 CORS_URLS_REGEX = r"^/api/.*$"
 
+# Render injects the public hostname of a web service; trusting it here makes a
+# blueprint deploy work before any domain-specific env vars are edited.
+_RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME", "").strip()
+_RENDER_ORIGIN = f"https://{_RENDER_HOST}" if _RENDER_HOST else ""
+if _RENDER_HOST:
+    if _RENDER_HOST not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(_RENDER_HOST)
+    for _origins in (CSRF_TRUSTED_ORIGINS, CORS_ALLOWED_ORIGINS):
+        if _RENDER_ORIGIN not in _origins:
+            _origins.append(_RENDER_ORIGIN)
+
 # Comma-separated list of allowed email domains for registration.
 # Empty (default) = no restriction. Example: "usc.edu,ucla.edu"
 CAMPUS_EMAIL_DOMAINS: list[str] = env_list("CAMPUS_EMAIL_DOMAINS", "")
 APP_BASE_URL = os.getenv(
     "APP_BASE_URL",
-    CSRF_TRUSTED_ORIGINS[0] if CSRF_TRUSTED_ORIGINS else "http://127.0.0.1:5173",
-)
+    _RENDER_ORIGIN or (CSRF_TRUSTED_ORIGINS[0] if CSRF_TRUSTED_ORIGINS else "http://127.0.0.1:5173"),
+).rstrip("/")
+
+# Shared secret for POST /api/internal/maintenance/ (scheduled jobs without a
+# Celery beat process, e.g. driven by a GitHub Actions cron). Unset = disabled.
+MAINTENANCE_TOKEN = os.getenv("MAINTENANCE_TOKEN", "").strip()
 
 validate_environment(
     debug=DEBUG,
@@ -115,18 +137,27 @@ if USE_SQLITE:
 elif os.getenv("DATABASE_URL", ""):
     # Managed-hosting convention (Render/Railway/Heroku): one URL instead of
     # discrete POSTGRES_* vars. Parsed with stdlib — no extra dependency.
-    from urllib.parse import urlsplit
+    from urllib.parse import parse_qs, unquote, urlsplit
 
     _db_url = urlsplit(os.getenv("DATABASE_URL", ""))
+    # Hosted Postgres (Neon, Supabase, Render) advertises TLS via the query
+    # string; pass the libpq options through instead of silently dropping them.
+    _db_options = {
+        key: values[-1]
+        for key, values in parse_qs(_db_url.query).items()
+        if key in {"sslmode", "sslrootcert", "options", "connect_timeout", "channel_binding", "application_name"}
+    }
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": _db_url.path.lstrip("/"),
-            "USER": _db_url.username or "",
-            "PASSWORD": _db_url.password or "",
+            "NAME": unquote(_db_url.path.lstrip("/")),
+            "USER": unquote(_db_url.username or ""),
+            "PASSWORD": unquote(_db_url.password or ""),
             "HOST": _db_url.hostname or "",
             "PORT": str(_db_url.port or 5432),
-            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
+            "CONN_MAX_AGE": env_int("POSTGRES_CONN_MAX_AGE", 60),
+            "CONN_HEALTH_CHECKS": True,
+            "OPTIONS": _db_options,
         }
     }
 else:
@@ -138,7 +169,7 @@ else:
             "PASSWORD": os.getenv("POSTGRES_PASSWORD", "postgres"),
             "HOST": os.getenv("POSTGRES_HOST", "127.0.0.1"),
             "PORT": os.getenv("POSTGRES_PORT", "5432"),
-            "CONN_MAX_AGE": int(os.getenv("POSTGRES_CONN_MAX_AGE", "60")),
+            "CONN_MAX_AGE": env_int("POSTGRES_CONN_MAX_AGE", 60),
         }
     }
 
@@ -192,6 +223,26 @@ SERVE_FRONTEND = (FRONTEND_DIST / "index.html").is_file()
 if SERVE_FRONTEND:
     WHITENOISE_ROOT = FRONTEND_DIST
 
+# One canonical media base URL, derived once and reused by the CSP middleware,
+# the presigned-upload endpoint and the docs. Previously three modules read
+# three different env var names, so the CSP never allowed the bucket that
+# actually served the photos.
+_S3_CDN_DOMAIN = os.getenv("AWS_S3_CDN_DOMAIN", "").strip().rstrip("/")
+_S3_ENDPOINT = os.getenv("AWS_S3_ENDPOINT_URL", "").strip().rstrip("/")
+if not AWS_S3_BUCKET_NAME:
+    MEDIA_CDN_BASE_URL = ""
+elif _S3_CDN_DOMAIN:
+    MEDIA_CDN_BASE_URL = (
+        _S3_CDN_DOMAIN if _S3_CDN_DOMAIN.startswith("http") else f"https://{_S3_CDN_DOMAIN}"
+    )
+elif _S3_ENDPOINT:
+    # S3-compatible providers (Cloudflare R2, MinIO) address the bucket as a path.
+    MEDIA_CDN_BASE_URL = f"{_S3_ENDPOINT}/{AWS_S3_BUCKET_NAME}"
+else:
+    MEDIA_CDN_BASE_URL = (
+        f"https://{AWS_S3_BUCKET_NAME}.s3.{os.getenv('AWS_S3_REGION_NAME', 'us-east-1')}.amazonaws.com"
+    )
+
 if AWS_S3_BUCKET_NAME:
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",
@@ -214,13 +265,13 @@ EMAIL_BACKEND = os.getenv(
     "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend",
 )
 EMAIL_HOST = os.getenv("EMAIL_HOST", "localhost")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", "25"))
+EMAIL_PORT = env_int("EMAIL_PORT", 25)
 EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS")
 EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL")
 # A hung SMTP connection must never pin a Celery worker — cap every send.
-EMAIL_TIMEOUT = int(os.getenv("EMAIL_TIMEOUT", "10"))
+EMAIL_TIMEOUT = env_int("EMAIL_TIMEOUT", 10)
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "ReNest <noreply@renest.app>")
 PASSWORD_RESET_TIMEOUT = 3600  # 1 hour
 
@@ -237,7 +288,7 @@ SECURE_PROXY_SSL_HEADER = (
     ("HTTP_X_FORWARDED_PROTO", "https") if not DEBUG else None
 )
 # HSTS — 0 in dev; set DJANGO_SECURE_HSTS_SECONDS=31536000 in production
-SECURE_HSTS_SECONDS = int(os.getenv("DJANGO_SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_SECONDS = env_int("DJANGO_SECURE_HSTS_SECONDS", 0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS")
 SECURE_HSTS_PRELOAD = env_bool("DJANGO_SECURE_HSTS_PRELOAD")
 X_FRAME_OPTIONS = "DENY"
@@ -253,8 +304,8 @@ if _SENTRY_DSN:
         dsn=_SENTRY_DSN,
         integrations=[DjangoIntegration()],
         environment=os.getenv("DJANGO_ENVIRONMENT", "development" if DEBUG else "production"),
-        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
-        profiles_sample_rate=float(os.getenv("SENTRY_PROFILES_SAMPLE_RATE", "0.0")),
+        traces_sample_rate=env_float("SENTRY_TRACES_SAMPLE_RATE", 0.1),
+        profiles_sample_rate=env_float("SENTRY_PROFILES_SAMPLE_RATE", 0.0),
         send_default_pii=False,
     )
 
@@ -356,13 +407,18 @@ AUTH_USER_MODEL = "accounts.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_PARSER_CLASSES": [
+        "dormcycle.parsers.StrictJSONParser",
+        "rest_framework.parsers.FormParser",
+        "rest_framework.parsers.MultiPartParser",
+    ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "dormcycle.pagination.StandardPagination",
     "PAGE_SIZE": 24,
     # No global throttle — applied per-view only where needed.
     "DEFAULT_THROTTLE_CLASSES": [],
@@ -375,7 +431,12 @@ REST_FRAMEWORK = {
         "reservation_create": "10/hour",
         "push_subscribe": "10/day",
         "concierge": "40/hour",
+        "campus_onboard": "5/hour",
     },
+    # Anonymous throttles key on the client IP. Behind one reverse proxy
+    # (Render, Fly, a single nginx) the client is the last X-Forwarded-For hop;
+    # with no proxy (dev) the header is untrusted and REMOTE_ADDR is used.
+    "NUM_PROXIES": env_int("DJANGO_NUM_PROXIES", 0 if DEBUG else 1),
 }
 
 # ── Platform AI (Google Gemini) ──────────────────────────────────────────────
@@ -412,8 +473,9 @@ if _REDIS_URL:
             "TIMEOUT": 300,  # 5 min default TTL; overridden per call-site
         }
     }
-    # Use Redis for session storage when Redis is available
-    SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+    # Sessions: Redis-backed reads with the database as the source of truth,
+    # so a restarting or LRU-evicting Redis (free tiers) never logs users out.
+    SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
     SESSION_CACHE_ALIAS = "default"
 else:
     CACHES = {

@@ -57,26 +57,41 @@ class ContentSecurityPolicyMiddleware:
     - base-uri 'self'             → prevent base tag injection
     - form-action 'self'          → prevent form hijacking
 
-    AWS_S3_CDN_BASE_URL is added to img-src when present so CDN listing images load.
-    Set DJANGO_CSP_REPORT_URI in the environment to enable violation reporting.
+    settings.MEDIA_CDN_BASE_URL (derived from AWS_S3_BUCKET_NAME and friends) is
+    added to img-src when object storage is configured, so listing and room-scan
+    photos load. Set DJANGO_CSP_REPORT_URI to enable violation reporting.
     """
 
     def __init__(self, get_response):
+        from django.conf import settings
+
         self.get_response = get_response
-        cdn = os.getenv("AWS_S3_CDN_BASE_URL", "").rstrip("/")
+        cdn = getattr(settings, "MEDIA_CDN_BASE_URL", "").rstrip("/")
         # OpenStreetMap tiles power the browse map view; the {s} placeholder
         # resolves to a/b/c subdomains, so allow the wildcard tile host.
         img_src = "'self' data: blob: https://*.tile.openstreetmap.org"
         if cdn:
             img_src += f" {cdn}"
+        connect_src = "'self'"
+        # The Sentry browser SDK posts to its ingest host; without this the
+        # frontend can never report an error from production.
+        sentry_dsn = os.getenv("VITE_SENTRY_DSN", "") or os.getenv("SENTRY_FRONTEND_DSN", "")
+        if sentry_dsn:
+            from urllib.parse import urlsplit
+
+            host = urlsplit(sentry_dsn).hostname
+            if host:
+                connect_src += f" https://{host}"
         report_uri = os.getenv("DJANGO_CSP_REPORT_URI", "")
         directives = [
             "default-src 'self'",
+            # No 'unsafe-inline': the one script that must run before first
+            # paint (the dark-mode bootstrap) is served from /theme-init.js.
             "script-src 'self'",
             # Google Fonts serves the Inter stylesheet + woff2 files
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             f"img-src {img_src}",
-            "connect-src 'self'",
+            f"connect-src {connect_src}",
             "font-src 'self' data: https://fonts.gstatic.com",
             "media-src 'self'",
             "object-src 'none'",

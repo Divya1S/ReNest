@@ -153,15 +153,55 @@ The same gates run in CI on every push (`.github/workflows/ci.yml`): a backend j
 
 ## Deployment
 
-One-click deploy via the Render blueprint (`render.yaml`): web service (uvicorn/ASGI serving API + built SPA), Celery worker, Celery beat, Redis, and PostgreSQL. Full runbook, alternative-host notes, backup strategy, and load-testing.
+One-click deploy via the Render blueprint (`render.yaml`): Render Dashboard -> New -> Blueprint -> pick this repo. It provisions one free web service (uvicorn/ASGI serving the API and the built SPA same-origin) and a free PostgreSQL database.
 
+### After the first deploy
+
+1. Fill in the `sync: false` env vars in the Render dashboard. Everything is optional; each unset value only switches its own feature off:
+   - `GEMINI_API_KEY` (free key at [aistudio.google.com](https://aistudio.google.com)) turns on the concierge, room-scan detection and AI copywriting.
+   - `EMAIL_HOST` / `EMAIL_PORT` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `DEFAULT_FROM_EMAIL` enable password resets and handoff reminders. Any SMTP provider with a free tier works.
+   - `AWS_S3_BUCKET_NAME` (+ `AWS_S3_ENDPOINT_URL` for Cloudflare R2) moves uploads off the container's ephemeral disk.
+   - `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` enable web push (`npx web-push generate-vapid-keys`).
+   - `SENTRY_DSN` / `VITE_SENTRY_DSN` enable error reporting.
+2. Set up the scheduled jobs (see below). Without them nothing expires, no reminders go out, and saved-search alerts never fire.
+3. Create an admin user: Render Shell -> `cd backend && python manage.py createsuperuser`.
+
+### Free-tier constraints
+
+| Constraint | Effect | Mitigation |
+|---|---|---|
+| Free web service sleeps after 15 min idle | First request after idle takes ~1 min | The maintenance cron pings it every 30 min |
+| Free plan has no background workers | No Celery worker or beat; tasks run inline in the request | Scheduled jobs run via GitHub Actions cron (below) |
+| Render's free Postgres expires 30 days after creation | Database becomes unreachable | Use a free-forever provider (Neon, Supabase): set `DATABASE_URL` on the web service and delete the `databases:` block from `render.yaml` |
+| Ephemeral disk | Uploaded photos vanish on redeploy | Set `AWS_S3_BUCKET_NAME` (Cloudflare R2 has a free tier) |
+
+To run real background workers later, uncomment the "Paid tier" block at the bottom of `render.yaml` and set `REDIS_URL`.
 
 ## Maintenance
 
+The scheduled jobs (listing expiry, handoff reminders, saved-search alerts, trending cache, digests) run in one of three ways:
+
+**1. GitHub Actions cron (default, free).** `.github/workflows/maintenance.yml` POSTs to a token-protected endpoint on a schedule. Configure once, under Settings -> Secrets and variables -> Actions:
+
+- variable `MAINTENANCE_URL` = your deployment's base URL, e.g. `https://renest-web.onrender.com`
+- secret `MAINTENANCE_TOKEN` = the same value as the `MAINTENANCE_TOKEN` env var on the server (the blueprint generates one)
+
+Until both are set the workflow exits early without failing. Note that GitHub disables scheduled workflows on a public repository after 60 days with no commits.
+
+**2. A cron entry or the Render shell**, running the same jobs in-process:
+
 ```bash
 cd backend
-../.venv/bin/python manage.py run_maintenance   # expiry sweep + task sync (cron target)
-../.venv/bin/python manage.py createsuperuser   # Django admin at /admin/
+python manage.py run_maintenance                 # every 15-30 min
+python manage.py run_maintenance --jobs daily    # once a day
+python manage.py run_maintenance --jobs weekly   # once a week
+python manage.py createsuperuser                 # Django admin at /admin/
 ```
 
-With Redis configured, Celery beat runs the full schedule (handoff reminders, saved-search alerts, trending cache, weekly digests) instead of the manual command.
+**3. Celery beat**, when `REDIS_URL` and a worker are configured. `CELERY_BEAT_SCHEDULE` in `dormcycle/settings.py` covers the same jobs; use this instead of the cron, not alongside it.
+
+### Backups
+
+`.github/workflows/backup.yml` runs a daily `pg_dump` and stores it as a workflow artifact with 7-day retention. Add a `DATABASE_URL` secret (or the discrete `POSTGRES_*` secrets) to enable it; it skips cleanly when unconfigured and fails loudly rather than uploading an empty dump.
+
+Artifacts on a **public** repository are downloadable by anyone. Keep backups of real user data off a public repo: point the workflow at a private repository, or run `scripts/backup.sh` on a host you control.

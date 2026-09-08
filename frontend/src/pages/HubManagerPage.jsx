@@ -113,23 +113,30 @@ export default function HubManagerPage() {
       <PageSection className="paper-panel p-10 sm:p-12" delay={0.04}>
         <form onSubmit={handleSubmit} className="space-y-8 max-w-2xl">
           <div>
-            <label className="mb-2 block text-sm font-semibold text-[color:var(--color-ink)] dark:text-white">
+            <label
+              htmlFor="hub-pickup-instructions"
+              className="mb-2 block text-sm font-semibold text-[color:var(--color-ink)] dark:text-white"
+            >
               Pickup instructions
             </label>
             <p className="mb-3 text-xs text-[color:var(--text-muted)]">
               Shown to students on the hub listing — explain access hours, entry codes, or drop-off rules.
             </p>
             <textarea
+              id="hub-pickup-instructions"
               value={openInstructions}
               onChange={(e) => setOpenInstructions(e.target.value)}
               rows={5}
-              className="w-full rounded-2xl border border-black/12 dark:border-white/12 bg-[color:var(--color-surface)] px-5 py-4 text-sm text-[color:var(--color-ink)] dark:text-white placeholder:text-[color:var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)] resize-none"
+              className="w-full rounded-2xl border border-black/12 dark:border-white/12 bg-[color:var(--color-surface)] px-5 py-4 text-sm text-[color:var(--color-ink)] dark:text-white placeholder:text-[color:var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-tag)] resize-none"
               placeholder="e.g. Open Mon–Fri 9am–5pm. Use the keypad at the side entrance: code 1234#."
             />
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-semibold text-[color:var(--color-ink)] dark:text-white">
+            <label
+              htmlFor="hub-capacity"
+              className="mb-2 block text-sm font-semibold text-[color:var(--color-ink)] dark:text-white"
+            >
               Capacity <span className="font-normal text-[color:var(--text-muted)]">(optional)</span>
             </label>
             <p className="mb-3 text-xs text-[color:var(--text-muted)]">
@@ -138,12 +145,13 @@ export default function HubManagerPage() {
             <div className="flex items-center gap-3">
               <Package size={18} className="text-[color:var(--text-muted)] shrink-0" />
               <input
+                id="hub-capacity"
                 type="number"
                 min="0"
                 value={capacity}
                 onChange={(e) => setCapacity(e.target.value)}
                 placeholder="e.g. 50"
-                className="w-40 rounded-2xl border border-black/12 dark:border-white/12 bg-[color:var(--color-surface)] px-4 py-3 text-sm text-[color:var(--color-ink)] dark:text-white placeholder:text-[color:var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)]"
+                className="w-40 rounded-2xl border border-black/12 dark:border-white/12 bg-[color:var(--color-surface)] px-4 py-3 text-sm text-[color:var(--color-ink)] dark:text-white placeholder:text-[color:var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-tag)]"
               />
               <span className="text-sm text-[color:var(--text-muted)]">items</span>
             </div>
@@ -154,15 +162,16 @@ export default function HubManagerPage() {
               type="button"
               role="switch"
               aria-checked={active}
+              aria-labelledby="hub-open-label"
               onClick={() => setActive((v) => !v)}
-              className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-[color:var(--color-accent)] focus:ring-offset-2 ${active ? "bg-[color:var(--color-accent)]" : "bg-[color:var(--color-surface-2)]"}`}
+              className={`relative inline-flex h-7 w-12 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-[color:var(--color-tag)] focus:ring-offset-2 ${active ? "bg-[color:var(--color-tag)]" : "bg-[color:var(--color-surface-2)]"}`}
             >
               <span
                 className={`inline-block h-6 w-6 rounded-full bg-white shadow-lg transition-transform ${active ? "translate-x-5" : "translate-x-0"}`}
               />
             </button>
             <div>
-              <p className="text-sm font-semibold text-[color:var(--color-ink)] dark:text-white">
+              <p id="hub-open-label" className="text-sm font-semibold text-[color:var(--color-ink)] dark:text-white">
                 Hub is {active ? "open" : "closed"}
               </p>
               <p className="text-xs text-[color:var(--text-muted)]">

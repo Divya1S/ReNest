@@ -19,7 +19,7 @@ class Migration(migrations.Migration):
             name="summary",
             field=models.TextField(
                 blank=True,
-                help_text="Claude-generated summary written at thread end; copied to User.assistant_notes.",
+                help_text="Model-generated summary written at thread end; copied to User.assistant_notes.",
             ),
         ),
         migrations.AlterField(

@@ -28,7 +28,7 @@ def post_create_tasks(self: Any, listing_pk: int) -> None:
         from .notifications import notify_matching_rescue_requests
         notify_matching_rescue_requests(listing)
 
-        # Phase 18 — async quality hints via Claude
+        # Phase 18: async quality hints via the AI model
         quality_coach_task.apply_async((listing_pk,), countdown=5)
         # Phase 25 — embedding for semantic search
         generate_listing_embedding.apply_async((listing_pk,), countdown=10)
@@ -88,16 +88,15 @@ def send_handoff_reminder_emails_task() -> int:
 
 @shared_task(name="listings.expire_listings")
 def expire_listings_task() -> int:
-    """Celery beat task — fires every 15 min to transition overdue listings to EXPIRED."""
-    from django.utils import timezone
-    from .models import Listing
+    """Celery beat task: fires every 15 min to transition overdue listings to EXPIRED.
 
-    expired = Listing.objects.filter(
-        status=Listing.Status.AVAILABLE,
-        available_until__lt=timezone.now(),
-        is_demo=False,
-    ).update(status=Listing.Status.EXPIRED)
-    return expired
+    Delegates to listings.ops so the beat schedule, the maintenance command and
+    the cron endpoint all expire listings the same way (including minting the
+    repost token the "your listing expired" email links to).
+    """
+    from .ops import expire_stale_listings
+
+    return expire_stale_listings()
 
 
 @shared_task(name="listings.send_bump_emails")
@@ -196,7 +195,7 @@ def recompute_category_affinity_task(user_pk: int) -> dict:
 def match_rescue_suggestions_task(user_pk: int) -> list:
     """
     For a user with an open RescueRequest, score the top 20 current listings
-    against their request using Claude and return the best matches.
+    against their request using the AI model and return the best matches.
     Results are stored as a system notification if strong matches exist.
     """
     from .models import Listing, RescueRequest, Notification
@@ -281,16 +280,24 @@ def sweep_stale_confirmations_task() -> int:
     notifies both parties with resolution options.
     """
     from datetime import timedelta
+    from django.db.models import Q
     from django.utils import timezone
-    from .models import Listing, Notification, Reservation
+    from .models import Dispute, Listing, Notification, Reservation
 
-    cutoff = timezone.now() - timedelta(hours=48)
+    now = timezone.now()
+    cutoff = now - timedelta(hours=48)
 
+    # "Stale" means the pickup itself is 48h in the past, not merely that the
+    # row has not been touched. A handoff confirmed today for next Saturday
+    # must survive this sweep.
     stale = list(
-        Reservation.objects.filter(
-            status=Reservation.Status.CONFIRMED,
-            updated_at__lt=cutoff,
-        ).select_related("listing", "listing__owner", "claimant")[:100]
+        Reservation.objects.filter(status=Reservation.Status.CONFIRMED)
+        .filter(
+            Q(confirmed_slot__lt=cutoff)
+            | Q(confirmed_slot__isnull=True, listing__available_until__lt=cutoff)
+        )
+        .exclude(disputes__status=Dispute.Status.OPEN)
+        .select_related("listing", "listing__owner", "claimant")[:100]
     )
 
     updated = 0
@@ -299,10 +306,15 @@ def sweep_stale_confirmations_task() -> int:
             status=Reservation.Status.EXPIRED_UNRESOLVED,
         )
 
-        # Re-open listing if it's still reserved
+        # Re-open the listing if it is still reserved, unless its own deadline
+        # has passed. In that case it is expired, not available.
         if reservation.listing.status == Listing.Status.RESERVED:
             Listing.objects.filter(pk=reservation.listing_id).update(
-                status=Listing.Status.AVAILABLE,
+                status=(
+                    Listing.Status.EXPIRED
+                    if reservation.listing.available_until < now
+                    else Listing.Status.AVAILABLE
+                ),
             )
 
         handoff_url = f"/handoffs/{reservation.pk}"
@@ -423,7 +435,7 @@ def recompute_demand_forecast_task() -> dict:
 def quality_coach_task(self: Any, listing_pk: int) -> list:
     """
     Phase 18 — fires after listing creation.
-    Calls Claude to produce ≤ 2 specific improvement suggestions for the listing.
+    Calls the AI model to produce ≤ 2 specific improvement suggestions for the listing.
     Stores result in listing.quality_hints (JSON).
     """
     from .models import Listing
@@ -503,12 +515,12 @@ def weekly_campus_digest_task() -> int:
     from datetime import timedelta
 
     from django.contrib.auth import get_user_model
-    from django.core.mail import send_mail
     from django.db.models import Count, Sum
     from django.utils import timezone
 
     from accounts.models import Campus
     from .models import Listing, Reservation
+    from .transactional_emails import _send
 
     User = get_user_model()
     since = timezone.now() - timedelta(days=7)
@@ -548,7 +560,7 @@ def weekly_campus_digest_task() -> int:
         top_cat = top_cat_row["category"].title() if top_cat_row else "—"
 
         from django.conf import settings as _settings
-        frontend = getattr(_settings, "FRONTEND_URL", "https://renest.app")
+        frontend = _settings.APP_BASE_URL
         subject = f"[ReNest] {campus.name} weekly digest"
         body = (
             f"Hi,\n\n"
@@ -564,13 +576,8 @@ def weekly_campus_digest_task() -> int:
 
         for manager in managers:
             try:
-                send_mail(
-                    subject=subject,
-                    message=body,
-                    from_email=_settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[manager.email],
-                    fail_silently=True,
-                )
+                # _send carries the List-Unsubscribe headers and the opt-out check.
+                _send(subject=subject, message=body, recipient=manager.email, user=manager)
                 sent += 1
             except Exception:
                 logger.exception("weekly_campus_digest_task: failed to email %s", manager.email)
@@ -642,6 +649,7 @@ def check_saved_searches() -> int:
                     title="New listing matches your search",
                     body=f"{count} new item{'s' if count > 1 else ''} match \"{search.label or search.keyword or search.category}\"",
                     url=f"/browse?category={search.category}&search={search.keyword}",
+                    notification_type="ai_match",
                 )
                 fired += 1
             except Exception:
@@ -668,13 +676,20 @@ def refresh_trending_cache() -> None:
     cutoff = tz.now() - _timedelta(hours=6)
 
     for campus in Campus.objects.filter(active=True):
+        # Aggregate within the campus: a global top-20 filtered afterwards
+        # leaves smaller campuses with an empty trending strip.
         view_rows = (
-            ListingViewEvent.objects.filter(viewed_at__gte=cutoff)
+            ListingViewEvent.objects.filter(
+                viewed_at__gte=cutoff,
+                listing__owner__campus=campus,
+                listing__is_demo=False,
+                listing__status=Listing.Status.AVAILABLE,
+            )
             .values("listing_id")
             .annotate(view_count=Count("id"))
             .order_by("-view_count")[:20]
         )
-        listing_ids = [r["listing_id"] for r in view_rows]  # type: ignore[index]  # .values() rows are dicts
+        listing_ids = [r["listing_id"] for r in view_rows]
         listings_map = {
             l.id: l
             for l in Listing.objects.filter(
@@ -685,7 +700,7 @@ def refresh_trending_cache() -> None:
         }
         results = []
         for row in view_rows:
-            listing = listings_map.get(row["listing_id"])  # type: ignore[index]  # .values() rows are dicts
+            listing = listings_map.get(row["listing_id"])
             if listing:
                 results.append({
                     "id": listing.id,
@@ -694,7 +709,7 @@ def refresh_trending_cache() -> None:
                     "price_type": listing.price_type,
                     "price_amount": str(listing.price_amount),
                     "image": listing.image_cdn_url,
-                    "view_count": row["view_count"],  # type: ignore[index]  # .values() rows are dicts
+                    "view_count": row["view_count"],
                 })
             if len(results) >= 6:
                 break
@@ -744,6 +759,9 @@ def deliver_webhook(self: Any, delivery_pk: int) -> None:
                 "X-ReNest-Event": delivery.event_type,
             },
             timeout=10,
+            # A redirect could point at an internal address the registration
+            # check already rejected; never follow one.
+            allow_redirects=False,
         )
         delivery.response_status = resp.status_code
         if 200 <= resp.status_code < 300:
@@ -754,11 +772,16 @@ def deliver_webhook(self: Any, delivery_pk: int) -> None:
     except Exception as exc:
         delivery.status = WebhookDelivery.Status.FAILED
         delivery.save(update_fields=["attempts", "last_attempted_at", "response_status", "status"])
-        try:
-            raise self.retry(exc=exc, countdown=60 * (2 ** delivery.attempts))
-        except self.MaxRetriesExceededError:
-            logger.error("Webhook delivery %s permanently failed after %d attempts", delivery_pk, delivery.attempts)
-        return
+        # In eager mode (no broker) self.retry runs the task inline, which would
+        # block the caller for the whole back-off ladder; log and stop instead.
+        if self.request.is_eager or self.request.retries >= self.max_retries:
+            logger.error(
+                "Webhook delivery %s permanently failed after %d attempts",
+                delivery_pk,
+                delivery.attempts,
+            )
+            return
+        raise self.retry(exc=exc, countdown=60 * (2 ** delivery.attempts))
 
     delivery.save(update_fields=["attempts", "last_attempted_at", "response_status", "status"])
 
@@ -787,7 +810,7 @@ def ai_detect_cache_key(session_pk: int, image_pk: int) -> str:
 @shared_task(bind=True, name="listings.run_ai_detection")
 def run_ai_detection(self: Any, session_pk: int, image_pk: int) -> None:
     """
-    Run Claude Vision detection for a scan image in the background and create
+    Run vision detection for a scan image in the background and create
     hotspot drafts. Progress is reported through the cache so the API can be
     polled — never raises, so eager (dev) execution cannot 500 the request.
     """
@@ -805,31 +828,40 @@ def run_ai_detection(self: Any, session_pk: int, image_pk: int) -> None:
         # Pass the FieldFile, not .path — remote storage (S3/R2) has no path.
         suggestions = sanitise_suggestions(detect_items_in_image(scan_image.image))
 
+        from django.db import transaction
+
         from .models import RoomScanItemDraft
 
         created_count = 0
-        for suggestion in suggestions:
-            price_amount = 0.0
-            if suggestion["price_type"] == "low_cost":
-                price_amount = round(max(5.0, suggestion["estimated_retail_value"] * 0.35), 2)
+        with transaction.atomic():
+            for suggestion in suggestions:
+                price_amount = 0.0
+                if suggestion["price_type"] == "low_cost":
+                    price_amount = round(max(5.0, suggestion["estimated_retail_value"] * 0.35), 2)
 
-            RoomScanItemDraft.objects.create(
-                scan_session=scan_session,
-                source_image=scan_image,
-                hotspot_box=suggestion["hotspot_box"],
-                title=suggestion["title"],
-                category=suggestion["category"],
-                condition=suggestion["condition"],
-                price_type=suggestion["price_type"],
-                price_amount=price_amount,
-                estimated_retail_value=suggestion["estimated_retail_value"],
-                triage_status="sell" if suggestion["price_type"] == "low_cost" else "review",
-                notes="AI-detected from room photo.",
-            )
-            created_count += 1
+                RoomScanItemDraft.objects.create(
+                    scan_session=scan_session,
+                    source_image=scan_image,
+                    hotspot_box=suggestion["hotspot_box"],
+                    title=suggestion["title"],
+                    category=suggestion["category"],
+                    condition=suggestion["condition"],
+                    price_type=suggestion["price_type"],
+                    price_amount=price_amount,
+                    estimated_retail_value=suggestion["estimated_retail_value"],
+                    triage_status="sell" if suggestion["price_type"] == "low_cost" else "review",
+                    notes="AI-detected from room photo.",
+                )
+                created_count += 1
 
-        scan_session.refresh_progress()
+            scan_session.refresh_progress()
         cache.set(key, {"status": "done", "created_count": created_count}, timeout=600)
-    except Exception as exc:
+    except Exception:
+        # The provider message can carry request ids, model names and key
+        # fragments; log it and hand the client a generic failure.
         logger.exception("run_ai_detection failed for session %s image %s", session_pk, image_pk)
-        cache.set(key, {"status": "error", "detail": f"AI detection failed: {exc}"}, timeout=600)
+        cache.set(
+            key,
+            {"status": "error", "detail": "AI detection failed. Try again or tag items manually."},
+            timeout=600,
+        )

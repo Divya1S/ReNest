@@ -15,6 +15,7 @@ function cacheRouteLoader(loader) {
 export const routeLoaders = {
   campusAnalytics: cacheRouteLoader(() => import("../pages/CampusAnalyticsPage")),
   campusLanding: cacheRouteLoader(() => import("../pages/CampusLandingPage")),
+  campusOnboard: cacheRouteLoader(() => import("../pages/CampusOnboardPage")),
   leaderboard: cacheRouteLoader(() => import("../pages/LeaderboardPage")),
   assistant: cacheRouteLoader(() => import("../pages/AssistantPage")),
   hubDispatch: cacheRouteLoader(() => import("../pages/HubDispatchPage")),

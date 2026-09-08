@@ -114,6 +114,14 @@ class CampusSubscription(models.Model):
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = [
+            # Stripe retries webhooks; a session may only be recorded once.
+            models.UniqueConstraint(
+                fields=["stripe_session_id"],
+                condition=~models.Q(stripe_session_id=""),
+                name="unique_campus_subscription_session",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.campus} — {self.tier} ({self.created_at:%Y-%m-%d})"
@@ -121,6 +129,17 @@ class CampusSubscription(models.Model):
 
 class UserManager(BaseUserManager):
     use_in_migrations = True
+
+    @classmethod
+    def normalize_email(cls, email):
+        """Lower-case the whole address, not just the domain.
+
+        Django's default only normalises the domain, which would let
+        Jules@usc.edu and jules@usc.edu become two accounts that each fail to
+        log in as the other. Mail providers treat the local part
+        case-insensitively in practice, so ReNest stores one canonical form.
+        """
+        return super().normalize_email(email or "").strip().lower()
 
     def _create_user(self, email, password, **extra_fields):
         if not email:

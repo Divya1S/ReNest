@@ -1,18 +1,42 @@
-from django.core.management.base import BaseCommand
+from typing import Any
 
-from listings.ops import run_maintenance_cycle
+from django.core.management.base import BaseCommand, CommandError
+
+from listings.ops import SCHEDULED_JOB_SETS, run_scheduled_jobs
 
 
 class Command(BaseCommand):
-    help = "Run the full ReNest maintenance suite: expiry, move-out task sync, and notifications."
+    help = (
+        "Run the scheduled maintenance jobs in-process (no Celery beat needed): "
+        "listing expiry, move-out task sync, notifications, reminder and bump "
+        "emails, stale-confirmation sweep, saved-search alerts, trending cache "
+        "and push-queue flush. Use --jobs to pick the daily/weekly sets too."
+    )
 
-    def handle(self, *args, **options):
-        counts = run_maintenance_cycle()
-        self.stdout.write(
-            self.style.SUCCESS(
-                "Maintenance complete "
-                f"(expired={counts['expired']}, synced_tasks={counts['synced_tasks']}, "
-                f"notifications_created={counts['created']}, notifications_updated={counts['updated']}, "
-                f"notifications_active={counts['active']}, reminder_emails={counts['reminder_emails']})."
-            )
+    def add_arguments(self, parser: Any) -> None:
+        parser.add_argument(
+            "--jobs",
+            default="tick",
+            help=(
+                "Comma-separated job sets to run: "
+                + ", ".join(SCHEDULED_JOB_SETS)
+                + ", or all (default: tick)."
+            ),
         )
+
+    def handle(self, *args: Any, **options: Any) -> None:
+        requested = [item.strip() for item in options["jobs"].split(",") if item.strip()]
+        unknown = [item for item in requested if item != "all" and item not in SCHEDULED_JOB_SETS]
+        if not requested or unknown:
+            raise CommandError(f"Unknown job set(s): {', '.join(unknown) or '(none given)'}")
+
+        results = run_scheduled_jobs(requested)
+        failed = [name for name, result in results.items() if not result["ok"]]
+        for name, result in results.items():
+            if result["ok"]:
+                self.stdout.write(f"  ok    {name}: {result['result']}")
+            else:
+                self.stdout.write(self.style.ERROR(f"  FAIL  {name}: {result['error']}"))
+        if failed:
+            raise CommandError(f"{len(failed)} maintenance job(s) failed: {', '.join(failed)}")
+        self.stdout.write(self.style.SUCCESS(f"Maintenance complete ({len(results)} jobs)."))

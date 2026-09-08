@@ -2,6 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "../../lib/api";
 
+// Abort a stream that has produced nothing for this long. Sized above the
+// server's own 55-second turn budget so a slow-but-progressing turn is never
+// cut off; the server always gives up first.
+const STREAM_IDLE_TIMEOUT_MS = 75_000;
+
 export const ERROR_BUBBLE =
   "I couldn't get a reply just now — your message wasn't lost on our side, so give it another try in a moment.";
 
@@ -29,11 +34,14 @@ export function useConciergeChat(active) {
   const [phase, setPhase] = useState(null);
   const [hasMore, setHasMore] = useState(false);
   const mounted = useRef(true);
+  const streamControllerRef = useRef(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // Leaving the page must close the stream, not leave it reading.
+      streamControllerRef.current?.abort();
     };
   }, []);
 
@@ -72,36 +80,69 @@ export function useConciergeChat(active) {
 
   const streamTurn = useCallback(
     async (text) => {
-      const response = await fetch("/api/concierge/chat/stream/", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
-        body: JSON.stringify({ message: text }),
-      });
-      if (!response.ok || !response.body) throw new Error(`stream unavailable (${response.status})`);
+      // Without an abort the request can hang forever: `sending` stays true and
+      // the composer is disabled with no way back. Idle-based so a slow-but-
+      // alive turn is not cut off mid-answer.
+      const controller = new AbortController();
+      streamControllerRef.current = controller;
+      let idleTimer = null;
+      const resetIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
+      };
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-      for (;;) {
-        const chunk = await reader.read();
-        if (chunk.done) break;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        const frames = buffer.split("\n\n");
-        buffer = frames.pop() ?? "";
-        for (const frame of frames) {
-          if (!frame.startsWith("data: ")) continue;
-          const event = JSON.parse(frame.slice(6));
-          if (event.type === "phase" && mounted.current) {
-            setPhase(event);
-          } else if (event.type === "done") {
-            done = true;
-            if (mounted.current) appendReply(event);
+      let receivedFrame = false;
+      try {
+        resetIdleTimer();
+        const response = await fetch("/api/concierge/chat/stream/", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", "X-CSRFToken": getCookie("csrftoken") },
+          body: JSON.stringify({ message: text }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`stream unavailable (${response.status})`);
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let done = false;
+        for (;;) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          resetIdleTimer();
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const frames = buffer.split("\n\n");
+          buffer = frames.pop() ?? "";
+          for (const frame of frames) {
+            if (!frame.startsWith("data: ")) continue;
+            let event;
+            try {
+              event = JSON.parse(frame.slice(6));
+            } catch {
+              // A truncated frame is not a reason to abandon the turn.
+              continue;
+            }
+            receivedFrame = true;
+            if (event.type === "phase" && mounted.current) {
+              setPhase(event);
+            } else if (event.type === "done") {
+              done = true;
+              if (mounted.current) appendReply(event);
+            }
           }
         }
+        if (!done) {
+          const error = new Error("stream ended without a result");
+          // The server had already begun the turn, so retrying through the
+          // JSON endpoint would run (and persist) the same turn a second time.
+          error.turnStarted = receivedFrame;
+          throw error;
+        }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (streamControllerRef.current === controller) streamControllerRef.current = null;
       }
-      if (!done) throw new Error("stream ended without a result");
     },
     [appendReply],
   );
@@ -116,8 +157,11 @@ export function useConciergeChat(active) {
       try {
         try {
           await streamTurn(text);
-        } catch {
+        } catch (streamError) {
           // Streaming is an enhancement; the JSON endpoint is the contract.
+          // But only fall back when the turn never started server-side,
+          // otherwise the same message is answered (and stored) twice.
+          if (streamError?.turnStarted) throw streamError;
           // Agentic turns can take a while — longer leash than the 15s default.
           const data = await apiFetch("/concierge/chat/", {
             method: "POST",

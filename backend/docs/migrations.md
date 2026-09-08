@@ -117,8 +117,10 @@ the constraint because all rows already satisfy it.
 
 ## CI check for large-table migrations
 
-The following check is run in CI (`.github/workflows/ci.yml`) and fails if a
-migration touches a known large table without `atomic = False`:
+CI runs `manage.py makemigrations --check --dry-run` on every push, which
+catches model changes that were never captured in a migration. The stricter
+large-table review below is a manual step: run it before merging a migration
+that touches one of the hot tables.
 
 ```yaml
 - name: Check migration safety

@@ -35,6 +35,10 @@ BREAKER_FAILURES_KEY = "concierge:breaker:failures"
 BREAKER_OPEN_KEY = "concierge:breaker:open"
 BREAKER_THRESHOLD = 3         # consecutive failed turns that open the breaker
 BREAKER_COOLDOWN_SECONDS = 120
+# Wall-clock budget for one turn across every model call it makes. Sized to sit
+# under the client's own abort (75 s) so the server gives up first and the user
+# never sees an error for a reply that later appears in their history.
+TURN_BUDGET_SECONDS = 55.0
 
 DEGRADED_REPLY = (
     "I'm having trouble reaching my assistant service right now, so I can't answer that. "
@@ -155,8 +159,13 @@ def run_turn(
     route = router.classify(text)
     notify({"phase": "routing", "route": route.name})
 
-    # Semantic cache — chat route only. That route can touch nothing but the
-    # shared knowledge base, so cached answers are user-independent and safe.
+    # Semantic cache: chat route only, and only for turns with no personal
+    # context. A chat reply is generated with the asker's own history window
+    # and thread summary in the prompt, so a reply produced mid-conversation
+    # can quote their listings or pickup times; storing that globally would
+    # serve it to the next person who says the same thing.
+    history = _window_messages(thread)
+    context_free = not history and not thread.summary
     if route.name == "chat":
         hit = semantic_cache.lookup(text)
         if hit is not None:
@@ -169,8 +178,15 @@ def run_turn(
                     "meta": meta, "message_id": message_id}
 
     client = client or _get_client()
+    deadline = started + TURN_BUDGET_SECONDS
 
     def call(**kwargs: Any) -> Any:
+        # A task turn can issue ten model calls, each with its own 30 s HTTP
+        # timeout and retries. Without a shared budget a degraded provider
+        # holds the request (and an SSE connection) for many minutes, long
+        # after the client has given up.
+        if time.monotonic() > deadline:
+            raise TimeoutError("Concierge turn budget exceeded.")
         return _call_model(client, **kwargs)
 
     try:
@@ -179,7 +195,7 @@ def run_turn(
             call,
             text=text,
             route=route,
-            history=_window_messages(thread),
+            history=history,
             summary=thread.summary,
             on_event=notify,
         )
@@ -194,7 +210,7 @@ def run_turn(
     result["meta"]["latency_ms"] = int((time.monotonic() - started) * 1000)
     message_id = _persist(thread, text, result["reply"], result["used_tools"], result["meta"])
 
-    if route.name == "chat":
+    if route.name == "chat" and context_free:
         semantic_cache.store(text, result["reply"], result["meta"].get("ui_blocks") or [])
 
     try:

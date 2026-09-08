@@ -15,11 +15,15 @@ class CampusAdmin(admin.ModelAdmin):
 @admin.register(User)
 class UserAdmin(BaseUserAdmin):
     ordering = ("email",)
-    list_display = ("email", "display_name", "campus", "is_staff")
+    list_display = ("email", "display_name", "campus", "email_verified", "is_staff")
+    list_filter = ("is_staff", "is_active", "email_verified", "is_campus_manager")
     search_fields = ("email", "display_name", "campus_name")
+    # created_at is auto_now_add (non-editable): listing it in fieldsets without
+    # declaring it read-only makes the change form raise FieldError.
+    readonly_fields = ("created_at", "last_login")
     fieldsets = (
         (None, {"fields": ("email", "password")}),
-        ("Profile", {"fields": ("display_name", "campus_name", "campus")}),
+        ("Profile", {"fields": ("display_name", "campus_name", "campus", "email_verified")}),
         (
             "Permissions",
             {

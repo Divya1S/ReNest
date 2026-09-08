@@ -54,6 +54,7 @@ export function setApiAuthHandlers(handlers: Partial<AuthEventHandlers>): void {
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 /**
  * Typed fetch wrapper for the ReNest API.
@@ -65,7 +66,13 @@ export async function apiFetch<T = unknown>(
   path: string,
   options: ApiFetchOptions = {},
 ): Promise<T> {
-  const { body, headers, signal: callerSignal, timeout = DEFAULT_TIMEOUT_MS, ...rest } = options;
+  const { body, headers, signal: callerSignal, ...rest } = options;
+  // Multipart bodies are photo uploads: several megabytes on a phone uplink,
+  // then server-side image compression. The 15s default aborts those while the
+  // server is still working, so the user sees a timeout for an upload that
+  // actually succeeds.
+  const isUpload = body instanceof FormData;
+  const timeout = options.timeout ?? (isUpload ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
   const method = (rest.method ?? "GET").toUpperCase();
   const finalHeaders: Record<string, string> = { ...(headers ?? {}) };
 

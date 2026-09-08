@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
 import { useIntentPrefetch } from "../hooks/useIntentPrefetch";
-import { apiFetch } from "../lib/api";
+import { apiFetch, toLocalDateTimeInput } from "../lib/api";
 import { cn } from "../lib/cn";
 import { formatCurrencyValue, formatMoney } from "../lib/formatters";
 
@@ -19,9 +19,10 @@ function categoryLabel(value) {
 function QuickEditPopover({ listing, onClose, onSaved }) {
   const ref = useRef(null);
   const [pickupZone, setPickupZone] = React.useState(listing.pickup_zone || "");
-  const [availableUntil, setAvailableUntil] = React.useState(
-    listing.available_until ? listing.available_until.slice(0, 16) : ""
-  );
+  // The API renders datetimes with the server's offset; slicing the string
+  // would drop it and re-read the wall time in the browser's zone.
+  const initialAvailableUntil = toLocalDateTimeInput(listing.available_until);
+  const [availableUntil, setAvailableUntil] = React.useState(initialAvailableUntil);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState("");
 
@@ -40,7 +41,11 @@ function QuickEditPopover({ listing, onClose, onSaved }) {
     try {
       const body = {};
       if (pickupZone !== listing.pickup_zone) body.pickup_zone = pickupZone;
-      if (availableUntil && availableUntil + ":00" !== listing.available_until?.slice(0, 17)) {
+      // Compare against the same local-input normalisation used for the initial
+      // value. The old string-slice comparison could never match, so every save
+      // re-sent the deadline, reinterpreted in the browser's timezone, which
+      // shifted the date for anyone outside the server's zone.
+      if (availableUntil && availableUntil !== initialAvailableUntil) {
         body.available_until = new Date(availableUntil).toISOString();
       }
       if (Object.keys(body).length === 0) { onClose(); return; }
@@ -106,7 +111,10 @@ function ListingCard({ listing, preview = false, onListingChange, onQuickView, c
   const [quickEditOpen, setQuickEditOpen] = React.useState(false);
   const detailPrefetch = useIntentPrefetch({
     route: isOwner ? "listingForm" : "listingDetail",
-    data: preview ? null : `/listings/${listing.id}`,
+    // Route chunk only. GET /listings/:id is not a pure read: it records a
+    // ListingViewEvent and an interaction event, so prefetching the data on
+    // hover, focus or touchstart inflated every listing's view count.
+    data: null,
     enabled: !preview,
   });
 
@@ -149,7 +157,12 @@ function ListingCard({ listing, preview = false, onListingChange, onQuickView, c
         </div>
         <div className="flex flex-col gap-2 shrink-0">
           {!preview && <SaveButton listing={listing} onListingChange={onListingChange} />}
-          <Link to={`/listings/${listing.id}`} aria-label={`View ${listing.title}`} className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--color-tag)] transition-colors">
+          <Link
+            to={`/listings/${listing.id}`}
+            aria-label={`View ${listing.title}`}
+            onClick={(event) => event.stopPropagation()}
+            className="p-2 text-[color:var(--text-muted)] hover:text-[color:var(--color-tag)] transition-colors"
+          >
             <ArrowRight size={18} aria-hidden="true" />
           </Link>
         </div>

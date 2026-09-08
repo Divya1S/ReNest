@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import logging
+import hmac
 import secrets
 import textwrap
 from datetime import timezone as dt_timezone
 
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -16,6 +21,11 @@ from rest_framework.views import APIView
 
 from ..models import Notification, Reservation
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Incorrect PIN entries tolerated per reservation per hour.
+_MAX_PIN_ATTEMPTS = 8
 
 
 def _get_reservation_for_participant(pk: int, user: Any) -> Reservation:
@@ -69,22 +79,29 @@ class ReservationSlotsView(APIView):
             if not is_owner:
                 return Response({"detail": "Only the owner can propose slots."}, status=403)
             raw_slots = request.data["slots"]
-            if not isinstance(raw_slots, list) or len(raw_slots) > 5:
+            if not isinstance(raw_slots, list) or not 1 <= len(raw_slots) <= 5:
                 return Response({"detail": "Provide 1–5 slot datetimes."}, status=400)
             # Validate and normalise to ISO strings
+            now = timezone.now()
             validated = []
             for s in raw_slots:
                 ser = drf_serializers.DateTimeField()
                 try:
                     dt = ser.to_internal_value(s)
-                    validated.append(dt.isoformat())
                 except Exception:
                     return Response({"detail": f"Invalid datetime: {s}"}, status=400)
+                if dt <= now:
+                    return Response({"detail": "Pickup slots must be in the future."}, status=400)
+                validated.append(dt.isoformat())
             reservation.pickup_slots = validated
-            reservation.save(update_fields=["pickup_slots", "updated_at"])
-            # Notify claimant
+            # Re-proposing invalidates whatever the claimant confirmed before.
+            reservation.confirmed_slot = None
+            reservation.save(update_fields=["pickup_slots", "confirmed_slot", "updated_at"])
+            # Notify claimant. The dedupe key includes the proposal itself, so a
+            # genuinely new set of times notifies again while a retry does not.
+            proposal_digest = hashlib.sha256("|".join(validated).encode()).hexdigest()[:12]
             Notification.objects.get_or_create(
-                dedupe_key=f"slots:{reservation.pk}:{len(validated)}",
+                dedupe_key=f"slots:{reservation.pk}:{proposal_digest}",
                 defaults=dict(
                     user=reservation.claimant,
                     type=Notification.Type.RESERVATION,
@@ -156,17 +173,28 @@ class ReservationVerifyPinView(APIView):
         if not reservation.handoff_pin:
             return Response({"detail": "No PIN has been generated for this reservation."}, status=400)
 
+        # A 6-digit PIN is brute-forceable in ~1M guesses; cap attempts per
+        # reservation so an owner cannot grind the claimant's code.
+        attempts_key = f"pin-attempts:{reservation.pk}"
+        attempts = cache.get(attempts_key, 0)
+        if attempts >= _MAX_PIN_ATTEMPTS:
+            return Response(
+                {"detail": "Too many incorrect PIN attempts. Try again in an hour."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
         submitted = str(request.data.get("pin", "")).strip()
-        if submitted != reservation.handoff_pin:
+        if not hmac.compare_digest(submitted, reservation.handoff_pin):
+            cache.set(attempts_key, attempts + 1, timeout=3600)
             return Response({"detail": "Incorrect PIN."}, status=status.HTTP_400_BAD_REQUEST)
+        cache.delete(attempts_key)
 
-        reservation.status = Reservation.Status.COMPLETED
-        reservation.save(update_fields=["status", "updated_at"])
+        # One shared transition so the PIN path closes the rescue request,
+        # invalidates dashboards and sends the same emails as a status PATCH.
+        from ..services import complete_reservation
 
-        # Update listing status
+        reservation = complete_reservation(reservation, notify=False)
         listing = reservation.listing
-        listing.status = listing.Status.PICKED_UP
-        listing.save(update_fields=["status", "updated_at"])
 
         # Notify claimant
         Notification.objects.get_or_create(
@@ -181,12 +209,12 @@ class ReservationVerifyPinView(APIView):
             ),
         )
 
-        # Trigger post-completion emails async
+        # Post-completion emails (feedback prompt + impact summary).
         try:
             from ..tasks import send_reservation_completed_email_task
             send_reservation_completed_email_task.delay(reservation.pk)
         except Exception:
-            pass
+            logger.exception("Completion emails could not be scheduled for reservation %s", reservation.pk)
 
         return Response({"detail": "Handoff marked complete."})
 
@@ -253,7 +281,8 @@ class ReservationCalendarView(APIView):
 
         listing_title = reservation.listing.title
         pickup_zone = reservation.listing.pickup_zone
-        deep_link = f"https://renest.app/handoff/{reservation.pk}"
+        # /handoffs/ (plural) is the SPA route; /handoff/ 404s.
+        deep_link = f"{settings.APP_BASE_URL}/handoffs/{reservation.pk}"
 
         # Use confirmed_slot if available, otherwise now + 1h as fallback
         if reservation.confirmed_slot:
@@ -268,29 +297,43 @@ class ReservationCalendarView(APIView):
         def _ical_dt(dt: Any) -> str:
             return dt.strftime("%Y%m%dT%H%M%SZ")
 
+        def _ical_text(value: Any) -> str:
+            """Escape per RFC 5545: backslash, semicolon, comma and newlines.
+
+            A listing title containing a comma would otherwise split the
+            property value and corrupt the whole calendar entry.
+            """
+            text = str(value or "")
+            text = text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+            return text.replace("\r\n", "\\n").replace("\n", "\\n")
+
         uid = f"renest-reservation-{reservation.pk}@renest.app"
         summary = f"Pickup: {listing_title}"
-        description = textwrap.dedent(f"""\
-            ReNest pickup for: {listing_title}
-            Location: {pickup_zone}
-            Handoff hub: {deep_link}
-        """).strip()
+        description = "\n".join([
+            f"ReNest pickup for: {listing_title}",
+            f"Location: {pickup_zone}",
+            f"Handoff hub: {deep_link}",
+        ])
 
-        ical = textwrap.dedent(f"""\
-            BEGIN:VCALENDAR
-            VERSION:2.0
-            PRODID:-//ReNest//ReNest Handoff//EN
-            BEGIN:VEVENT
-            UID:{uid}
-            SUMMARY:{summary}
-            DESCRIPTION:{description.replace(chr(10), "\\n")}
-            LOCATION:{pickup_zone}
-            DTSTART:{_ical_dt(dt_start)}
-            DTEND:{_ical_dt(dt_end)}
-            URL:{deep_link}
-            END:VEVENT
-            END:VCALENDAR
-        """).strip()
+        ical = "\r\n".join([
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//ReNest//ReNest Handoff//EN",
+            "CALSCALE:GREGORIAN",
+            "METHOD:PUBLISH",
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            # DTSTAMP is required by RFC 5545; some clients reject the file without it.
+            f"DTSTAMP:{_ical_dt(timezone.now().astimezone(dt_timezone.utc))}",
+            f"SUMMARY:{_ical_text(summary)}",
+            f"DESCRIPTION:{_ical_text(description)}",
+            f"LOCATION:{_ical_text(pickup_zone)}",
+            f"DTSTART:{_ical_dt(dt_start)}",
+            f"DTEND:{_ical_dt(dt_end)}",
+            f"URL:{deep_link}",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ])
 
         return HttpResponse(
             ical,

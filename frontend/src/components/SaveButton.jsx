@@ -14,7 +14,10 @@ export default function SaveButton({ listing, onListingChange, className }) {
     return null;
   }
 
-  async function handleToggle() {
+  async function handleToggle(event) {
+    // The browse grid wraps each card in a click handler that opens the preview
+    // modal; saving must not also open it.
+    event?.stopPropagation?.();
     if (pending) return;
     const wasSaved = listing.is_saved;
     setPending(true);

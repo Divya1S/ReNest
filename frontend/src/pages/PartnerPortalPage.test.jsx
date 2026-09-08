@@ -36,20 +36,22 @@ function renderPage() {
 describe("PartnerPortalPage", () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
   });
   afterEach(() => {
     vi.restoreAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
   });
 
-  test("shows 'no API key provisioned' message when localStorage is empty", () => {
+  test("shows 'no API key provisioned' message when no key is held", () => {
     renderPage();
     expect(screen.getByText(/no api key provisioned yet/i)).toBeInTheDocument();
     expect(screen.queryByText(/•/)).not.toBeInTheDocument();
   });
 
-  test("shows masked stored key when dc_partner_key exists in localStorage", async () => {
-    localStorage.setItem("dc_partner_key", "dc_live_abcdef1234567890");
+  test("shows masked stored key when a key is held for this session", async () => {
+    sessionStorage.setItem("renest_partner_key", "dc_live_abcdef1234567890");
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(mockOk(USAGE))
       .mockResolvedValueOnce(mockOk({ results: [] }));
@@ -60,7 +62,7 @@ describe("PartnerPortalPage", () => {
   });
 
   test("renders usage stats when a stored key is present", async () => {
-    localStorage.setItem("dc_partner_key", "dc_live_testkey123");
+    sessionStorage.setItem("renest_partner_key", "dc_live_testkey123");
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(mockOk(USAGE))
       .mockResolvedValueOnce(mockOk({ results: [] }));
@@ -73,7 +75,7 @@ describe("PartnerPortalPage", () => {
   });
 
   test("shows usage error panel with retry when the usage fetch fails", async () => {
-    localStorage.setItem("dc_partner_key", "dc_live_testkey123");
+    sessionStorage.setItem("renest_partner_key", "dc_live_testkey123");
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(mockErr(401))
       .mockResolvedValueOnce(mockOk({ results: [] }));
@@ -91,7 +93,7 @@ describe("PartnerPortalPage", () => {
     expect(screen.getByRole("button", { name: /create key/i })).toBeInTheDocument();
   });
 
-  test("provisioning a key stores it in localStorage and shows the masked key", async () => {
+  test("provisioning a key keeps it for the session and shows the masked key", async () => {
     const rawKey = "dc_live_newlygeneratedkey123";
     vi.spyOn(global, "fetch").mockResolvedValue(mockOk({ key: rawKey }));
 
@@ -104,7 +106,7 @@ describe("PartnerPortalPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /create key/i }));
 
     await waitFor(() => {
-      expect(localStorage.getItem("dc_partner_key")).toBe(rawKey);
+      expect(sessionStorage.getItem("renest_partner_key")).toBe(rawKey);
       // Created key is displayed in the green banner
       expect(screen.getByText(rawKey)).toBeInTheDocument();
     });
@@ -126,7 +128,7 @@ describe("PartnerPortalPage", () => {
   });
 
   test("renders webhook endpoints when a stored key is present", async () => {
-    localStorage.setItem("dc_partner_key", "dc_live_testkey123");
+    sessionStorage.setItem("renest_partner_key", "dc_live_testkey123");
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(mockOk(USAGE))
       .mockResolvedValueOnce(mockOk({ results: [WEBHOOK] }));
@@ -138,7 +140,7 @@ describe("PartnerPortalPage", () => {
   });
 
   test("embed snippet shows campus slug from usage data", async () => {
-    localStorage.setItem("dc_partner_key", "dc_live_testkey123");
+    sessionStorage.setItem("renest_partner_key", "dc_live_testkey123");
     vi.spyOn(global, "fetch")
       .mockResolvedValueOnce(mockOk(USAGE))
       .mockResolvedValueOnce(mockOk({ results: [] }));

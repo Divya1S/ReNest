@@ -4,19 +4,19 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
+from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.utils import timezone
 from drf_spectacular.openapi import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
-from accounts.serializers import UserSerializer
+from accounts.serializers import PublicUserSerializer
 from hubs.serializers import DonationHubSerializer
 
-from .tasks import (
-    send_reservation_confirmed_email_task,
-    send_reservation_completed_email_task,
-)
 from .models import (
+    BlockedUser,
     HandoffFeedback,
     Listing,
     ListingReport,
@@ -160,7 +160,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
 
 
 class ListingSerializer(serializers.ModelSerializer):
-    owner = UserSerializer(read_only=True)
+    owner = PublicUserSerializer(read_only=True)
     image_url = serializers.SerializerMethodField()
     thumb_url = serializers.SerializerMethodField()
     gallery = serializers.SerializerMethodField()
@@ -282,6 +282,24 @@ class ListingSerializer(serializers.ModelSerializer):
     def validate_image(self, value: Any) -> Any:
         if value:
             return compress_image(value)
+        return value
+
+    def validate_image_cdn_url(self, value: str) -> str:
+        """Only accept URLs the presigned-upload flow could have produced.
+
+        This field exists so the client can hand back the object-storage URL it
+        just uploaded to. Left unchecked it is a way to point a listing image at
+        any host, bypassing every upload validation and letting a listing embed
+        a third-party tracking URL.
+        """
+        value = (value or "").strip()
+        if not value:
+            return ""
+        base = (getattr(settings, "MEDIA_CDN_BASE_URL", "") or "").rstrip("/")
+        if not base or not value.startswith(f"{base}/"):
+            raise serializers.ValidationError(
+                "Image URLs must come from this deployment's media storage."
+            )
         return value
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +527,23 @@ class RoomScanItemDraftSerializer(serializers.ModelSerializer):
     source_image_detail = RoomScanImageSerializer(source="source_image", read_only=True)
     donation_hub_detail = DonationHubSerializer(source="donation_hub", read_only=True)
     linked_listing_detail = ListingSerializer(source="linked_listing", read_only=True)
+
+    def validate_source_image(self, value: Any) -> Any:
+        """A draft may only point at a photo from its own scan session.
+
+        Without this, PATCH /api/scan-items/<own id> with another user's
+        image id embeds that person's room photo in the response and in every
+        later board payload.
+        """
+        if value is None:
+            return value
+        session_id = getattr(self.instance, "scan_session_id", None)
+        if session_id is None:
+            session = self.initial_data.get("scan_session") if hasattr(self, "initial_data") else None
+            session_id = session
+        if session_id is not None and value.scan_session_id != session_id:
+            raise serializers.ValidationError("That photo belongs to a different scan session.")
+        return value
     publish_readiness = serializers.SerializerMethodField()
     missing_fields = serializers.SerializerMethodField()
     recommended_action = serializers.SerializerMethodField()
@@ -621,7 +656,7 @@ class RoomScanItemDraftSerializer(serializers.ModelSerializer):
 class RoomScanSessionSerializer(serializers.ModelSerializer):
     images = RoomScanImageSerializer(many=True, read_only=True)
     items = RoomScanItemDraftSerializer(many=True, read_only=True)
-    owner = UserSerializer(read_only=True)
+    owner = PublicUserSerializer(read_only=True)
     summary = serializers.SerializerMethodField()
     task_summary = serializers.SerializerMethodField()
 
@@ -799,7 +834,7 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class ListingReportSerializer(serializers.ModelSerializer):
-    reporter = UserSerializer(read_only=True)
+    reporter = PublicUserSerializer(read_only=True)
     listing_title = serializers.SerializerMethodField()
 
     class Meta:
@@ -850,7 +885,7 @@ class ListingReportSerializer(serializers.ModelSerializer):
 
 
 class RescueRequestSerializer(serializers.ModelSerializer):
-    seeker = UserSerializer(read_only=True)
+    seeker = PublicUserSerializer(read_only=True)
     matched_listing_detail = ListingSerializer(source="matched_listing", read_only=True)
     can_edit = serializers.SerializerMethodField()
     can_match = serializers.SerializerMethodField()
@@ -940,8 +975,8 @@ class RescueRequestSerializer(serializers.ModelSerializer):
 
 
 class HandoffFeedbackSerializer(serializers.ModelSerializer):
-    reviewer = UserSerializer(read_only=True)
-    reviewee = UserSerializer(read_only=True)
+    reviewer = PublicUserSerializer(read_only=True)
+    reviewee = PublicUserSerializer(read_only=True)
     listing_title = serializers.SerializerMethodField()
 
     class Meta:
@@ -1027,7 +1062,7 @@ class HandoffFeedbackSerializer(serializers.ModelSerializer):
 
 
 class ReservationSerializer(serializers.ModelSerializer):
-    claimant = UserSerializer(read_only=True)
+    claimant = PublicUserSerializer(read_only=True)
     listing_detail = ListingSerializer(source="listing", read_only=True)
     relationship = serializers.SerializerMethodField()
     allowed_actions = serializers.SerializerMethodField()
@@ -1108,6 +1143,13 @@ class ReservationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"listing": "Preview listings cannot be reserved."})
             if listing.owner_id == request.user.id:
                 raise serializers.ValidationError({"listing": "You cannot reserve your own listing."})
+            if listing.moderation_status == Listing.ModerationStatus.FLAGGED:
+                raise serializers.ValidationError({"listing": "This listing is under review."})
+            if BlockedUser.objects.filter(
+                Q(blocker_id=listing.owner_id, blocked=request.user)
+                | Q(blocker=request.user, blocked_id=listing.owner_id)
+            ).exists():
+                raise serializers.ValidationError({"listing": "This listing is not available to you."})
             if listing.status != Listing.Status.AVAILABLE:
                 raise serializers.ValidationError({"listing": "This listing is no longer available."})
             if listing.reservations.filter(
@@ -1123,6 +1165,11 @@ class ReservationSerializer(serializers.ModelSerializer):
             attrs["status"] = Reservation.Status.REQUESTED
             return attrs
 
+        if "listing" in attrs and attrs["listing"].pk != self.instance.listing_id:
+            raise serializers.ValidationError(
+                {"listing": "A reservation cannot be moved to a different listing."}
+            )
+
         next_status = attrs.get("status", self.instance.status)
         if next_status != self.instance.status:
             allowed = self._allowed_statuses(request.user, self.instance)
@@ -1133,62 +1180,39 @@ class ReservationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data: dict[str, Any]) -> Reservation:
         listing = validated_data["listing"]
-        reservation = Reservation.objects.create(**validated_data)
-        listing.status = Listing.Status.RESERVED
-        listing.save(update_fields=["status", "updated_at"])
+        # The claim and the listing flip must be one transaction, and the
+        # database has the last word on "one active claim per listing": the
+        # earlier .exists() check alone loses a race between two concurrent
+        # claimants during a move-out rush.
+        try:
+            with transaction.atomic():
+                reservation = Reservation.objects.create(**validated_data)
+                listing.status = Listing.Status.RESERVED
+                listing.save(update_fields=["status", "updated_at"])
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"listing": "Someone already has an active claim on this listing."}
+            )
         return reservation
 
     def update(self, instance: Reservation, validated_data: dict[str, Any]) -> Reservation:
         previous_status = instance.status
-        reservation = super().update(instance, validated_data)
+        next_status = validated_data.pop("status", previous_status)
+        reservation = super().update(instance, validated_data) if validated_data else instance
 
-        if reservation.status != previous_status:
-            listing = reservation.listing
-            listing.refresh_status()
-            if reservation.status in [Reservation.Status.REQUESTED, Reservation.Status.CONFIRMED]:
-                listing.status = Listing.Status.RESERVED
-            elif reservation.status == Reservation.Status.CANCELLED:
-                RescueRequest.objects.filter(
-                    matched_listing=listing,
-                    status=RescueRequest.Status.MATCHED,
-                ).update(
-                    matched_listing=None,
-                    status=RescueRequest.Status.OPEN,
-                    updated_at=timezone.now(),
-                )
-                listing.status = (
-                    Listing.Status.EXPIRED
-                    if listing.available_until < timezone.now()
-                    else Listing.Status.AVAILABLE
-                )
-                # Trust strike: owner cancelled after confirming (bad actor signal)
-                if previous_status == Reservation.Status.CONFIRMED:
-                    from django.db.models import F
-                    from django.contrib.auth import get_user_model
-                    get_user_model().objects.filter(pk=listing.owner_id).update(
-                        trust_strikes=F("trust_strikes") + 1
-                    )
-            elif reservation.status == Reservation.Status.COMPLETED:
-                RescueRequest.objects.filter(
-                    matched_listing=listing,
-                    status=RescueRequest.Status.MATCHED,
-                ).update(
-                    status=RescueRequest.Status.FULFILLED,
-                    updated_at=timezone.now(),
-                )
-                listing.status = Listing.Status.PICKED_UP
-            listing.save(update_fields=["status", "updated_at"])
+        if next_status != previous_status:
+            from .services import apply_status_transition
 
-            if reservation.status == Reservation.Status.CONFIRMED:
-                # Generate a 6-digit handoff PIN shown to the claimant at pickup
-                if not reservation.handoff_pin:
-                    import secrets as _secrets
-                    pin = str(_secrets.randbelow(1000000)).zfill(6)
-                    Reservation.objects.filter(pk=reservation.pk).update(handoff_pin=pin)
-                    reservation.handoff_pin = pin
-                send_reservation_confirmed_email_task.delay(reservation.pk)
-            elif reservation.status == Reservation.Status.COMPLETED:
-                send_reservation_completed_email_task.delay(reservation.pk)
+            request = self.context.get("request")
+            reservation = apply_status_transition(
+                reservation,
+                next_status,
+                previous_status=previous_status,
+                actor=getattr(request, "user", None),
+            )
+            # Re-read relations the services may have changed so the response
+            # reflects the committed state.
+            reservation.listing.refresh_from_db(fields=["status", "updated_at"])
 
         return reservation
 
@@ -1221,7 +1245,13 @@ class ReservationSerializer(serializers.ModelSerializer):
                 actions.append(Reservation.Status.CANCELLED)
             return actions
 
-        if reservation.status == Reservation.Status.CONFIRMED:
+        # EXPIRED_UNRESOLVED is what the stale-handoff sweep sets. The
+        # notification it sends tells both parties to complete or cancel, so
+        # those transitions have to remain available.
+        if reservation.status in (
+            Reservation.Status.CONFIRMED,
+            Reservation.Status.EXPIRED_UNRESOLVED,
+        ):
             actions = []
             if is_owner:
                 actions.append(Reservation.Status.COMPLETED)
@@ -1362,7 +1392,7 @@ class ReservationSerializer(serializers.ModelSerializer):
 
 
 class ListingUpdateSerializer(serializers.ModelSerializer):
-    author = UserSerializer(read_only=True)
+    author = PublicUserSerializer(read_only=True)
 
     class Meta:
         model = ListingUpdate

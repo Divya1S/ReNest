@@ -75,17 +75,36 @@ export default function PrivacyPage() {
 
         <Section title="AI features">
           <p>
-            Room-scan photos you submit to AI detection, and listing text you generate with AI
-            assistance, are processed by Anthropic&apos;s Claude API to produce suggestions. Photos are
-            sent for analysis only and are not used to train models.
+            Room-scan photos you submit to AI detection, listing text you generate with AI
+            assistance, and the messages you send the Nest Concierge are processed by Google&apos;s
+            Gemini API to produce suggestions. Content is sent for that request only.
+          </p>
+          <p>
+            The concierge can read your own marketplace data (your listings, reservations and
+            move-out progress) to answer your questions. It cannot change anything on your behalf,
+            and it never sees another student&apos;s private data. Your conversation is stored so the
+            assistant can follow the thread; clearing it from the concierge panel deletes it.
+          </p>
+          <p>
+            Every AI feature is optional. When the server is not configured with an AI key, those
+            surfaces switch off and the rest of ReNest works normally.
           </p>
         </Section>
 
-        <Section title="Deleting your data">
+        <Section title="Your data, your control">
           <p>
-            Deleting a listing removes it from the marketplace immediately. To delete your account
-            and its data entirely, contact the team at your campus deployment&apos;s support address —
-            deletion requests are honoured within 30 days.
+            You can download everything we hold about you, or delete your account, from{" "}
+            <Link to="/settings" className="font-semibold text-[color:var(--color-tag)] hover:opacity-70">
+              settings
+            </Link>
+            . Deleting a listing removes it from the marketplace immediately.
+          </p>
+          <p>
+            Deleting your account cancels your open reservations, removes your listings, saved
+            items, saved searches, notifications, push subscriptions and concierge history, and
+            anonymises your profile. Messages and feedback you exchanged with another student stay
+            attached to that person&apos;s own handoff record, shown as &ldquo;Deleted User&rdquo;, because they are
+            part of their history too.
           </p>
         </Section>
       </div>

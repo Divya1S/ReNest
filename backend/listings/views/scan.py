@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import logging
+
 from datetime import timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Optional
 
+from django.db import transaction
 from django.db.models import Q, QuerySet
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions, status
-from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.parsers import FormParser, MultiPartParser
+from dormcycle.parsers import StrictJSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -46,7 +50,9 @@ from ..serializers import (
     compute_scan_summary,
 )
 from ..image_utils import compress_image
-from .helpers import annotate_listing_queryset
+from .helpers import annotate_listing_queryset, parse_int, parse_int_list, run_listing_created_hooks
+
+logger = logging.getLogger(__name__)
 from dormcycle.typed import current_user
 
 
@@ -265,8 +271,17 @@ def ensure_listing_from_scan_item(
             **defaults,
         )
         item.linked_listing = listing
+        # Moderation pre-screen, rescue-request matching, quality hints,
+        # search embedding, dashboard cache and partner webhook: the same
+        # side effects a listing created through /api/listings gets.
+        run_listing_created_hooks(listing)
     else:
+        # The listing already exists and may have been reserved or edited since.
+        # Re-running the draft over it must not resurrect it to AVAILABLE or
+        # overwrite the owner's later changes to the deadline.
         for field, value in defaults.items():
+            if field in {"status", "available_until"}:
+                continue
             setattr(listing, field, value)
         listing.save()
 
@@ -507,7 +522,7 @@ class RoomScanImageUploadView(APIView):
 
 class RoomScanItemCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     @extend_schema(
         operation_id="scan_item_create",
@@ -591,7 +606,7 @@ class RoomScanSessionPublishQueueView(APIView):
 @extend_schema(exclude=True)
 class RoomScanSessionBatchUpdateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def patch(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
@@ -650,17 +665,18 @@ class RoomScanSessionBatchUpdateView(APIView):
             if not get_publish_preset(preset_key):
                 return Response({"detail": "That preset could not be found."}, status=400)
 
-        for item in items:
-            if preset_key:
-                apply_draft_preset(item, preset_key)
-            serializer = RoomScanItemDraftSerializer(
-                item,
-                data=item_changes,
-                partial=True,
-                context={"request": request},
-            )
-            serializer.is_valid(raise_exception=True)
-            serializer.save()
+        with transaction.atomic():
+            for item in items:
+                if preset_key:
+                    apply_draft_preset(item, preset_key)
+                serializer = RoomScanItemDraftSerializer(
+                    item,
+                    data=item_changes,
+                    partial=True,
+                    context={"request": request},
+                )
+                serializer.is_valid(raise_exception=True)
+                serializer.save()
 
         scan_session.refresh_progress(commit=True)
         return Response(build_publish_queue_payload(scan_session, request))
@@ -669,14 +685,11 @@ class RoomScanSessionBatchUpdateView(APIView):
 @extend_schema(exclude=True)
 class RoomScanSessionPublishSelectedView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
-        item_ids = request.data.get("item_ids") or []
-
-        if not item_ids:
-            return Response({"detail": "Select at least one rescue draft first."}, status=400)
+        item_ids = parse_int_list(request.data.get("item_ids") or [], field="item_ids", max_items=200)
 
         if not scan_session.pickup_zone or not scan_session.move_out_deadline:
             return Response(
@@ -692,7 +705,7 @@ class RoomScanSessionPublishSelectedView(APIView):
                 "source_image",
             ).filter(id__in=item_ids)
         )
-        if len(items) != len(item_ids):
+        if len(items) != len(set(item_ids)):
             return Response({"detail": "One or more selected drafts could not be found."}, status=400)
 
         blocked = []
@@ -718,9 +731,10 @@ class RoomScanSessionPublishSelectedView(APIView):
             )
 
         published_listing_ids = []
-        for item in items:
-            listing = ensure_listing_from_scan_item(item, scan_session, price_type=item.price_type)
-            published_listing_ids.append(listing.id)
+        with transaction.atomic():
+            for item in items:
+                listing = ensure_listing_from_scan_item(item, scan_session, price_type=item.price_type)
+                published_listing_ids.append(listing.id)
 
         scan_session.refresh_progress(commit=True)
         return Response(
@@ -735,20 +749,17 @@ class RoomScanSessionPublishSelectedView(APIView):
 @extend_schema(exclude=True)
 class RoomScanSessionBulkConvertView(APIView):
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
-        item_ids = request.data.get("item_ids") or []
+        item_ids = parse_int_list(request.data.get("item_ids") or [], field="item_ids", max_items=200)
         action = request.data.get("action")
-
-        if not item_ids:
-            return Response({"detail": "Select at least one rescue draft first."}, status=400)
 
         items = list(
             scan_session.items.select_related("linked_listing", "donation_hub").filter(id__in=item_ids)
         )
-        if len(items) != len(item_ids):
+        if len(items) != len(set(item_ids)):
             return Response({"detail": "One or more selected drafts could not be found."}, status=400)
 
         if action in {"create_free_listings", "create_low_cost_listings"} and (
@@ -759,31 +770,45 @@ class RoomScanSessionBulkConvertView(APIView):
                 status=400,
             )
 
-        if action == "send_to_donation_hub":
-            hub_id = request.data.get("donation_hub")
-            donation_hub = get_object_or_404(DonationHub.objects.filter(active=True), pk=hub_id)
-            for item in items:
-                item.donation_hub = donation_hub
-                item.triage_status = RoomScanItemDraft.TriageStatus.DONE
-                item.save(update_fields=["donation_hub", "triage_status", "updated_at"])
-        elif action in {"create_free_listings", "create_low_cost_listings"}:
-            for item in items:
+        # One transaction: a failure halfway through must not leave half the
+        # selection published and the rest untouched.
+        with transaction.atomic():
+            if action == "send_to_donation_hub":
+                hub_id = parse_int(request.data.get("donation_hub"), field="donation_hub", minimum=1)
+                donation_hub = get_object_or_404(DonationHub.objects.filter(active=True), pk=hub_id)
+                for item in items:
+                    item.donation_hub = donation_hub
+                    item.triage_status = RoomScanItemDraft.TriageStatus.DONE
+                    item.save(update_fields=["donation_hub", "triage_status", "updated_at"])
+            elif action in {"create_free_listings", "create_low_cost_listings"}:
+                # Drafts that already produced a listing are skipped: re-running
+                # them would overwrite the owner's later edits to a live listing.
+                already_published = [item.id for item in items if item.linked_listing_id]
+                if already_published:
+                    return Response(
+                        {
+                            "detail": "Some drafts are already published. Edit those listings directly.",
+                            "already_published": already_published,
+                        },
+                        status=400,
+                    )
                 price_type = (
                     Listing.PriceType.FREE
                     if action == "create_free_listings"
                     else Listing.PriceType.LOW_COST
                 )
-                ensure_listing_from_scan_item(item, scan_session, price_type=price_type)
-        elif action == "mark_keep":
-            for item in items:
-                item.triage_status = RoomScanItemDraft.TriageStatus.KEEP
-                item.save(update_fields=["triage_status", "updated_at"])
-        elif action == "mark_toss":
-            for item in items:
-                item.triage_status = RoomScanItemDraft.TriageStatus.TOSS
-                item.save(update_fields=["triage_status", "updated_at"])
-        else:
-            return Response({"detail": "That bulk action is not supported."}, status=400)
+                for item in items:
+                    ensure_listing_from_scan_item(item, scan_session, price_type=price_type)
+            elif action == "mark_keep":
+                for item in items:
+                    item.triage_status = RoomScanItemDraft.TriageStatus.KEEP
+                    item.save(update_fields=["triage_status", "updated_at"])
+            elif action == "mark_toss":
+                for item in items:
+                    item.triage_status = RoomScanItemDraft.TriageStatus.TOSS
+                    item.save(update_fields=["triage_status", "updated_at"])
+            else:
+                return Response({"detail": "That bulk action is not supported."}, status=400)
 
         scan_session.refresh_progress(commit=True)
         return Response(build_scan_board_payload(scan_session, request))
@@ -794,7 +819,7 @@ class AiDetectItemsView(APIView):
     """
     Kick off AI item detection for a scan image.
 
-    The Claude Vision call can take 10–30 s, so it runs in a Celery task
+    The vision call can take 10–30 s, so it runs in a Celery task
     instead of blocking a web worker. In dev (no broker, eager mode) the task
     executes inline and the response already carries the finished result; in
     production the client polls the status endpoint.
@@ -804,7 +829,6 @@ class AiDetectItemsView(APIView):
     throttle_classes = [AiDetectThrottle]
 
     def post(self, request: Request, pk: int) -> Response:
-        import os
         if not ai_available():
             return Response(
                 {"detail": "AI detection is not configured. Add GEMINI_API_KEY to the backend .env file."},
@@ -812,8 +836,8 @@ class AiDetectItemsView(APIView):
             )
 
         scan_session = get_object_or_404(RoomScanSession, pk=pk, owner=request.user, is_demo=False)
-        image_id = request.data.get("image_id")
-        if not image_id:
+        image_id = parse_int(request.data.get("image_id"), field="image_id", minimum=1)
+        if image_id is None:
             return Response({"detail": "image_id is required."}, status=400)
 
         scan_image = get_object_or_404(RoomScanImage, pk=image_id, scan_session=scan_session)
@@ -823,12 +847,21 @@ class AiDetectItemsView(APIView):
         from ..tasks import ai_detect_cache_key, run_ai_detection
 
         key = ai_detect_cache_key(scan_session.pk, scan_image.pk)
-        existing = cache.get(key)
-        if existing and existing.get("status") == "processing":
-            return Response({"status": "processing"}, status=202)
-
-        cache.set(key, {"status": "processing"}, timeout=600)
-        run_ai_detection.delay(scan_session.pk, scan_image.pk)
+        # cache.add is atomic: two rapid taps cannot both dispatch the job.
+        # A shorter claim than the old 10 minutes means a lost task (worker
+        # restart) unblocks the image in three minutes rather than ten.
+        if not cache.add(key, {"status": "processing"}, timeout=180):
+            existing = cache.get(key) or {}
+            if existing.get("status") == "processing":
+                return Response({"status": "processing"}, status=202)
+        try:
+            run_ai_detection.delay(scan_session.pk, scan_image.pk)
+        except Exception:
+            cache.delete(key)
+            logger.exception("Could not queue AI detection for image %s", scan_image.pk)
+            return Response(
+                {"detail": "AI detection could not be started. Try again shortly."}, status=503
+            )
 
         # Eager mode (dev/tests) finishes inline — return the result directly
         # so the old synchronous contract still holds where there's no worker.

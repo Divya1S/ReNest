@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 
 from django.core.files.uploadedfile import InMemoryUploadedFile, UploadedFile
-from PIL import Image
+from PIL import Image, ImageOps
 from rest_framework.exceptions import ValidationError
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -11,6 +11,10 @@ MAX_DIMENSION = 1920
 JPEG_QUALITY = 85
 # Maximum pixels in either dimension before we reject (prevents zip-bomb pixel floods)
 MAX_PIXEL_DIMENSION = 8000
+
+# Second line of defence: Pillow itself refuses to decode anything larger, so a
+# decode reached through another code path cannot exhaust memory either.
+Image.MAX_IMAGE_PIXELS = MAX_PIXEL_DIMENSION * MAX_PIXEL_DIMENSION
 
 # Known magic bytes for allowed image types. Tuples of (offset, expected_bytes).
 _MAGIC: list[tuple[int, bytes]] = [
@@ -48,14 +52,24 @@ def compress_image(upload: UploadedFile, field_name: str = "image") -> InMemoryU
 
     try:
         img: Image.Image = Image.open(upload)
-        img.load()
     except Exception:
         raise ValidationError({field_name: "Upload a valid image file."})
 
+    # Check the dimensions from the header BEFORE decoding. Image.open() is
+    # lazy, so this rejects a decompression bomb (a small file that expands to
+    # hundreds of megabytes of pixels) without ever allocating that memory.
     if max(img.width, img.height) > MAX_PIXEL_DIMENSION:
         raise ValidationError(
             {field_name: f"Image dimensions must not exceed {MAX_PIXEL_DIMENSION}px on any side."}
         )
+
+    try:
+        # Phone cameras record orientation in EXIF rather than rotating pixels;
+        # without this, portrait photos are stored (and shown) sideways.
+        img = ImageOps.exif_transpose(img) or img
+        img.load()
+    except Exception:
+        raise ValidationError({field_name: "Upload a valid image file."})
 
     if img.mode != "RGB":
         img = img.convert("RGB")

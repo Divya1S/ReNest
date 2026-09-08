@@ -1,7 +1,10 @@
+import logging
 from pathlib import Path
 from typing import Any
 
 from .ai_client import generate_vision_json
+
+logger = logging.getLogger(__name__)
 
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
@@ -48,7 +51,10 @@ def detect_items_in_image(image_file: Any) -> Any:
         name = str(image_file)
     else:
         image_file.open("rb")
-        image_bytes = image_file.read()
+        try:
+            image_bytes = image_file.read()
+        finally:
+            image_file.close()
         name = getattr(image_file, "name", "") or ""
     media_type = _MEDIA_TYPES.get(Path(name).suffix.lower(), "image/jpeg")
 
@@ -58,8 +64,20 @@ def detect_items_in_image(image_file: Any) -> Any:
     return items
 
 
-def clamp(value: Any, lo: Any = 0.0, hi: Any = 1.0) -> Any:
-    return max(lo, min(hi, float(value)))
+def clamp(value: Any, lo: Any = 0.0, hi: Any = 1.0, default: float = 0.0) -> float:
+    """Coerce a model-supplied number into range, tolerating junk.
+
+    The model occasionally emits null, a string or a missing key; a TypeError
+    here used to abort the whole detection run and discard every other item it
+    found in the same photo.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if number != number:  # NaN
+        number = default
+    return max(lo, min(hi, number))
 
 
 def sanitise_suggestions(suggestions: Any) -> Any:
@@ -68,35 +86,40 @@ def sanitise_suggestions(suggestions: Any) -> Any:
     valid_conditions = {"new", "good", "fair"}
     valid_price_types = {"free", "low_cost"}
 
+    if not isinstance(suggestions, list):
+        return []
+
     cleaned = []
     for item in suggestions:
         if not isinstance(item, dict):
             continue
-        box_raw = item.get("hotspot_box") or {}
-        x = clamp(box_raw.get("x", 0.1))
-        y = clamp(box_raw.get("y", 0.1))
-        w = clamp(box_raw.get("width", 0.2), 0.05, 1.0)
-        h = clamp(box_raw.get("height", 0.2), 0.05, 1.0)
-        # Make sure box fits inside image
-        x = clamp(x, 0.0, 1.0 - w)
-        y = clamp(y, 0.0, 1.0 - h)
-
-        price_type = item.get("price_type", "free")
-        if price_type not in valid_price_types:
-            price_type = "free"
-
-        retail = 0.0
         try:
-            retail = min(float(item.get("estimated_retail_value", 0)), 300.0)
-        except (TypeError, ValueError):
-            pass
+            box_raw = item.get("hotspot_box")
+            if not isinstance(box_raw, dict):
+                box_raw = {}
+            w = clamp(box_raw.get("width"), 0.05, 1.0, default=0.2)
+            h = clamp(box_raw.get("height"), 0.05, 1.0, default=0.2)
+            # Make sure box fits inside image
+            x = clamp(box_raw.get("x"), 0.0, 1.0 - w, default=0.1)
+            y = clamp(box_raw.get("y"), 0.0, 1.0 - h, default=0.1)
 
-        cleaned.append({
-            "title": str(item.get("title", "Room item"))[:140],
-            "category": item.get("category", "other") if item.get("category") in valid_categories else "other",
-            "condition": item.get("condition", "good") if item.get("condition") in valid_conditions else "good",
-            "price_type": price_type,
-            "estimated_retail_value": retail,
-            "hotspot_box": {"x": x, "y": y, "width": w, "height": h},
-        })
+            price_type = item.get("price_type", "free")
+            if price_type not in valid_price_types:
+                price_type = "free"
+
+            retail = clamp(item.get("estimated_retail_value"), 0.0, 300.0, default=0.0)
+
+            title = str(item.get("title") or "Room item").strip()[:140] or "Room item"
+            cleaned.append({
+                "title": title,
+                "category": item.get("category", "other") if item.get("category") in valid_categories else "other",
+                "condition": item.get("condition", "good") if item.get("condition") in valid_conditions else "good",
+                "price_type": price_type,
+                "estimated_retail_value": retail,
+                "hotspot_box": {"x": x, "y": y, "width": w, "height": h},
+            })
+        except Exception:
+            # One malformed suggestion must not lose the rest of the photo.
+            logger.warning("Skipping malformed AI suggestion: %r", item, exc_info=True)
+            continue
     return cleaned

@@ -5,21 +5,38 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 5
     groups:
-      python-deps:
+      # Patch and minor updates travel together and are usually safe to merge
+      # after CI. Majors get their own PR so a breaking change is reviewable in
+      # isolation. An all-in-one group PR could never pass CI, because one
+      # incompatible major (redis 8 vs the kombu cap) blocked every other bump.
+      python-minor:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
       day: monday
+    open-pull-requests-limit: 5
     groups:
-      js-deps:
+      js-minor:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # eslint 10 has no compatible eslint-plugin-import / eslint-plugin-react
+      # release yet; the bump breaks `npm ci` on peer resolution. Revisit once
+      # both plugins declare eslint 10 support.
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
       day: monday
+    groups:
+      actions:
+        patterns: ["*"]

@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 
 from rest_framework import permissions
-from rest_framework.parsers import JSONParser
+
+from dormcycle.parsers import StrictJSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -30,7 +31,7 @@ class PushSubscribeView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [PushSubscribeThrottle]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request) -> Response:
         platform = request.data.get("platform", "web")
@@ -80,7 +81,7 @@ class PushUnsubscribeView(APIView):
     Removes the subscription for the given endpoint if it belongs to the user.
     """
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [StrictJSONParser]
 
     def post(self, request: Request) -> Response:
         endpoint = request.data.get("endpoint", "")

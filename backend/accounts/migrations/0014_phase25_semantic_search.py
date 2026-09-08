@@ -16,7 +16,7 @@ class Migration(migrations.Migration):
             name="assistant_notes",
             field=models.TextField(
                 blank=True,
-                help_text="Short memory summary carried across assistant sessions. Populated by Claude after each thread ends.",
+                help_text="Short memory summary carried across assistant sessions.",
                 max_length=1000,
             ),
         ),

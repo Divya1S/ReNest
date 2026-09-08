@@ -42,12 +42,12 @@ class LeaderboardView(APIView):
             .order_by("-item_count")[:20]
         )
 
-        user_ids = [r["listing__owner_id"] for r in rows]  # type: ignore[index]  # .values() rows are dicts
+        user_ids = [r["listing__owner_id"] for r in rows]
         users = {u.id: u for u in User.objects.filter(pk__in=user_ids)}
 
         board = []
         for rank, row in enumerate(rows, start=1):
-            user = users.get(row["listing__owner_id"])  # type: ignore[index]  # .values() rows are dicts
+            user = users.get(row["listing__owner_id"])
             if not user:
                 continue
             board.append({
@@ -55,8 +55,8 @@ class LeaderboardView(APIView):
                 "display_name": user.display_name or "Anonymous",
                 "milestone": user.milestone,
                 "completion_rate": user.completion_rate,
-                "item_count": row["item_count"],  # type: ignore[index]  # .values() rows are dicts
-                "total_value": float(row["total_value"] or 0),  # type: ignore[index]  # .values() rows are dicts
+                "item_count": row["item_count"],
+                "total_value": float(row["total_value"] or 0),
                 "is_me": user.id == request.user.id,
             })
 
@@ -103,10 +103,10 @@ class BuildingLeaderboardView(APIView):
 
         board = [
             {
-                "building": r["listing__building"],  # type: ignore[index]  # .values() rows are dicts
-                "item_count": r["item_count"],  # type: ignore[index]  # .values() rows are dicts
-                "total_value": float(r["total_value"] or 0),  # type: ignore[index]  # .values() rows are dicts
-                "contributors": r["contributors"],  # type: ignore[index]  # .values() rows are dicts
+                "building": r["listing__building"],
+                "item_count": r["item_count"],
+                "total_value": float(r["total_value"] or 0),
+                "contributors": r["contributors"],
             }
             for r in rows
         ]

@@ -1,4 +1,4 @@
-import { BadgeCheck, Bell, KeyRound, Loader2, Mail, School, User as UserIcon } from "lucide-react";
+import { BadgeCheck, Bell, KeyRound, Loader2, Mail, School, Trophy, User as UserIcon } from "lucide-react";
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -15,6 +15,29 @@ export default function SettingsPage() {
   const [campusName, setCampusName] = useState(user?.campus_name ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [leaderboardSaving, setLeaderboardSaving] = useState(false);
+  const showOnLeaderboard = user?.show_on_leaderboard ?? true;
+
+  // The leaderboard page tells students they can opt out "in your account
+  // settings". This is that control; the backend already filters on the flag.
+  async function handleLeaderboardToggle() {
+    if (leaderboardSaving) return;
+    setLeaderboardSaving(true);
+    try {
+      await apiFetch("/auth/me", {
+        method: "PATCH",
+        body: { show_on_leaderboard: !showOnLeaderboard },
+      });
+      await refreshUser();
+      toast.success(
+        showOnLeaderboard ? "You're hidden from the leaderboard." : "You're on the leaderboard.",
+      );
+    } catch (requestError) {
+      toast.error(requestError.message || "Could not update your leaderboard setting.");
+    } finally {
+      setLeaderboardSaving(false);
+    }
+  }
 
   const isDirty =
     displayName !== (user?.display_name ?? "") || campusName !== (user?.campus_name ?? "");
@@ -108,6 +131,45 @@ export default function SettingsPage() {
           {saving ? "Saving…" : "Save Changes"}
         </button>
       </form>
+
+      {/* Privacy toggles */}
+      <div className="mt-6 bg-[color:var(--color-surface)] rounded-[20px] border border-black/10 dark:border-white/10 shadow-[0px_6px_20px_rgba(0,0,0,0.04)] overflow-hidden">
+        <div className="px-6 py-5 border-b border-black/5 dark:border-white/5">
+          <h2 className="text-[18px] font-semibold text-[color:var(--color-ink)] dark:text-white tracking-[-0.01em]">
+            Visibility
+          </h2>
+        </div>
+        <div className="flex items-center justify-between gap-4 px-6 py-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Trophy size={16} className="shrink-0 text-[color:var(--text-muted)]" />
+            <div className="min-w-0">
+              <p id="leaderboard-toggle-label" className="text-[14px] font-semibold text-[color:var(--color-ink)] dark:text-white">
+                Show me on the campus leaderboard
+              </p>
+              <p className="text-[12px] text-[color:var(--text-muted)]">
+                Your display name and rescue count appear in campus rankings.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={showOnLeaderboard}
+            aria-labelledby="leaderboard-toggle-label"
+            onClick={handleLeaderboardToggle}
+            disabled={leaderboardSaving}
+            className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-tag)] focus-visible:ring-offset-2 disabled:opacity-60 ${
+              showOnLeaderboard ? "bg-[color:var(--color-tag)]" : "bg-[color:var(--color-surface-2)]"
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                showOnLeaderboard ? "translate-x-6" : "translate-x-1"
+              }`}
+            />
+          </button>
+        </div>
+      </div>
 
       {/* Account details */}
       <div className="mt-6 bg-[color:var(--color-surface)] rounded-[20px] border border-black/10 dark:border-white/10 shadow-[0px_6px_20px_rgba(0,0,0,0.04)] overflow-hidden">

@@ -2099,6 +2099,103 @@ class ReservationChatVisibilityTests(APITestCase):
         message = ReservationMessage.objects.get(reservation=self.reservation)
         self.assertIsNotNone(message.read_at)
 
+    def test_whole_thread_is_returned_past_the_page_size(self):
+        """A pickup thread must never be truncated to the oldest 24 messages."""
+        self.client.force_login(self.claimant)
+        for index in range(30):
+            self.assertEqual(
+                self.client.post(
+                    f"/api/reservations/{self.reservation.id}/messages",
+                    {"body": f"message {index}"},
+                    format="json",
+                ).status_code,
+                201,
+            )
+
+        payload = self.client.get(f"/api/reservations/{self.reservation.id}/messages").json()
+        # Bare array (pagination disabled for this endpoint), newest included.
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 30)
+        self.assertEqual(payload[-1]["body"], "message 29")
+
+    def test_claimant_cancelling_does_not_strike_the_owner(self):
+        """Only an owner who backs out of a handoff they confirmed is penalised."""
+        self.client.force_login(self.owner)
+        self.assertEqual(
+            self.client.patch(
+                f"/api/reservations/{self.reservation.id}", {"status": "confirmed"}, format="json"
+            ).status_code,
+            200,
+        )
+        self.client.force_login(self.claimant)
+        self.assertEqual(
+            self.client.patch(
+                f"/api/reservations/{self.reservation.id}", {"status": "cancelled"}, format="json"
+            ).status_code,
+            200,
+        )
+        self.owner.refresh_from_db()
+        self.assertEqual(self.owner.trust_strikes, 0)
+
+    def test_owner_cancelling_a_confirmed_handoff_is_struck(self):
+        self.client.force_login(self.owner)
+        self.client.patch(
+            f"/api/reservations/{self.reservation.id}", {"status": "confirmed"}, format="json"
+        )
+        self.client.patch(
+            f"/api/reservations/{self.reservation.id}", {"status": "cancelled"}, format="json"
+        )
+        self.owner.refresh_from_db()
+        self.assertEqual(self.owner.trust_strikes, 1)
+
+    def test_expired_unresolved_handoffs_can_still_be_completed_or_cancelled(self):
+        """The stale-handoff sweep must not leave users with no way out."""
+        Reservation.objects.filter(pk=self.reservation.pk).update(
+            status=Reservation.Status.EXPIRED_UNRESOLVED
+        )
+        self.client.force_login(self.owner)
+        row = self._my_reservation(self.client)
+        self.assertIn("completed", row["allowed_actions"])
+        self.assertIn("cancelled", row["allowed_actions"])
+
+        response = self.client.patch(
+            f"/api/reservations/{self.reservation.id}", {"status": "completed"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.reservation.refresh_from_db()
+        self.assertEqual(self.reservation.status, Reservation.Status.COMPLETED)
+
+    def test_reservation_cannot_be_moved_to_another_listing(self):
+        """A participant must not be able to re-point a reservation."""
+        other_listing = Listing.objects.create(
+            owner=self.owner,
+            title="Different lamp",
+            description="Also works.",
+            category=Listing.Category.LIGHTING,
+            condition=Listing.Condition.GOOD,
+            price_type=Listing.PriceType.FREE,
+            pickup_zone="Elm Hall lobby",
+            available_until=timezone.now() + timedelta(days=2),
+        )
+        self.client.force_login(self.claimant)
+        response = self.client.patch(
+            f"/api/reservations/{self.reservation.id}", {"listing": other_listing.id}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.reservation.refresh_from_db()
+        self.assertEqual(self.reservation.listing_id, self.listing.id)
+
+    def test_second_active_claim_on_one_listing_is_rejected(self):
+        """The database, not just a pre-check, guarantees one live claim."""
+        from django.db import IntegrityError, transaction as db_transaction
+
+        other = User.objects.create_user(email="second-claimant@test.edu", password="pw-Str0ng!x")
+        with self.assertRaises(IntegrityError):
+            with db_transaction.atomic():
+                Reservation.objects.create(
+                    listing=self.listing, claimant=other, pickup_time_window="Sat 1-2pm"
+                )
+
     def test_chat_notification_links_to_a_route_that_exists(self):
         self.client.force_login(self.claimant)
         self.client.post(

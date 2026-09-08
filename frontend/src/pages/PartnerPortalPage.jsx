@@ -22,8 +22,13 @@ export default function PartnerPortalPage() {
   const [webhookUrl, setWebhookUrl] = useState("");
   const [webhookEvents, setWebhookEvents] = useState(["listing_created"]);
 
-  // Try bearer-auth usage (if user already has a key stored in localStorage)
-  const storedKey = typeof window !== "undefined" ? localStorage.getItem("dc_partner_key") : null;
+  // The raw bearer key is held for this browser tab only. localStorage kept it
+  // readable by any script on the origin, survived logout, and let anyone at
+  // the machine copy it again long after provisioning, for a credential the
+  // server itself only stores hashed and promises to show once.
+  const [storedKey, setStoredKey] = useState(() =>
+    typeof window !== "undefined" ? sessionStorage.getItem("renest_partner_key") : null,
+  );
 
   useEffect(() => {
     if (!storedKey) { setLoadingUsage(false); return; }
@@ -45,7 +50,8 @@ export default function PartnerPortalPage() {
         body: { partner_name: newKeyName, scopes: newScopes },
       });
       setCreatedKey(data.key);
-      localStorage.setItem("dc_partner_key", data.key);
+      sessionStorage.setItem("renest_partner_key", data.key);
+      setStoredKey(data.key);
       setShowNewKey(false);
       setNewKeyName("");
       toast.success("API key created — copy it now, it won't be shown again.");

@@ -53,7 +53,7 @@ class DemandForecastView(APIView):
 class SuggestCategoriesView(APIView):
     """
     POST /api/listings/suggest-categories  { "description": "...", "title": "..." }
-    Uses Claude to return the 3 most likely categories with confidence scores,
+    Uses the AI model to return the 3 most likely categories with confidence scores,
     factoring in seasonal demand data from DemandForecast.
     """
 
