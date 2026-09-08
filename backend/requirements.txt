@@ -17,7 +17,7 @@ pywebpush>=2.0,<3.0
 celery[redis]>=5.3,<6.0
 # kombu (the Celery transport) caps redis below 6.5; do not raise this alone.
 redis>=5.0,<6.5
-uvicorn[standard]>=0.30,<1.0
+uvicorn[standard]>=0.52.4,<1.0
 requests>=2.31,<3.0
 google-genai>=2.12.0
 whitenoise>=6.6,<7.0
