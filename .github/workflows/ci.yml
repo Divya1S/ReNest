@@ -62,6 +62,11 @@ jobs:
         working-directory: backend
         run: mypy .
 
+      - name: Audit backend dependencies
+        working-directory: backend
+        # Fails on any known vulnerability in shipped requirements (pip-audit, free).
+        run: pip-audit -r requirements.txt --progress-spinner off
+
       - name: Concierge golden-set evals (offline)
         working-directory: backend
         env:

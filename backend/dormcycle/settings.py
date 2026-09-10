@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "listings",
     "hubs",
     "concierge",
+    "risk",
 ]
 
 MIDDLEWARE = [
@@ -96,6 +97,7 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "dormcycle.middleware.ContentSecurityPolicyMiddleware",
     "dormcycle.middleware.RequestIdMiddleware",
+    "risk.middleware.RiskMetricsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -432,6 +434,10 @@ REST_FRAMEWORK = {
         "push_subscribe": "10/day",
         "concierge": "40/hour",
         "campus_onboard": "5/hour",
+        "risk_payment": "3000/hour",
+        "risk_simulation": "30/hour",
+        "risk_investigation": "60/hour",
+        "risk_agent": "600/hour",
     },
     # Anonymous throttles key on the client IP. Behind one reverse proxy
     # (Render, Fly, a single nginx) the client is the last X-Forwarded-For hop;

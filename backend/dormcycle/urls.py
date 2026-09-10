@@ -19,6 +19,7 @@ urlpatterns = [
     path("api/", include("listings.urls")),
     path("api/", include("hubs.urls")),
     path("api/concierge/", include("concierge.urls")),
+    path("api/risk/", include("risk.urls")),
     path("api/health/live", HealthLiveView.as_view(), name="health-live"),
     path("api/health/ready", HealthReadyView.as_view(), name="health-ready"),
     path("api/health/worker", HealthWorkerView.as_view(), name="health-worker"),

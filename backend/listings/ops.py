@@ -117,6 +117,24 @@ def _job_weekly_campus_digest() -> Any:
     return weekly_campus_digest_task()
 
 
+def _job_dispatch_risk_events() -> dict[str, int]:
+    from risk.services.events import dispatch_pending
+
+    return dispatch_pending(limit=500)
+
+
+def _job_purge_idempotency_keys() -> int:
+    from risk.services.idempotency import purge_expired
+
+    return purge_expired()
+
+
+def _job_reconcile_risk_payments() -> dict[str, int]:
+    from risk.services.payments import reconcile_uncaptured
+
+    return reconcile_uncaptured()
+
+
 SCHEDULED_JOB_SETS: dict[str, list[tuple[str, Callable[[], Any]]]] = {
     # Frequent (every 15-30 min): cheap, idempotent sweeps.
     "tick": [
@@ -125,6 +143,9 @@ SCHEDULED_JOB_SETS: dict[str, list[tuple[str, Callable[[], Any]]]] = {
         ("check_saved_searches", _job_check_saved_searches),
         ("refresh_trending_cache", _job_refresh_trending_cache),
         ("flush_quiet_queue", _job_flush_quiet_queue),
+        ("dispatch_risk_events", _job_dispatch_risk_events),
+        ("purge_idempotency_keys", _job_purge_idempotency_keys),
+        ("reconcile_risk_payments", _job_reconcile_risk_payments),
     ],
     "daily": [
         ("recompute_demand_forecast", _job_recompute_demand_forecast),

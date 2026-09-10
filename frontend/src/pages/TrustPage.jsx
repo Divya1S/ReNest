@@ -51,7 +51,7 @@ export default function TrustPage() {
         <p className="label-title">Trust Center</p>
         <h2 className="mt-3 text-[24px] font-bold tracking-[-0.02em]">Trust data failed to load</h2>
         <p className="mt-4 text-[color:var(--text-muted)]">{error}</p>
-        <button type="button" onClick={refetch} className="primary-button mt-6">
+        <button type="button" onClick={() => refetch()} className="primary-button mt-6">
           Try Again
         </button>
       </div>

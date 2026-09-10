@@ -12,6 +12,7 @@ import {
   MapPinned,
   Search,
   Shield,
+  ShieldCheck,
   Sparkles,
   Trophy,
   Menu,
@@ -69,6 +70,7 @@ const MORE_MENU_ITEMS = [
   { to: "/trust", label: "Trust Center", icon: Shield, routeKey: "trust", data: "/trust/me" },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy, routeKey: "leaderboard" },
   { to: "/assistant", label: "Assistant", icon: Sparkles, routeKey: "assistant" },
+  { to: "/risk", label: "Risk Intelligence", icon: ShieldCheck, routeKey: "riskOverview", data: "/risk/overview?hours=24&include_simulation=0" },
 ];
 
 const MoreMenuLink = React.forwardRef(function MoreMenuLink({ item, onNavigate }, ref) {

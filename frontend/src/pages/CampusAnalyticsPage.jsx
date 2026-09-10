@@ -105,7 +105,7 @@ export default function CampusAnalyticsPage() {
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <AlertCircle size={40} className="text-red-500" />
         <p className="text-[color:var(--text-muted)]">{error}</p>
-        <button onClick={refetch} className="primary-button">
+        <button onClick={() => refetch()} className="primary-button">
           <RefreshCw size={15} /> Retry
         </button>
       </div>

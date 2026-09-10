@@ -55,6 +55,13 @@ const ScanStudioPage = lazy(routeLoaders.scanStudio);
 const SettingsPage = lazy(routeLoaders.settings);
 const PrivacyPage = lazy(routeLoaders.privacy);
 const TrustPage = lazy(routeLoaders.trust);
+const RiskOverviewPage = lazy(routeLoaders.riskOverview);
+const RiskTransactionsPage = lazy(routeLoaders.riskTransactions);
+const RiskTransactionDetailPage = lazy(routeLoaders.riskTransactionDetail);
+const FraudLabPage = lazy(routeLoaders.fraudLab);
+const RiskInvestigatorPage = lazy(routeLoaders.riskInvestigator);
+const AgentSandboxPage = lazy(routeLoaders.agentSandbox);
+const RiskHealthPage = lazy(routeLoaders.riskHealth);
 
 function ProtectedLayout() {
   return <Outlet />;
@@ -107,6 +114,13 @@ const router = createBrowserRouter(
             <Route path="/saved-searches" element={<SavedSearchesPage />} />
             <Route path="/settings/notifications" element={<NotificationPreferencesPage />} />
             <Route path="/partner" element={<PartnerPortalPage />} />
+            <Route path="/risk" element={<RiskOverviewPage />} />
+            <Route path="/risk/transactions" element={<RiskTransactionsPage />} />
+            <Route path="/risk/transactions/:publicId" element={<RiskTransactionDetailPage />} />
+            <Route path="/risk/lab" element={<FraudLabPage />} />
+            <Route path="/risk/investigator" element={<RiskInvestigatorPage />} />
+            <Route path="/risk/agents" element={<AgentSandboxPage />} />
+            <Route path="/risk/health" element={<RiskHealthPage />} />
           </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
