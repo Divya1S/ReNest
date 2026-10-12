@@ -58,9 +58,14 @@ jobs:
           GOOGLE_API_KEY: ""
         run: python manage.py test --verbosity 2
 
-      - name: Type check (mypy — whole backend)
+      - name: Type check (mypy, whole backend)
         working-directory: backend
         run: mypy .
+
+      - name: Audit backend dependencies
+        working-directory: backend
+        # Fails on any known vulnerability in shipped requirements (pip-audit, free).
+        run: pip-audit -r requirements.txt --progress-spinner off
 
       - name: Concierge golden-set evals (offline)
         working-directory: backend
@@ -71,6 +76,54 @@ jobs:
         run: |
           python manage.py migrate --noinput
           python manage.py run_concierge_evals
+
+  backend-postgres:
+    name: Backend tests on PostgreSQL
+    runs-on: ubuntu-latest
+    # The SQLite job is fast feedback; this one exercises what only a real
+    # database does: row locks, partial and check constraints under
+    # concurrency, full-text search and strict column lengths.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: renest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      USE_SQLITE: "0"
+      USE_POSTGRES_FOR_TESTS: "1"
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/renest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements-dev.txt
+
+      - name: Apply migrations from scratch
+        working-directory: backend
+        run: python manage.py migrate --noinput
+
+      - name: Run tests (PostgreSQL)
+        working-directory: backend
+        env:
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+        run: python manage.py test --noinput --verbosity 2
 
   frontend:
     name: Frontend tests + lint + build

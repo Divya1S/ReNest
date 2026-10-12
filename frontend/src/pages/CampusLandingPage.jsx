@@ -36,7 +36,7 @@ export default function CampusLandingPage() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
-  usePageTitle(stats ? `${stats.name} — ReNest` : "Campus — ReNest");
+  usePageTitle(stats ? `${stats.name} | ReNest` : "Campus | ReNest");
 
   useEffect(() => {
     apiFetch(`/auth/campus/${slug}/stats`)
@@ -45,7 +45,7 @@ export default function CampusLandingPage() {
         if (err?.status === 404) setNotFound(true);
       })
       .finally(() => setLoading(false));
-    // Phase 27 — inject white-label theme CSS variables
+    // Phase 27: inject white-label theme CSS variables
     apiFetch(`/campus/${slug}/theme`).then(({ theme }) => {
       if (!theme) return;
       const root = document.documentElement;

@@ -111,7 +111,7 @@ function ErrorPanel({ message, onRetry }) {
 }
 
 export default function LeaderboardPage() {
-  usePageTitle("Leaderboard — ReNest");
+  usePageTitle("Leaderboard | ReNest");
 
   const [tab, setTab] = useState("people");
   const [period, setPeriod] = useState("all");
@@ -120,14 +120,14 @@ export default function LeaderboardPage() {
     data: peopleData,
     loading: loadingPeople,
     error: peopleError,
-    refetch: refetchPeople,
+    retry: retryPeople,
   } = useApi(tab === "people" ? `/leaderboard?period=${period}` : null);
 
   const {
     data: buildingsData,
     loading: loadingBuildings,
     error: buildingsError,
-    refetch: refetchBuildings,
+    retry: retryBuildings,
   } = useApi(tab === "buildings" ? "/leaderboard/buildings" : null);
 
   const board = peopleData?.leaderboard ?? [];
@@ -135,7 +135,7 @@ export default function LeaderboardPage() {
   const buildings = buildingsData?.buildings ?? [];
   const loading = tab === "people" ? loadingPeople : loadingBuildings;
   const error = tab === "people" ? peopleError : buildingsError;
-  const refetch = tab === "people" ? refetchPeople : refetchBuildings;
+  const retry = tab === "people" ? retryPeople : retryBuildings;
 
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 space-y-6">
@@ -199,12 +199,12 @@ export default function LeaderboardPage() {
           ))}
         </div>
       ) : error ? (
-        <ErrorPanel message={error} onRetry={() => refetch()} />
+        <ErrorPanel message={error} onRetry={retry} />
       ) : tab === "people" ? (
         <>
           {board.length === 0 ? (
             <p className="text-center py-16 text-[color:var(--color-muted)]">
-              No data yet — be the first rescuer on your campus!
+              No data yet. Be the first rescuer on your campus!
             </p>
           ) : (
             <div className="space-y-1">
@@ -229,7 +229,7 @@ export default function LeaderboardPage() {
         <>
           {buildings.length === 0 ? (
             <p className="text-center py-16 text-[color:var(--color-muted)]">
-              No building data yet — add your building when you post a listing!
+              No building data yet. Add your building when you post a listing!
             </p>
           ) : (
             <div className="space-y-2">

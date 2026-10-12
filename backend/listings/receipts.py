@@ -32,7 +32,7 @@ def generate_donation_receipt(listing: Listing) -> ContentFile | None:
         from reportlab.lib.units import inch
         from reportlab.pdfgen import canvas as rl_canvas
     except ImportError:
-        logger.warning("reportlab is not installed — donation receipt skipped")
+        logger.warning("reportlab is not installed, donation receipt skipped")
         return None
 
     try:

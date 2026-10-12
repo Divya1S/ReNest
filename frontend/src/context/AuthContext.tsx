@@ -1,7 +1,16 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { apiFetch, setApiAuthHandlers } from "../lib/api";
+import { apiFetch, fetchCsrfCookie, setApiAuthHandlers } from "../lib/api";
 import { clearApiCache } from "../lib/apiCache";
+import { dropBrowserPushSubscription, removePushSubscription } from "../lib/push";
 import type { AuthActionResponse, AuthMeResponse, User } from "../types";
 
 interface AuthContextValue {
@@ -14,6 +23,10 @@ interface AuthContextValue {
   register: (form: Record<string, unknown>) => Promise<AuthActionResponse>;
   logout: () => Promise<void>;
 }
+
+// Upper bound on the push clean-up that runs before logout. Signing out must
+// never wait on a slow push service.
+const PUSH_CLEANUP_BUDGET_MS = 6000;
 
 const defaultAuthContext: AuthContextValue = {
   user: null,
@@ -53,6 +66,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!data.user && hadUser) {
       clearApiCache();
       setAuthNotice("");
+      void dropBrowserPushSubscription();
     }
     return data.user;
   }, []);
@@ -60,10 +74,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setApiAuthHandlers({
       onSessionExpired({ message }) {
-        if (!userRef.current) return; // anonymous visitor — nothing expired
+        if (!userRef.current) return; // anonymous visitor, nothing expired
         clearApiCache();
         setUser(null);
         setAuthNotice(message);
+        // No session left to call /push/unsubscribe with, so at least stop
+        // this browser from receiving the expired account's notifications.
+        void dropBrowserPushSubscription();
       },
     });
     return () => setApiAuthHandlers({ onSessionExpired: null });
@@ -92,13 +109,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     async function bootstrap() {
       try {
-        await fetch("/api/auth/csrf", { credentials: "include" });
+        // Shared with apiFetch: a login or register submitted while this is
+        // still in flight waits for the same response, so it can never be
+        // sent without the CSRF header.
+        await fetchCsrfCookie();
         const data = await apiFetch<AuthMeResponse>("/auth/me");
         if (active) {
           // No clearApiCache here: on first load the cache can only hold public
           // data this same page just fetched, and dropping it strands the view.
           setUser(data.user);
         }
+        // The server says nobody is signed in. A push subscription still held
+        // by this browser belongs to an earlier session that ended without a
+        // logout (expired, cookies cleared): drop it before someone else signs
+        // in here. Only on a definite answer, never on a failed request.
+        if (!data.user) void dropBrowserPushSubscription();
       } catch {
         if (active) setUser(null);
       } finally {
@@ -127,19 +152,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async (): Promise<void> => {
+    // Before the session ends, because /push/unsubscribe needs it. A push
+    // subscription left bound to this account would keep delivering its
+    // notifications to whoever uses this browser next.
+    let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      removePushSubscription().catch(() => false),
+      new Promise((resolve) => {
+        budgetTimer = setTimeout(resolve, PUSH_CLEANUP_BUDGET_MS);
+      }),
+    ]);
+    clearTimeout(budgetTimer);
     await apiFetch("/auth/logout", { method: "POST", body: {} });
     clearApiCache();
     setAuthNotice("");
     setUser(null);
   }, []);
 
-  return (
-    <AuthContext.Provider
-      value={{ user, loading, authNotice, clearAuthNotice, refreshUser, login, register, logout }}
-    >
-      {children}
-    </AuthContext.Provider>
+  // One stable object per auth state. A fresh literal on every render made
+  // every useAuth() consumer re-render whenever the provider did.
+  const value = useMemo<AuthContextValue>(
+    () => ({ user, loading, authNotice, clearAuthNotice, refreshUser, login, register, logout }),
+    [user, loading, authNotice, clearAuthNotice, refreshUser, login, register, logout],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth(): AuthContextValue {

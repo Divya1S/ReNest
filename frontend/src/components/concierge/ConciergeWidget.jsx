@@ -7,7 +7,7 @@ import ConciergeConversation from "./ConciergeConversation";
 import { useConciergeChat } from "./useConciergeChat";
 
 /**
- * Nest Concierge — floating chat surface.
+ * Nest Concierge: floating chat surface.
  *
  * A thin shell (launcher + panel) around the shared conversation core; the
  * full-page surface at /assistant drives the same thread. Mounted behind a

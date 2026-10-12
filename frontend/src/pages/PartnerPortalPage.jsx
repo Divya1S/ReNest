@@ -54,7 +54,7 @@ export default function PartnerPortalPage() {
       setStoredKey(data.key);
       setShowNewKey(false);
       setNewKeyName("");
-      toast.success("API key created — copy it now, it won't be shown again.");
+      toast.success("API key created. Copy it now, it won't be shown again.");
     } catch (e) {
       toast.error(e?.message ?? "Failed to create key");
     }
@@ -71,7 +71,7 @@ export default function PartnerPortalPage() {
       setWebhooks((prev) => [...prev, data]);
       setShowWebhookForm(false);
       setWebhookUrl("");
-      toast.success("Webhook registered. Signing secret shown below — store it securely.");
+      toast.success("Webhook registered. Signing secret shown below. Store it securely.");
     } catch {
       toast.error("Failed to register webhook");
     }
@@ -129,7 +129,7 @@ export default function PartnerPortalPage() {
       )}
       {usage && (
         <section className="rounded-2xl border border-black/8 dark:border-white/8 bg-[color:var(--color-surface)] p-5">
-          <h2 className="font-semibold text-sm text-[color:var(--color-ink)] dark:text-white mb-4">Usage — {usage.campus}</h2>
+          <h2 className="font-semibold text-sm text-[color:var(--color-ink)] dark:text-white mb-4">Usage: {usage.campus}</h2>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {[
               { label: "Listings", value: usage.listing_count },
@@ -311,7 +311,7 @@ export default function PartnerPortalPage() {
       <section className="rounded-2xl border border-black/8 dark:border-white/8 bg-[color:var(--color-surface)] p-5">
         <h2 className="font-semibold text-sm text-[color:var(--color-ink)] dark:text-white mb-3">Embed Widget</h2>
         <p className="text-xs text-[color:var(--text-muted)] mb-3">
-          Drop this into any page to show a live listing grid — no authentication required.
+          Drop this into any page to show a live listing grid. No authentication required.
         </p>
         <div className="relative">
           <pre className="text-[11px] bg-[color:var(--color-surface-2)] rounded-xl p-4 overflow-x-auto text-[color:var(--color-ink)] dark:text-white whitespace-pre-wrap break-all">

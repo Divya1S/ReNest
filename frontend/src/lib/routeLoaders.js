@@ -42,6 +42,13 @@ export const routeLoaders = {
   settings: cacheRouteLoader(() => import("../pages/SettingsPage")),
   privacy: cacheRouteLoader(() => import("../pages/PrivacyPage")),
   trust: cacheRouteLoader(() => import("../pages/TrustPage")),
+  riskOverview: cacheRouteLoader(() => import("../pages/RiskOverviewPage")),
+  riskTransactions: cacheRouteLoader(() => import("../pages/RiskTransactionsPage")),
+  riskTransactionDetail: cacheRouteLoader(() => import("../pages/RiskTransactionDetailPage")),
+  fraudLab: cacheRouteLoader(() => import("../pages/FraudLabPage")),
+  riskInvestigator: cacheRouteLoader(() => import("../pages/RiskInvestigatorPage")),
+  agentSandbox: cacheRouteLoader(() => import("../pages/AgentSandboxPage")),
+  riskHealth: cacheRouteLoader(() => import("../pages/RiskHealthPage")),
 };
 
 export function prefetchRoute(routeKey) {

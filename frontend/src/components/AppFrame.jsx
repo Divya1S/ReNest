@@ -12,13 +12,14 @@ import {
   MapPinned,
   Search,
   Shield,
+  ShieldCheck,
   Sparkles,
   Trophy,
   Menu,
   X,
 } from "lucide-react";
 import React, { useState, useEffect, useRef, Suspense, useEffectEvent } from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, ScrollRestoration, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 
 import { useAuth } from "../context/AuthContext";
@@ -31,7 +32,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import QuickActionFab from "./QuickActionFab";
 
 // Lazy so the concierge ships as its own chunk and costs nothing until opened;
-// its ErrorBoundary below renders nothing on a crash — the widget can never
+// its ErrorBoundary below renders nothing on a crash, so the widget can never
 // take the app shell down with it.
 const ConciergeWidget = React.lazy(() => import("./concierge/ConciergeWidget"));
 const silentFallback = () => null;
@@ -69,6 +70,7 @@ const MORE_MENU_ITEMS = [
   { to: "/trust", label: "Trust Center", icon: Shield, routeKey: "trust", data: "/trust/me" },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy, routeKey: "leaderboard" },
   { to: "/assistant", label: "Assistant", icon: Sparkles, routeKey: "assistant" },
+  { to: "/risk", label: "Risk Intelligence", icon: ShieldCheck, routeKey: "riskOverview", data: "/risk/overview?hours=24&include_simulation=0" },
 ];
 
 const MoreMenuLink = React.forwardRef(function MoreMenuLink({ item, onNavigate }, ref) {
@@ -201,7 +203,7 @@ function VerificationBanner() {
     setSending(true);
     try {
       await apiFetch("/auth/verify-email/send", { method: "POST", body: {} });
-      toast.success("Verification email sent — check your inbox.");
+      toast.success("Verification email sent. Check your inbox.");
     } catch (error) {
       toast.error(error.message);
     } finally {
@@ -246,15 +248,35 @@ function VerificationBanner() {
 }
 
 export default function AppFrame() {
-  const { user, logout } = useAuth();
+  // `loading` is true until the auth bootstrap has answered. During that
+  // window `user` is null for everyone, so branching on `user` alone showed a
+  // signed-in person the guest navigation (Log In / Join) on every hard reload.
+  const { user, loading: authLoading, logout } = useAuth();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const location = useLocation();
   const unreadNotifications = useNotificationBadge(!!user);
 
   const closeButtonRef = useRef(null);
   const menuButtonRef = useRef(null);
   const headerRef = useRef(null);
+  const mainRef = useRef(null);
+  // The pathname focus was last moved for. Seeded with the first one so the
+  // initial load never steals focus.
+  const focusedPathRef = useRef(location.pathname);
+
+  async function handleLogout() {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logout();
+    } catch (error) {
+      toast.error(error?.message || "Could not log out. Check your connection and try again.");
+    } finally {
+      setLoggingOut(false);
+    }
+  }
 
   // Publish the header's real rendered height as --nav-h so sticky elements
   // that sit beneath it (the browse search bar) stay flush against it. A
@@ -308,14 +330,31 @@ export default function AppFrame() {
     }
   }, [isMobileMenuOpen]);
 
+  // A client-side navigation replaces the page without the browser's own
+  // "new document" behaviour: focus stayed on the link that was clicked (or
+  // fell to <body> when that link unmounted), so keyboard and screen-reader
+  // users were left behind in the old place. Move focus to the main landmark
+  // when the pathname changes. Query-only changes (filters) are not a new
+  // page. Scrolling is <ScrollRestoration />'s job, hence preventScroll.
+  useEffect(() => {
+    if (focusedPathRef.current === location.pathname) return;
+    // <main> is inert while the drawer is open; this runs again once it closes.
+    if (isMobileMenuOpen) return;
+    focusedPathRef.current = location.pathname;
+    mainRef.current?.focus({ preventScroll: true });
+  }, [location.pathname, isMobileMenuOpen]);
+
   return (
     <div className="min-h-screen bg-transparent transition-colors duration-300">
+      {/* Back/forward returns to where the reader was; a new page starts at
+          the top. Without it a navigation kept the previous page's offset. */}
+      <ScrollRestoration />
       {/* Everything except the drawer goes inert while the drawer is open, so
           keyboard/screen-reader focus cannot escape the dialog. The header
           carries `inert` itself rather than sitting in a wrapper div: a
           wrapper would be exactly header-height, which strands the sticky
           header with no scroll room (its containing block must span the page). */}
-      {/* Skip navigation — invisible until focused, lets keyboard users jump straight to content */}
+      {/* Skip navigation: invisible until focused, lets keyboard users jump straight to content */}
       <a
         inert={isMobileMenuOpen}
         href="#main-content"
@@ -335,7 +374,7 @@ export default function AppFrame() {
               isScrolled ? "py-3" : "py-4"
             }`}
           >
-            <Link to="/" aria-label="ReNest — Home" className="flex items-center gap-3 group">
+            <Link to="/" aria-label="ReNest home" className="flex items-center gap-3 group">
               <div className="brand-mark" aria-hidden="true">RN</div>
               <p className="text-[1.1rem] font-bold leading-none tracking-tight text-[color:var(--color-night)]">
                 ReNest
@@ -358,6 +397,9 @@ export default function AppFrame() {
                   </NavItem>
                   <MoreMenu />
                 </>
+              ) : authLoading ? (
+                // Session unknown: only what both audiences share.
+                <NavItem to="/browse" prefetchRouteKey="browse">Browse</NavItem>
               ) : (
                 <>
                   <NavItem to="/browse" prefetchRouteKey="browse">Browse</NavItem>
@@ -385,18 +427,31 @@ export default function AppFrame() {
                       {user.campus_name || "ReNest member"}
                     </p>
                   </Link>
-                  <button type="button" onClick={logout} className="secondary-button !px-4 !py-2.5">
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    disabled={loggingOut}
+                    // The text is hidden below the sm breakpoint; without this the
+                    // button is an unnamed icon there.
+                    aria-label={loggingOut ? "Logging Out…" : "Log Out"}
+                    className="secondary-button !px-4 !py-2.5"
+                  >
                     <LogOut size={15} aria-hidden="true" />
-                    <span className="hidden sm:inline">Log Out</span>
+                    <span className="hidden sm:inline">{loggingOut ? "Logging Out…" : "Log Out"}</span>
                   </button>
                 </>
+              ) : authLoading ? (
+                <span role="status" className="flex items-center">
+                  <span className="sr-only">Checking your session</span>
+                  <span aria-hidden="true" className="h-10 w-24 animate-pulse rounded-full bg-[color:var(--bg-surface-2)]" />
+                </span>
               ) : (
                 <>
-                  <Link to="/login" className="secondary-button !px-4 !py-2.5">
+                  <Link to="/login" aria-label="Log In" className="secondary-button !px-4 !py-2.5">
                     <LogIn size={15} aria-hidden="true" />
                     <span className="hidden sm:inline">Log In</span>
                   </Link>
-                  <Link to="/register" className="primary-button !px-4 !py-2.5">
+                  <Link to="/register" aria-label="Join" className="primary-button !px-4 !py-2.5">
                     <Sparkles size={15} aria-hidden="true" />
                     <span className="hidden sm:inline">Join</span>
                   </Link>
@@ -419,7 +474,7 @@ export default function AppFrame() {
         </div>
       </header>
 
-      {/* Mobile drawer — kept outside the inert region */}
+      {/* Mobile drawer, kept outside the inert region */}
       <AnimatePresence>
         {isMobileMenuOpen && (
           <>
@@ -490,6 +545,8 @@ export default function AppFrame() {
                     <NavItem to="/leaderboard" icon={Trophy} prefetchRouteKey="leaderboard">Leaderboard</NavItem>
                     <NavItem to="/assistant" icon={Sparkles} prefetchRouteKey="assistant">Assistant</NavItem>
                   </>
+                ) : authLoading ? (
+                  <NavItem to="/browse" icon={Search} prefetchRouteKey="browse">Browse</NavItem>
                 ) : (
                   <>
                     <NavItem to="/browse" icon={Search} prefetchRouteKey="browse">Browse</NavItem>
@@ -506,8 +563,8 @@ export default function AppFrame() {
                     </p>
                     <p className="text-xs text-[color:var(--text-muted)]">{user.campus_name || "Profile settings"}</p>
                   </Link>
-                  <button onClick={logout} className="secondary-button w-full mt-4">
-                    Log Out
+                  <button type="button" onClick={handleLogout} disabled={loggingOut} className="secondary-button w-full mt-4">
+                    {loggingOut ? "Logging Out…" : "Log Out"}
                   </button>
                 </div>
               )}
@@ -517,12 +574,12 @@ export default function AppFrame() {
       </AnimatePresence>
 
       <div inert={isMobileMenuOpen}>
-      {/* Email verification banner — shown only to authenticated unverified users */}
+      {/* Email verification banner, shown only to authenticated unverified users */}
       {user && !user.email_verified && <VerificationBanner />}
 
-      {/* Page content — ErrorBoundary catches render errors, Suspense handles lazy chunks */}
+      {/* Page content: ErrorBoundary catches render errors, Suspense handles lazy chunks */}
       {/* key resets the boundary on every route change so a crash on one page doesn't bleed into others */}
-      <main id="main-content" tabIndex={-1} className="mx-auto max-w-[92rem] px-4 py-8 outline-none sm:px-6 lg:px-8 xl:py-10">
+      <main ref={mainRef} id="main-content" tabIndex={-1} className="mx-auto max-w-[92rem] px-4 py-8 outline-none sm:px-6 lg:px-8 xl:py-10">
         <ErrorBoundary key={location.pathname}>
           <Suspense fallback={<PageLoader />}>
             <Outlet />
@@ -532,7 +589,7 @@ export default function AppFrame() {
 
       {user && <QuickActionFab />}
 
-      {/* Hidden on /assistant — that page IS the concierge, full-screen. */}
+      {/* Hidden on /assistant, since that page IS the concierge, full-screen. */}
       {user && location.pathname !== "/assistant" && (
         <ErrorBoundary fallback={silentFallback}>
           <Suspense fallback={null}>
@@ -545,7 +602,7 @@ export default function AppFrame() {
         <div className="mx-auto max-w-[92rem] px-4 sm:px-6 lg:px-8 py-16">
           <div className="grid gap-12 md:grid-cols-2 lg:grid-cols-4">
             <div className="md:col-span-2 lg:col-span-1">
-              <Link to="/" className="flex items-center gap-3 mb-5" aria-label="ReNest — Home">
+              <Link to="/" className="flex items-center gap-3 mb-5" aria-label="ReNest home">
                 <div className="brand-mark" aria-hidden="true">RN</div>
                 <span className="text-lg font-bold tracking-tight text-[color:var(--color-night)]">ReNest</span>
               </Link>

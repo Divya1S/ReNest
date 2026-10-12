@@ -2,16 +2,53 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.db.models import Q, QuerySet
+from django.db.models import Count, IntegerField, OuterRef, Prefetch, Q, QuerySet, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
 
-from ..models import Notification, Reservation, ReservationMessage
+from ..models import Listing, Notification, Reservation, ReservationMessage
 from ..permissions import IsReservationParticipant
 from ..serializers import HandoffFeedbackSerializer, ReservationMessageSerializer, ReservationSerializer
 from ..throttles import ReservationCreateThrottle
+from .helpers import LISTING_SERIALIZER_RELATIONS, annotate_listing_queryset
 from dormcycle.typed import current_user
+
+
+def participant_reservations(user: Any) -> QuerySet[Reservation]:
+    """Reservations `user` takes part in, loaded for ReservationSerializer.
+
+    Everything the serializer reads per row is fetched here in a fixed number
+    of queries: the listing arrives through a prefetch so it can carry the
+    same count annotations browse uses (a plain join left the nested
+    ListingSerializer to run its per-object fallbacks), feedback comes with
+    both people attached, and the unread badge is a subquery.
+    """
+    unread = (
+        ReservationMessage.objects.filter(reservation=OuterRef("pk"), read_at__isnull=True)
+        .exclude(sender=user)
+        .order_by()
+        .values("reservation")
+        .annotate(total=Count("id"))
+        .values("total")
+    )
+    # all_objects: a reservation outlives the soft delete of its listing.
+    listings = annotate_listing_queryset(
+        Listing.all_objects.select_related(*LISTING_SERIALIZER_RELATIONS), user
+    )
+    return (
+        Reservation.objects.select_related("claimant")
+        .prefetch_related(
+            Prefetch("listing", queryset=listings),
+            "feedback_entries__reviewer",
+            "feedback_entries__reviewee",
+        )
+        .filter(Q(claimant=user) | Q(listing__owner=user))
+        .annotate(
+            unread_messages_ann=Coalesce(Subquery(unread, output_field=IntegerField()), 0)
+        )
+    )
 
 
 class ReservationListCreateView(generics.ListCreateAPIView):
@@ -21,18 +58,7 @@ class ReservationListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self) -> QuerySet[Reservation]:
         user = current_user(self.request)
-        return (
-            Reservation.objects.select_related(
-                "listing",
-                "listing__owner",
-                "listing__source_scan_session",
-                "claimant",
-            )
-            .prefetch_related("feedback_entries__reviewer", "feedback_entries__reviewee")
-            .filter(Q(claimant=user) | Q(listing__owner=user))
-            .exclude(listing__is_demo=True)
-            .distinct()
-        )
+        return participant_reservations(user).exclude(listing__is_demo=True).distinct()
 
     def perform_create(self, serializer: Any) -> None:
         serializer.save(claimant=self.request.user)
@@ -43,35 +69,16 @@ class ReservationDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsReservationParticipant]
 
     def get_queryset(self) -> QuerySet[Reservation]:
-        user = current_user(self.request)
-        return Reservation.objects.select_related(
-            "listing",
-            "listing__owner",
-            "listing__source_scan_session",
-            "claimant",
-        ).prefetch_related(
-            "feedback_entries__reviewer",
-            "feedback_entries__reviewee",
-        ).filter(Q(claimant=user) | Q(listing__owner=user))
+        return participant_reservations(current_user(self.request))
 
     def perform_update(self, serializer: Any) -> None:
-        previous_status = serializer.instance.status
         reservation = serializer.save()
         from .dashboard import invalidate_user_dashboard_cache
         invalidate_user_dashboard_cache(reservation.claimant_id)
         invalidate_user_dashboard_cache(reservation.listing.owner_id)
-        # Only on the transition: a partial PATCH that leaves the status alone
-        # used to re-fire the webhook to every partner endpoint.
-        if reservation.status == "confirmed" and previous_status != "confirmed":
-            try:
-                from .partner import dispatch_webhook_event
-                dispatch_webhook_event(
-                    "reservation_confirmed",
-                    {"id": reservation.pk, "listing_id": reservation.listing_id, "status": reservation.status},
-                    reservation.listing.campus_name or "",
-                )
-            except Exception:
-                pass
+        # The reservation_confirmed partner webhook is dispatched by
+        # services.confirm_reservation, the one place this PATCH and the
+        # batch confirm both pass through.
 
 
 class ReservationFeedbackListCreateView(generics.ListCreateAPIView):

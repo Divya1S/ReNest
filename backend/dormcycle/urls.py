@@ -2,9 +2,10 @@ from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path, re_path
 from django.views.static import serve
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from drf_spectacular.views import SpectacularAPIView
 
 from .views import (
+    ApiDocsView,
     FrontendAppView,
     HealthDlqView,
     HealthLiveView,
@@ -19,13 +20,14 @@ urlpatterns = [
     path("api/", include("listings.urls")),
     path("api/", include("hubs.urls")),
     path("api/concierge/", include("concierge.urls")),
+    path("api/risk/", include("risk.urls")),
     path("api/health/live", HealthLiveView.as_view(), name="health-live"),
     path("api/health/ready", HealthReadyView.as_view(), name="health-ready"),
     path("api/health/worker", HealthWorkerView.as_view(), name="health-worker"),
     path("api/health/dlq", HealthDlqView.as_view(), name="health-dlq"),
     path("api/internal/maintenance/", MaintenanceRunView.as_view(), name="internal-maintenance"),
     path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
-    path("api/docs/", SpectacularSwaggerView.as_view(url_name="api-schema"), name="api-docs"),
+    path("api/docs/", ApiDocsView.as_view(url_name="api-schema"), name="api-docs"),
 ]
 
 # Media serving. With object storage configured (AWS_S3_BUCKET_NAME) uploads
@@ -44,7 +46,7 @@ if settings.DEBUG or not settings.AWS_S3_BUCKET_NAME:
     ]
 
 if settings.SERVE_FRONTEND:
-    # SPA catch-all — every non-API, non-admin, non-file route gets index.html
+    # SPA catch-all: every non-API, non-admin, non-file route gets index.html
     # so client-side routing works on hard refresh and deep links.
     urlpatterns += [
         re_path(r"^(?!api/|admin/|static/|media/).*$", FrontendAppView.as_view(), name="spa"),

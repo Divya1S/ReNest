@@ -2,18 +2,35 @@ import hmac
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from django.conf import settings
-from django.http import Http404, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.views import View
+from django.views.csrf import csrf_failure as django_csrf_failure
 from django.db import connections
 from django.db.utils import OperationalError
+from drf_spectacular.settings import spectacular_settings
 from drf_spectacular.utils import extend_schema
+from drf_spectacular.views import SpectacularSwaggerSplitView
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
+
+
+def csrf_failure(request: HttpRequest, reason: str = "") -> HttpResponse:
+    """CSRF_FAILURE_VIEW: answer API callers in the API's own error shape.
+
+    The auth endpoints are CSRF-checked by Django's csrf_protect, whose stock
+    failure page is HTML. The SPA reads `detail` from every error body, and
+    DRF words its own CSRF rejections (authenticated requests) the same way,
+    so the client sees one format whichever layer refused the request.
+    """
+    if request.path.startswith("/api/"):
+        return JsonResponse({"detail": f"CSRF Failed: {reason}"}, status=403)
+    return django_csrf_failure(request, reason=reason)
 
 
 @extend_schema(exclude=True)
@@ -94,10 +111,16 @@ class HealthWorkerView(APIView):
                     {"status": "no_workers", "workers": []},
                     status=status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
-            return Response({"status": "ok", "workers": workers})
-        except Exception as exc:
+            # Worker hostnames describe the deployment; the public answer is a count.
+            if getattr(_request.user, "is_staff", False):
+                return Response({"status": "ok", "workers": workers})
+            return Response({"status": "ok", "worker_count": len(workers)})
+        except Exception:
+            # The broker error text can carry the Redis URL (host, password).
+            # This endpoint is public, so keep the detail in the server log.
+            logger.warning("Worker health check failed", exc_info=True)
             return Response(
-                {"status": "error", "detail": str(exc)},
+                {"status": "error", "detail": "Worker status is unavailable."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
@@ -105,7 +128,7 @@ class HealthWorkerView(APIView):
 @extend_schema(exclude=True)
 class HealthDlqView(APIView):
     """
-    Staff-only endpoint — returns the length of the Celery dead-letter queue
+    Staff-only endpoint that returns the length of the Celery dead-letter queue
     stored in Redis so ops can tell at a glance whether tasks are silently failing.
     """
 
@@ -135,6 +158,19 @@ class HealthDlqView(APIView):
 MAINTENANCE_JOB_SETS = ("tick", "daily", "weekly", "all")
 
 
+def _header_bytes(value: str) -> bytes:
+    """The bytes a header value had on the wire.
+
+    WSGI and ASGI both hand header values over as latin-1 decoded text. The
+    fallback only matters for callers that build a request object directly
+    with characters outside latin-1 (the test client can).
+    """
+    try:
+        return value.encode("latin-1")
+    except UnicodeEncodeError:
+        return value.encode("utf-8")
+
+
 @extend_schema(exclude=True)
 class MaintenanceRunView(APIView):
     """POST /api/internal/maintenance/: run the scheduled job sets on demand.
@@ -155,7 +191,9 @@ class MaintenanceRunView(APIView):
             raise Http404
         header = request.headers.get("Authorization", "")
         provided = header[7:].strip() if header.startswith("Bearer ") else ""
-        if not provided or not hmac.compare_digest(provided, token):
+        # Compare bytes: compare_digest raises TypeError for a str holding
+        # non-ASCII characters, which turned a junk token into a 500.
+        if not provided or not hmac.compare_digest(_header_bytes(provided), token.encode("utf-8")):
             return Response({"detail": "Invalid maintenance token."}, status=status.HTTP_403_FORBIDDEN)
 
         payload = request.data if isinstance(request.data, dict) else {}
@@ -179,12 +217,62 @@ class MaintenanceRunView(APIView):
         return Response({"ok": ok, "jobs": jobs, "results": results})
 
 
+def _swagger_ui_csp() -> str:
+    """Content-Security-Policy for the API docs page only.
+
+    Swagger UI's bundle, stylesheet and favicon come from the CDN configured in
+    SPECTACULAR_SETTINGS["SWAGGER_UI_DIST"], which the site-wide policy
+    (script-src 'self') rightly blocks everywhere else. The init script is
+    served same-origin by the split view, so no inline script is allowed here
+    either. Swagger UI injects inline styles, hence 'unsafe-inline' for styles.
+    """
+    cdn_origins: list[str] = []
+    for resource in (spectacular_settings.SWAGGER_UI_DIST, spectacular_settings.SWAGGER_UI_FAVICON_HREF):
+        parts = urlsplit(str(resource or ""))
+        if parts.scheme in ("http", "https") and parts.netloc:
+            origin = f"{parts.scheme}://{parts.netloc}"
+            if origin not in cdn_origins:
+                cdn_origins.append(origin)
+    cdn = "".join(f" {origin}" for origin in cdn_origins)
+    return "; ".join(
+        [
+            "default-src 'self'",
+            f"script-src 'self'{cdn}",
+            f"style-src 'self' 'unsafe-inline'{cdn}",
+            f"img-src 'self' data:{cdn}",
+            "connect-src 'self'",
+            "font-src 'self' data:",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "base-uri 'self'",
+            "form-action 'self'",
+        ]
+    )
+
+
+@extend_schema(exclude=True)
+class ApiDocsView(SpectacularSwaggerSplitView):
+    """GET /api/docs/: Swagger UI with a Content-Security-Policy it can run under.
+
+    The split view serves the page and its init script as two same-origin
+    requests instead of one page with an inline script. The CSP middleware
+    leaves a policy set by a view untouched, so this is the only route with
+    the wider policy.
+    """
+
+    def get(self, request: Any, *args: Any, **kwargs: Any) -> Response:
+        response = super().get(request, *args, **kwargs)
+        response["Content-Security-Policy"] = _swagger_ui_csp()
+        return response
+
+
 class FrontendAppView(View):
     """Serve the built SPA's index.html for client-side routes.
 
     Only mounted when settings.SERVE_FRONTEND (frontend/dist exists). HTML is
     served no-cache so every deploy's new asset hashes take effect immediately;
-    the hashed assets themselves are served (cacheable) by WhiteNoise.
+    the content-hashed files under /assets/ are served by WhiteNoise as
+    immutable (see WHITENOISE_IMMUTABLE_FILE_TEST in settings).
     """
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> HttpResponse:

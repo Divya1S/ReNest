@@ -39,6 +39,12 @@ class UserAdmin(BaseUserAdmin):
         ),
         ("Important dates", {"fields": ("last_login", "created_at")}),
     )
+    def save_model(self, request, obj, form, change):
+        # Login lower-cases the address before matching it exactly, so an
+        # account saved here with capitals could never sign in.
+        obj.email = User.objects.normalize_email(obj.email)
+        super().save_model(request, obj, form, change)
+
     add_fieldsets = (
         (
             None,

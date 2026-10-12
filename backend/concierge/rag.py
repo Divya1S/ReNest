@@ -2,10 +2,10 @@
 
 Two embedding spaces coexist, and vectors are always tagged with theirs:
 
-  * ``gemini-v1`` — Gemini's embedding API (real semantic vectors; paraphrases
+  * ``gemini-v1``: Gemini's embedding API (real semantic vectors; paraphrases
     like "explain the handoff process" ≈ "how do handoffs work" actually
     match). Used whenever the API key is present and the call succeeds.
-  * ``hashed-v1`` — the original hashed bag-of-terms vectors: dependency-free,
+  * ``hashed-v1``: the original hashed bag-of-terms vectors, dependency-free,
     deterministic, zero-latency. The permanent offline fallback, and still the
     router's space (routing needs µs latency and has regex overrides doing the
     precision work).
@@ -21,6 +21,7 @@ import hashlib
 import logging
 import math
 import re
+from collections import Counter
 from typing import TypedDict
 
 from django.conf import settings
@@ -36,7 +37,7 @@ SPACE_REMOTE = "gemini-v1"
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
-# Tiny stopword list — enough to keep glue words from dominating the buckets.
+# Tiny stopword list, enough to keep glue words from dominating the buckets.
 _STOPWORDS = frozenset(
     "a an and are as at be by can do does for from how i in is it my of on or "
     "the to what when where who will with you your".split()
@@ -60,8 +61,13 @@ def _stem(word: str) -> str:
     return word
 
 
+def content_words(text: str) -> list[str]:
+    """Stemmed words of `text` with glue words removed, in order."""
+    return [_stem(w) for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS]
+
+
 def _terms(text: str) -> list[str]:
-    words = [_stem(w) for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS]
+    words = content_words(text)
     bigrams = [f"{a}_{b}" for a, b in zip(words, words[1:])]
     return words + bigrams
 
@@ -86,9 +92,35 @@ def _normalise(vec: list[float]) -> list[float]:
 
 
 def cosine(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b):  # cross-space comparison guard — always score 0
+    if len(a) != len(b):  # cross-space comparison guard, always score 0
         return 0.0
     return sum(x * y for x, y in zip(a, b))
+
+
+# ── Exact term space (collision-free, offline) ───────────────────────────────
+#
+# The hashed space folds every term into 256 buckets, so two texts with no
+# word in common can still score well above zero. That is tolerable when
+# ranking a dozen long documents, but not when a score gates a decision (which
+# harness a message gets, whether a help section is presented as the answer).
+# Those callers compare the terms themselves.
+
+def term_counts(text: str) -> Counter[str]:
+    """Stemmed unigram and bigram counts: the hashed space before hashing."""
+    return Counter(_terms(text))
+
+
+def sparse_cosine(a: Counter[str], b: Counter[str]) -> float:
+    if not a or not b:
+        return 0.0
+    if len(b) < len(a):
+        a, b = b, a
+    dot = sum(count * b[term] for term, count in a.items() if term in b)
+    if not dot:
+        return 0.0
+    norm_a = math.sqrt(sum(count * count for count in a.values()))
+    norm_b = math.sqrt(sum(count * count for count in b.values()))
+    return dot / (norm_a * norm_b)
 
 
 # ── Remote space (Gemini embedding API) ──────────────────────────────────────
@@ -116,7 +148,7 @@ def _note_remote_failure() -> None:
 
 
 def _embed_remote(texts: list[str], task_type: str) -> list[list[float]]:
-    """Batch-embed via Gemini. Raises on any failure — callers decide fallback."""
+    """Batch-embed via Gemini. Raises on any failure; callers decide fallback."""
     from typing import Any, cast
 
     from google import genai
@@ -150,7 +182,7 @@ def embed_documents(texts: list[str]) -> tuple[list[list[float]], str]:
 def embed_query(text: str, space: str) -> list[float] | None:
     """Embed a query in a *specific* space (the stored corpus's space).
 
-    Returns None when that space is unreachable (remote corpus, API down) —
+    Returns None when that space is unreachable (remote corpus, API down);
     callers treat that as "no results" rather than comparing junk.
     """
     if space == SPACE_HASHED:
@@ -208,6 +240,35 @@ def retrieve(query: str, limit: int = 3, min_score: float = 0.05) -> list[Retrie
             vector = list(chunk.vector)
         score = cosine(query_vec, vector)
         if score >= floor:
+            scored.append(
+                {
+                    "slug": chunk.slug,
+                    "title": chunk.title,
+                    "content": chunk.content,
+                    "score": round(score, 4),
+                }
+            )
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    return scored[:limit]
+
+
+def retrieve_lexical(query: str, limit: int = 2) -> list[RetrievedChunk]:
+    """Rank knowledge chunks by exact shared terms. No network, no stored vectors.
+
+    This is the retrieval behind the no-model answer path: when the provider is
+    unreachable the engine may present the best help section itself, so the
+    score has to mean "these texts share words". Hashed-space scores cannot
+    promise that (see the exact term space note above), and the remote space
+    needs the very provider that is down.
+    """
+    query_terms = term_counts(query)
+    if not query_terms:
+        return []
+    scored: list[RetrievedChunk] = []
+    for chunk in KnowledgeChunk.objects.all():
+        # Same document recipe as seeding: the title counts double.
+        score = sparse_cosine(query_terms, term_counts(f"{chunk.title}\n{chunk.title}\n{chunk.content}"))
+        if score > 0:
             scored.append(
                 {
                     "slug": chunk.slug,

@@ -3,6 +3,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { clearApiCache } from "../lib/apiCache";
+import { stubPushEnvironment } from "../test/pushStubs";
 
 import NotificationPreferencesPage from "./NotificationPreferencesPage";
 
@@ -73,7 +74,7 @@ describe("NotificationPreferencesPage", () => {
 
     // "off" channel pref should not render quiet hours
     const timeInputs = document.querySelectorAll("input[type='time']");
-    // reservation (both) and handoff_urgent (push) show quiet hours — ai_match (off) does not
+    // reservation (both) and handoff_urgent (push) show quiet hours; ai_match (off) does not
     // 2 prefs × 2 inputs (start + end) = 4 total
     expect(timeInputs.length).toBe(4);
   });
@@ -83,7 +84,7 @@ describe("NotificationPreferencesPage", () => {
     renderPage();
     await waitFor(() => screen.getByText("Reservation confirmed"));
 
-    // For the "reservation" row, current channel is "both" — switch to "Push only"
+    // For the "reservation" row, current channel is "both"; switch to "Push only"
     const pushButtons = screen.getAllByRole("button", { name: "Push only" });
     fireEvent.click(pushButtons[0]);
 
@@ -129,5 +130,94 @@ describe("NotificationPreferencesPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /save preferences/i }));
 
     await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
+  });
+
+  describe("push on this device", () => {
+    let env;
+
+    afterEach(() => {
+      env?.restore();
+      env = null;
+    });
+
+    function mockPushApi({ vapid = { enabled: true, public_key: "BElidedKey" } } = {}) {
+      return vi.spyOn(global, "fetch").mockImplementation((url) => {
+        if (String(url).includes("/push/vapid-key")) return Promise.resolve(mockOk(vapid));
+        if (String(url).includes("/push/")) return Promise.resolve(mockOk({ unsubscribed: true }));
+        return Promise.resolve(mockOk({ preferences: PREFS }));
+      });
+    }
+
+    test("is not shown where the browser cannot do push", async () => {
+      vi.spyOn(global, "fetch").mockResolvedValue(mockOk({ preferences: PREFS }));
+      renderPage();
+      await screen.findByText("Reservation confirmed");
+      expect(screen.queryByText(/push on this device/i)).not.toBeInTheDocument();
+    });
+
+    test("an existing subscription can be turned off from the preferences page", async () => {
+      // Regression: unsubscribe() existed but nothing in the UI called it.
+      env = stubPushEnvironment({ endpoint: "https://push.example/mine" });
+      const spy = mockPushApi();
+      renderPage();
+
+      const turnOff = await screen.findByRole("button", { name: /turn off push/i });
+      const subscription = env.subscription;
+      fireEvent.click(turnOff);
+
+      await waitFor(() => expect(subscription.unsubscribe).toHaveBeenCalledTimes(1));
+      const call = spy.mock.calls.find(([url]) => String(url) === "/api/push/unsubscribe");
+      expect(call).toBeDefined();
+      expect(JSON.parse(call[1].body)).toEqual({ endpoint: "https://push.example/mine" });
+      // The card flips to the opt-in, so push can be switched back on here.
+      expect(await screen.findByRole("button", { name: /turn on push/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /turn off push/i })).not.toBeInTheDocument();
+    });
+
+    test("turning push back on subscribes and registers the endpoint", async () => {
+      env = stubPushEnvironment({ subscribed: false });
+      const spy = mockPushApi();
+      renderPage();
+
+      fireEvent.click(await screen.findByRole("button", { name: /turn on push/i }));
+
+      await waitFor(() => {
+        const call = spy.mock.calls.find(([url]) => String(url) === "/api/push/subscribe");
+        expect(call).toBeDefined();
+        expect(JSON.parse(call[1].body)).toMatchObject({ endpoint: "https://push.example/sub-1" });
+      });
+      expect(await screen.findByRole("button", { name: /turn off push/i })).toBeInTheDocument();
+    });
+
+    test("a subscription the server refused is not left active in the browser", async () => {
+      env = stubPushEnvironment({ subscribed: false });
+      vi.spyOn(global, "fetch").mockImplementation((url) => {
+        if (String(url).includes("/push/vapid-key")) {
+          return Promise.resolve(mockOk({ enabled: true, public_key: "BElidedKey" }));
+        }
+        if (String(url).includes("/push/subscribe")) return Promise.resolve(mockErr());
+        return Promise.resolve(mockOk({ preferences: PREFS }));
+      });
+      renderPage();
+
+      fireEvent.click(await screen.findByRole("button", { name: /turn on push/i }));
+
+      await waitFor(() => expect(env.pushManager.subscribe).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(env.current).toBeNull());
+      expect(screen.getByRole("button", { name: /turn on push/i })).toBeInTheDocument();
+    });
+
+    test("without server push keys there is no opt-in, but an existing subscription can still be removed", async () => {
+      env = stubPushEnvironment();
+      mockPushApi({ vapid: { enabled: false, public_key: "" } });
+      renderPage();
+
+      expect(await screen.findByRole("button", { name: /turn off push/i })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /turn off push/i }));
+
+      await waitFor(() =>
+        expect(screen.queryByText(/push on this device/i)).not.toBeInTheDocument(),
+      );
+    });
   });
 });

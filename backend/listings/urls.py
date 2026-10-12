@@ -178,29 +178,26 @@ urlpatterns = [
     path("disputes/<int:pk>", DisputeDetailView.as_view(), name="dispute-detail"),
     path("admin/moderation", ModerationQueueView.as_view(), name="moderation-queue"),
     path("admin/listings/<int:pk>/moderate", ModerationActionView.as_view(), name="moderation-action"),
-    # Phase 18 — Platform Intelligence
+    # Phase 18: Platform Intelligence
     path("listings/demand-forecast", DemandForecastView.as_view(), name="listings-demand-forecast"),
     path("listings/price-context", PriceContextView.as_view(), name="listings-price-context"),
     path("listings/suggest-categories", SuggestCategoriesView.as_view(), name="listings-suggest-categories"),
     path("listings/<int:pk>/dismiss-hints", QualityHintsDismissView.as_view(), name="listings-dismiss-hints"),
-    # Phase 17 — Revenue & Sustainability
+    # Phase 17: Revenue & Sustainability
     path("campus/subscribe", CampusSubscribeView.as_view(), name="campus-subscribe"),
     path("stripe/webhook", StripeWebhookView.as_view(), name="stripe-webhook"),
     path("listings/<int:pk>/boost", ListingBoostView.as_view(), name="listing-boost"),
     path("listings/<int:pk>/boost-confirm", ListingBoostConfirmView.as_view(), name="listing-boost-confirm"),
     path("listings/<int:pk>/donate-intent", DonationIntentCreateView.as_view(), name="listing-donate-intent"),
     path("organizations", OrganizationListView.as_view(), name="organization-list"),
-    # Phase 20 — Reporting & Data Exports
-    path("campus-analytics/export.csv", CampusAnalyticsExportView.as_view(), name="campus-analytics-export"),
-    path("impact/benchmark", ImpactBenchmarkView.as_view(), name="impact-benchmark"),
-    # Phase 24 — Logistics & Batching
+    # Phase 24: Logistics & Batching
     path("logistics/batch-confirm", BatchConfirmReservationsView.as_view(), name="logistics-batch-confirm"),
     path("logistics/holds", StorageHoldListCreateView.as_view(), name="logistics-holds"),
     path("logistics/holds/<int:pk>", StorageHoldDetailView.as_view(), name="logistics-holds-detail"),
     path("logistics/events", CollectionEventListCreateView.as_view(), name="logistics-events"),
     path("logistics/events/<int:pk>", CollectionEventDetailView.as_view(), name="logistics-events-detail"),
     path("logistics/events/<int:pk>/route", RouteOptimiseView.as_view(), name="logistics-events-route"),
-    # Phase 25 — Semantic Search & Map Discovery
+    # Phase 25: Semantic Search & Map Discovery
     path("listings/semantic-search", SemanticSearchView.as_view(), name="listings-semantic-search"),
     path("listings/map-data", MapDataView.as_view(), name="listings-map-data"),
     path("listings/trending", TrendingListingsView.as_view(), name="listings-trending"),
@@ -208,13 +205,13 @@ urlpatterns = [
     path("saved-searches/<int:pk>", SavedSearchDetailView.as_view(), name="saved-searches-detail"),
     path("buildings", BuildingCoordListCreateView.as_view(), name="buildings-list"),
     path("reservations/pickup-route", ProximityRouteView.as_view(), name="reservations-pickup-route"),
-    # Phase 21 — Social & Community
+    # Phase 21: Social & Community
     path("leaderboard", LeaderboardView.as_view(), name="leaderboard"),
     path("leaderboard/buildings", BuildingLeaderboardView.as_view(), name="leaderboard-buildings"),
     path("announcements", AnnouncementListCreateView.as_view(), name="announcements-list"),
     path("announcements/<int:pk>", AnnouncementDetailView.as_view(), name="announcements-detail"),
     path("reservations/<int:pk>/thank", ReservationThankView.as_view(), name="reservation-thank"),
-    # Phase 27 — White-Label & Partner API
+    # Phase 27: White-Label & Partner API
     path("embed/<slug:campus_slug>/listings", EmbedListingsView.as_view(), name="embed-listings"),
     path("campus/<slug:slug>/theme", CampusThemeView.as_view(), name="campus-theme"),
     path("partner/keys", PartnerKeyProvisionView.as_view(), name="partner-keys"),

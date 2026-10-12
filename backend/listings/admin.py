@@ -78,9 +78,11 @@ class UnreadNotificationFilter(admin.SimpleListFilter):
 
 @admin.action(description="Expire selected listings")
 def expire_selected_listings(modeladmin, request, queryset):
-    queryset.filter(
-        status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED]
-    ).update(status=Listing.Status.EXPIRED)
+    # Row by row through the model, not queryset.update(): mark_expired mints
+    # the repost token, and a listing expired without one cannot be revived.
+    active = queryset.filter(status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED])
+    for listing in active.iterator(chunk_size=200):
+        listing.mark_expired(commit=True)
 
 
 @admin.action(description="Mark selected tasks complete")
@@ -108,13 +110,59 @@ def mark_reports_dismissed(modeladmin, request, queryset):
     queryset.update(status=ListingReport.Status.DISMISSED, reviewed_at=timezone.now())
 
 
+class DeletedListingFilter(admin.SimpleListFilter):
+    title = "deleted"
+    parameter_name = "deleted"
+
+    def lookups(self, request, model_admin):
+        return [("no", "Not deleted"), ("yes", "Deleted")]
+
+    def queryset(self, request, queryset):
+        if self.value() == "yes":
+            return queryset.filter(deleted_at__isnull=False)
+        if self.value() == "no":
+            return queryset.filter(deleted_at__isnull=True)
+        return queryset
+
+
 @admin.register(Listing)
 class ListingAdmin(admin.ModelAdmin):
-    list_display = ("title", "owner", "status", "moderation_status", "price_type", "available_until", "source_scan_session", "is_demo")
-    list_filter = ("status", "moderation_status", "price_type", "category", "is_demo", OverdueListingFilter)
+    list_display = ("title", "owner", "status", "moderation_status", "price_type", "available_until", "source_scan_session", "is_demo", "deleted_at")
+    list_filter = ("status", "moderation_status", "price_type", "category", "is_demo", OverdueListingFilter, DeletedListingFilter)
     search_fields = ("title", "description", "pickup_zone", "owner__email")
     readonly_fields = ("moderation_flag_reason",)
     actions = [expire_selected_listings]
+
+    def get_queryset(self, request):
+        # all_objects, so staff can see (and restore) soft-deleted rows. The
+        # default manager hides them, which made a deleted listing vanish
+        # from the admin entirely.
+        queryset = Listing.all_objects.all()
+        ordering = self.get_ordering(request)
+        if ordering:
+            queryset = queryset.order_by(*ordering)
+        return queryset
+
+    def delete_model(self, request, obj):
+        self._soft_delete(request, [obj])
+
+    def delete_queryset(self, request, queryset):
+        # all_objects returns a plain queryset whose delete() is a real SQL
+        # DELETE that cascades through reservations, feedback and reports.
+        # Admin deletes stay soft, like every other delete of a listing.
+        self._soft_delete(request, queryset.filter(deleted_at__isnull=True))
+
+    @staticmethod
+    def _soft_delete(request, listings):
+        from .services import release_listing_claims
+
+        for listing in listings:
+            listing.delete()
+            # actor is the moderator, so the owner is not struck for it and
+            # both participants are told.
+            release_listing_claims(
+                listing, actor=request.user, reason="The listing was removed by a moderator."
+            )
 
 
 @admin.register(Reservation)

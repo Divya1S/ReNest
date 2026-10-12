@@ -5,12 +5,23 @@ export const DEFAULT_TTL_MS = 60_000;
 interface CacheRecord<T = unknown> {
   data: T | undefined;
   error: string | null;
+  /**
+   * HTTP status of the failed request, or null when it never reached the
+   * server (offline, DNS) or there is no error. Lets a page tell "this does
+   * not exist" (404) apart from "this failed to load" (500, timeout).
+   */
+  errorStatus: number | null;
   updatedAt: number;
 }
 
 type CacheListener = () => void;
 
-const EMPTY_RECORD: CacheRecord = Object.freeze({ data: undefined, error: null, updatedAt: 0 });
+const EMPTY_RECORD: CacheRecord = Object.freeze({
+  data: undefined,
+  error: null,
+  errorStatus: null,
+  updatedAt: 0,
+});
 
 const cacheStore = new Map<string, CacheRecord>();
 const listeners = new Map<string, Set<CacheListener>>();
@@ -23,6 +34,11 @@ function emitCacheChange(key: string): void {
 function normalizeError(error: unknown): string {
   if (!error) return "Request failed.";
   return (error as Error).message ?? String(error);
+}
+
+function errorStatusOf(error: unknown): number | null {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : null;
 }
 
 export function getCachedApi<T = unknown>(key: string | null | undefined): CacheRecord<T> {
@@ -46,7 +62,7 @@ export function subscribeApiCache(key: string | null | undefined, listener: Cach
 
 export function primeApiCache<T>(key: string | null | undefined, data: T): T {
   if (!key) return data;
-  cacheStore.set(key, { data, error: null, updatedAt: Date.now() });
+  cacheStore.set(key, { data, error: null, errorStatus: null, updatedAt: Date.now() });
   emitCacheChange(key);
   return data;
 }
@@ -54,7 +70,12 @@ export function primeApiCache<T>(key: string | null | undefined, data: T): T {
 export function setApiCacheError(key: string | null | undefined, error: unknown): unknown {
   if (!key) return error;
   const previous = getCachedApi(key);
-  cacheStore.set(key, { data: previous.data, error: normalizeError(error), updatedAt: Date.now() });
+  cacheStore.set(key, {
+    data: previous.data,
+    error: normalizeError(error),
+    errorStatus: errorStatusOf(error),
+    updatedAt: Date.now(),
+  });
   emitCacheChange(key);
   return error;
 }

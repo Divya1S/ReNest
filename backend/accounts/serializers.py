@@ -3,6 +3,8 @@ from __future__ import annotations
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
+from django.db import IntegrityError, transaction
+from django.db.models import F
 from django.utils.encoding import force_str
 from django.utils.http import urlsafe_base64_decode
 from rest_framework import serializers
@@ -24,7 +26,7 @@ class CampusSerializer(serializers.ModelSerializer):
 
 
 class CampusPublicStatsSerializer(serializers.Serializer):
-    """Public campus profile stats — no auth required."""
+    """Public campus profile stats (no auth required)."""
     id = serializers.IntegerField()
     name = serializers.CharField()
     slug = serializers.SlugField()
@@ -95,7 +97,18 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+# Same wording DRF's automatic UniqueValidator produced, so clients that show
+# the field error see no change.
+_EMAIL_TAKEN_MESSAGE = "user with this email already exists."
+
+
 class RegisterSerializer(serializers.ModelSerializer):
+    # Declared explicitly so ModelSerializer does not attach its automatic
+    # UniqueValidator. That validator compares the raw input, before
+    # validate_email lower-cases it, so "Jules@usc.edu" passed while
+    # "jules@usc.edu" existed and the insert then died on the unique
+    # constraint (HTTP 500). Uniqueness is checked in validate_email instead.
+    email = serializers.EmailField(max_length=User._meta.get_field("email").max_length or 254)
     confirm_password = serializers.CharField(write_only=True)
     password = serializers.CharField(write_only=True)
     referral_code = serializers.CharField(write_only=True, required=False, allow_blank=True)
@@ -105,8 +118,13 @@ class RegisterSerializer(serializers.ModelSerializer):
         fields = ("email", "display_name", "campus_name", "password", "confirm_password", "referral_code")
 
     def validate_email(self, value: str) -> str:
-        # Accounts are keyed on the canonical lower-case address.
-        return User.objects.normalize_email(value)
+        # Accounts are keyed on the canonical lower-case address. The lookup
+        # ignores case so a row stored with other casing (anything written
+        # without going through the manager) also counts as taken.
+        email = User.objects.normalize_email(value)
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError(_EMAIL_TAKEN_MESSAGE)
+        return email
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         allowed_domains: list[str] = getattr(settings, "CAMPUS_EMAIL_DOMAINS", [])
@@ -136,7 +154,7 @@ class RegisterSerializer(serializers.ModelSerializer):
             except User.DoesNotExist:
                 pass
 
-        # Auto-assign campus from the email domain (exact match — see
+        # Auto-assign campus from the email domain (exact match; see
         # Campus.match_for_email for why icontains was wrong here).
         campus = Campus.match_for_email(attrs["email"])
         if campus is not None:
@@ -150,12 +168,26 @@ class RegisterSerializer(serializers.ModelSerializer):
         validated_data.pop("confirm_password")
         referrer = validated_data.pop("_referrer", None)
         campus = validated_data.pop("_campus", None)
-        user = User.objects.create_user(**validated_data)
+        try:
+            # Savepoint: a failed insert must not poison an enclosing transaction.
+            with transaction.atomic():
+                user = User.objects.create_user(**validated_data)
+        except IntegrityError:
+            # Two sign-ups for one address can both pass validate_email; the
+            # unique constraint stops the second. Report it as the same field
+            # error instead of a 500. Anything else (a referral-code
+            # collision, say) is a real error and is re-raised.
+            if User.objects.filter(email__iexact=validated_data["email"]).exists():
+                raise serializers.ValidationError({"email": [_EMAIL_TAKEN_MESSAGE]}) from None
+            raise
         update_fields = []
         if referrer:
             user.referred_by = referrer
             update_fields.append("referred_by")
-            User.objects.filter(pk=referrer.pk).update(referral_count=referrer.referral_count + 1)
+            # F() makes the database do the increment. The referrer row was
+            # read during validation, so writing "that value + 1" back would
+            # drop a concurrent sign-up that used the same referral code.
+            User.objects.filter(pk=referrer.pk).update(referral_count=F("referral_count") + 1)
         if campus:
             user.campus = campus
             update_fields.append("campus")

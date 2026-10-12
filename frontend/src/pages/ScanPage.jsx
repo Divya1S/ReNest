@@ -84,7 +84,7 @@ export default function ScanPage() {
         body: {
           ...form,
           // Date-only picker; the deadline lands at 5pm local that day.
-          // (Old autosaved drafts may still carry a datetime-local string —
+          // (Old autosaved drafts may still carry a datetime-local string;
           // slicing keeps both shapes valid.)
           move_out_deadline: new Date(
             `${form.move_out_deadline.slice(0, 10)}T17:00`,

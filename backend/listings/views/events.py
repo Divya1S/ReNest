@@ -9,7 +9,7 @@ plus a heartbeat comment every tick to keep the connection alive.
 Async generator: under ASGI (uvicorn) asyncio.sleep() releases the event
 loop between ticks so thousands of SSE connections share a small thread
 pool rather than each pinning a gunicorn worker.  Under WSGI the generator
-is iterated synchronously — behaviour is identical to before, just slightly
+is iterated synchronously; behaviour is identical to before, just slightly
 less efficient (one worker per connection).
 
 To switch to ASGI mode:
@@ -28,7 +28,7 @@ from ..models import Notification
 from typing import Any
 
 _POLL_INTERVAL = 4      # seconds between DB polls
-_MAX_DURATION = 5 * 60  # max connection life (300 s) — client reconnects after
+_MAX_DURATION = 5 * 60  # max connection life (300 s); client reconnects after
 
 
 def _sse_event(event_type: str, payload: dict) -> str:
@@ -76,7 +76,7 @@ class EventStreamView(View):
     """
 
     def get(self, request: Any, *args: Any, **kwargs: Any) -> Any:
-        # Manual auth — DRF isn't used here because StreamingHttpResponse
+        # Manual auth: DRF isn't used here because StreamingHttpResponse
         # must be returned before the response is fully constructed.
         if not request.user or not request.user.is_authenticated:
             from django.http import HttpResponse

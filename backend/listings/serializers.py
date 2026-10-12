@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -30,6 +31,7 @@ from .models import (
     RoomScanItemDraft,
     RoomScanSession,
     SavedListing,
+    StorageHold,
 )
 from .image_utils import compress_image
 from .publish_flow import build_missing_fields, build_suggestion_pack, get_publish_readiness, get_recommended_action
@@ -50,6 +52,21 @@ _PUBLISH_CANDIDATE = frozenset([
     RoomScanItemDraft.TriageStatus.SELL,
     RoomScanItemDraft.TriageStatus.DONATE,
 ])
+
+
+def is_cross_campus_claim(user: Any, owner: Any) -> bool:
+    """Whether `user` claiming from `owner` would cross a campus boundary.
+
+    Browse only shows a signed-in user their own campus; this is the same
+    rule for the write path. It reads the verified campus foreign key, never
+    the free-text campus_name a user can edit. Accounts without a campus are
+    not restricted, and staff are exempt so they can step in on any handoff.
+    """
+    if getattr(user, "is_staff", False):
+        return False
+    user_campus = getattr(user, "campus_id", None)
+    owner_campus = getattr(owner, "campus_id", None)
+    return bool(user_campus and owner_campus and user_campus != owner_campus)
 
 
 def compute_scan_summary(scan_session: RoomScanSession) -> dict[str, Any]:
@@ -83,7 +100,7 @@ def compute_scan_summary(scan_session: RoomScanSession) -> dict[str, Any]:
 
     for item in publish_candidates:
         # Pass scan_session so get_publish_readiness never needs item.scan_session
-        # FK lookup — items from prefetch cache lack that select_related.
+        # FK lookup; items from prefetch cache lack that select_related.
         readiness = get_publish_readiness(item, scan_session)
         if readiness == "ready":
             ready_to_publish_count += 1
@@ -296,9 +313,22 @@ class ListingSerializer(serializers.ModelSerializer):
         if not value:
             return ""
         base = (getattr(settings, "MEDIA_CDN_BASE_URL", "") or "").rstrip("/")
-        if not base or not value.startswith(f"{base}/"):
+        # The upload endpoint only ever issues keys of the form
+        # listing-images/<listing id>/<32 hex>.<ext>, and only to the owner of
+        # that listing. Matching the whole shape (not just the host) stops a
+        # listing from pointing at another listing's upload or at any other
+        # object that happens to live in the same bucket.
+        listing_pk = getattr(self.instance, "pk", None)
+        if not base or listing_pk is None:
             raise serializers.ValidationError(
                 "Image URLs must come from this deployment's media storage."
+            )
+        expected = re.compile(
+            rf"{re.escape(base)}/listing-images/{listing_pk}/[0-9a-f]{{32}}\.(?:jpg|png|webp|gif)"
+        )
+        if not expected.fullmatch(value):
+            raise serializers.ValidationError(
+                "Image URLs must point at an upload made for this listing."
             )
         return value
 
@@ -351,10 +381,25 @@ class ListingSerializer(serializers.ModelSerializer):
             instance.image_thumb = None
         return super().update(instance, validated_data)
 
+    def _is_list_row(self) -> bool:
+        """Whether this listing is one row of a list response.
+
+        Looking only at the direct parent misses the nested case: under
+        reservation.listing_detail the parent is a ReservationSerializer and
+        the ListSerializer sits one level further up, so the detail-only
+        fields were computed for every row of GET /api/reservations.
+        """
+        node = self.parent
+        while node is not None:
+            if isinstance(node, serializers.ListSerializer):
+                return True
+            node = node.parent
+        return False
+
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_gallery(self, obj: Listing) -> list[dict[str, Any]]:
         # Detail-only (like owner_trust_summary) so browse lists stay one query.
-        if isinstance(self.parent, serializers.ListSerializer):
+        if self._is_list_row():
             return []
         return [
             {"id": img.pk, "image_url": img.image.url, "position": img.position}
@@ -381,12 +426,19 @@ class ListingSerializer(serializers.ModelSerializer):
 
     def get_can_reserve(self, obj: Any) -> bool:
         request = self.context.get("request")
-        return bool(
+        if not (
             request
             and request.user.is_authenticated
             and obj.owner_id != request.user.id
             and obj.status == Listing.Status.AVAILABLE
-        )
+        ):
+            return False
+        # Mirror the rules ReservationSerializer enforces so the button does
+        # not offer a claim the API will refuse. Both read data the listing
+        # querysets already loaded (owner join, on_hold_ann annotation).
+        if getattr(obj, "on_hold_ann", False):
+            return False
+        return not is_cross_campus_claim(request.user, obj.owner)
 
     def get_reservation_count(self, obj: Any) -> int:
         v = getattr(obj, "reservation_count_ann", None)
@@ -477,7 +529,7 @@ class ListingSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_owner_trust_summary(self, obj: Listing) -> dict[str, Any] | None:
-        if isinstance(self.parent, serializers.ListSerializer):
+        if self._is_list_row():
             return None
         return build_user_trust_summary(obj.owner)
 
@@ -1061,6 +1113,9 @@ class HandoffFeedbackSerializer(serializers.ModelSerializer):
         return obj.reservation.listing.title
 
 
+_ON_HOLD_MESSAGE = "This listing is on hold for a hub collection and cannot be reserved right now."
+
+
 class ReservationSerializer(serializers.ModelSerializer):
     claimant = PublicUserSerializer(read_only=True)
     listing_detail = ListingSerializer(source="listing", read_only=True)
@@ -1079,6 +1134,10 @@ class ReservationSerializer(serializers.ModelSerializer):
     feedback_summary = serializers.SerializerMethodField()
     handoff_pin_display = serializers.SerializerMethodField()
     unread_messages = serializers.SerializerMethodField()
+
+    # Per-serializer memo for _feedback_for; one serializer renders every row
+    # of a list response, so it is keyed by reservation id.
+    _feedback_cache: dict[int, list[HandoffFeedback]]
 
     class Meta:
         model = Reservation
@@ -1143,6 +1202,10 @@ class ReservationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"listing": "Preview listings cannot be reserved."})
             if listing.owner_id == request.user.id:
                 raise serializers.ValidationError({"listing": "You cannot reserve your own listing."})
+            if is_cross_campus_claim(request.user, listing.owner):
+                raise serializers.ValidationError(
+                    {"listing": "This listing is only available to members of its campus."}
+                )
             if listing.moderation_status == Listing.ModerationStatus.FLAGGED:
                 raise serializers.ValidationError({"listing": "This listing is under review."})
             if BlockedUser.objects.filter(
@@ -1152,6 +1215,8 @@ class ReservationSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"listing": "This listing is not available to you."})
             if listing.status != Listing.Status.AVAILABLE:
                 raise serializers.ValidationError({"listing": "This listing is no longer available."})
+            if StorageHold.live_for_listing(listing.pk).exists():
+                raise serializers.ValidationError({"listing": _ON_HOLD_MESSAGE})
             if listing.reservations.filter(
                 status__in=[Reservation.Status.REQUESTED, Reservation.Status.CONFIRMED]
             ).exists():
@@ -1179,14 +1244,27 @@ class ReservationSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data: dict[str, Any]) -> Reservation:
-        listing = validated_data["listing"]
         # The claim and the listing flip must be one transaction, and the
         # database has the last word on "one active claim per listing": the
         # earlier .exists() check alone loses a race between two concurrent
         # claimants during a move-out rush.
         try:
             with transaction.atomic():
-                reservation = Reservation.objects.create(**validated_data)
+                # Lock the listing first (the order services._lock uses) and
+                # repeat the checks validate() made on an unlocked copy: the
+                # listing may have been donated, deleted or put on hold since.
+                listing = (
+                    Listing.objects.select_for_update()
+                    .filter(pk=validated_data["listing"].pk)
+                    .first()
+                )
+                if listing is None or listing.status != Listing.Status.AVAILABLE:
+                    raise serializers.ValidationError(
+                        {"listing": "This listing is no longer available."}
+                    )
+                if StorageHold.live_for_listing(listing.pk).exists():
+                    raise serializers.ValidationError({"listing": _ON_HOLD_MESSAGE})
+                reservation = Reservation.objects.create(**{**validated_data, "listing": listing})
                 listing.status = Listing.Status.RESERVED
                 listing.save(update_fields=["status", "updated_at"])
         except IntegrityError:
@@ -1204,10 +1282,11 @@ class ReservationSerializer(serializers.ModelSerializer):
             from .services import apply_status_transition
 
             request = self.context.get("request")
+            # The service re-validates under a row lock and raises
+            # ReservationConflict (409) if the reservation moved meanwhile.
             reservation = apply_status_transition(
                 reservation,
                 next_status,
-                previous_status=previous_status,
                 actor=getattr(request, "user", None),
             )
             # Re-read relations the services may have changed so the response
@@ -1247,18 +1326,16 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         # EXPIRED_UNRESOLVED is what the stale-handoff sweep sets. The
         # notification it sends tells both parties to complete or cancel, so
-        # those transitions have to remain available.
+        # cancelling has to remain available. COMPLETED is deliberately not a
+        # PATCH transition: a handoff is completed only by the owner entering
+        # the claimant's PIN (POST /reservations/:id/verify-pin). While the
+        # owner could also PATCH status=completed the PIN proved nothing.
         if reservation.status in (
             Reservation.Status.CONFIRMED,
             Reservation.Status.EXPIRED_UNRESOLVED,
         ):
-            actions = []
-            if is_owner:
-                actions.append(Reservation.Status.COMPLETED)
-                actions.append(Reservation.Status.CANCELLED)
-            if is_claimant:
-                actions.append(Reservation.Status.CANCELLED)
-            return actions
+            if is_owner or is_claimant:
+                return [Reservation.Status.CANCELLED]
 
         return []
 
@@ -1266,11 +1343,19 @@ class ReservationSerializer(serializers.ModelSerializer):
         return f"DC-{obj.listing_id:03d}-{obj.id:04d}"
 
     def get_handoff_pin_display(self, obj: Any) -> str | None:
-        """Return the PIN only to the claimant — the owner never sees it."""
+        """Return the PIN only to the claimant; the owner never sees it.
+
+        And only while it can still be used: verify-pin accepts it in
+        CONFIRMED and EXPIRED_UNRESOLVED, and the services blank it once the
+        reservation is completed or cancelled.
+        """
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-        if obj.claimant_id == request.user.id and obj.status == Reservation.Status.CONFIRMED:
+        if obj.claimant_id == request.user.id and obj.status in (
+            Reservation.Status.CONFIRMED,
+            Reservation.Status.EXPIRED_UNRESOLVED,
+        ):
             return obj.handoff_pin or None
         return None
 
@@ -1278,6 +1363,11 @@ class ReservationSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if request is None or not request.user.is_authenticated:
             return 0
+        # The reservation views annotate this; the count is the fallback for
+        # a single freshly loaded instance.
+        annotated = getattr(obj, "unread_messages_ann", None)
+        if annotated is not None:
+            return int(annotated)
         return obj.messages.exclude(sender=request.user).filter(read_at__isnull=True).count()
 
     def get_pickup_zone(self, obj: Any) -> str | None:
@@ -1316,10 +1406,16 @@ class ReservationSerializer(serializers.ModelSerializer):
 
         if obj.status == Reservation.Status.CONFIRMED:
             if relationship == "owner":
-                return "Meet the claimant at the pickup zone, then mark the handoff completed."
+                return "Meet the claimant at the pickup zone, then enter their PIN to complete the handoff."
             if relationship == "claimant":
-                return "Bring the handoff code and arrive during the confirmed pickup window."
+                return "Arrive during the confirmed pickup window and give the owner your handoff PIN."
             return "This handoff is confirmed and ready for pickup."
+
+        if obj.status == Reservation.Status.EXPIRED_UNRESOLVED:
+            if relationship == "owner":
+                return "If the pickup happened, enter the claimant's PIN to complete it. Otherwise cancel it."
+            if relationship == "claimant":
+                return "If you picked the item up, give the owner your PIN. Otherwise cancel the reservation."
 
         if obj.status == Reservation.Status.COMPLETED:
             return "This handoff is complete."
@@ -1349,13 +1445,34 @@ class ReservationSerializer(serializers.ModelSerializer):
         if obj.status == Reservation.Status.CONFIRMED:
             return base + [
                 f"Bring or share handoff code {self.get_handoff_code(obj)} at pickup.",
-                "Mark the reservation complete once the item changes hands.",
+                "The owner enters the claimant's PIN once the item changes hands.",
             ]
         return base
 
+    def _feedback_for(self, obj: Reservation) -> list[HandoffFeedback]:
+        """All feedback rows of one reservation, loaded at most once.
+
+        Four fields read them. Calling .filter() or .select_related() on the
+        relation builds a new query each time and ignores the prefetch the
+        reservation views set up, which cost several queries per row.
+        """
+        if not hasattr(self, "_feedback_cache"):
+            self._feedback_cache = {}
+        cache = self._feedback_cache
+        if obj.pk not in cache:
+            if "feedback_entries" in getattr(obj, "_prefetched_objects_cache", {}):
+                entries = list(obj.feedback_entries.all())
+            else:
+                entries = list(obj.feedback_entries.select_related("reviewer", "reviewee"))
+            for entry in entries:
+                # HandoffFeedbackSerializer reads entry.reservation.listing.
+                entry.reservation = obj
+            cache[obj.pk] = entries
+        return cache[obj.pk]
+
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_feedback_entries(self, obj: Reservation) -> list[Any]:
-        entries = obj.feedback_entries.select_related("reviewer", "reviewee", "reservation__listing")
+        entries = self._feedback_for(obj)
         return list(HandoffFeedbackSerializer(entries, many=True, context=self.context).data)
 
     @extend_schema_field(OpenApiTypes.OBJECT)
@@ -1363,11 +1480,10 @@ class ReservationSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return None
-        feedback = obj.feedback_entries.filter(reviewer=request.user).select_related(
-            "reviewer",
-            "reviewee",
-            "reservation__listing",
-        ).first()
+        feedback = next(
+            (entry for entry in self._feedback_for(obj) if entry.reviewer_id == request.user.id),
+            None,
+        )
         if not feedback:
             return None
         return HandoffFeedbackSerializer(feedback, context=self.context).data
@@ -1380,11 +1496,11 @@ class ReservationSerializer(serializers.ModelSerializer):
             return False
         if request.user.id not in {obj.listing.owner_id, obj.claimant_id}:
             return False
-        return not obj.feedback_entries.filter(reviewer=request.user).exists()
+        return all(entry.reviewer_id != request.user.id for entry in self._feedback_for(obj))
 
     @extend_schema_field(OpenApiTypes.OBJECT)
     def get_feedback_summary(self, obj: Reservation) -> dict[str, Any]:
-        entries = list(obj.feedback_entries.all())
+        entries = self._feedback_for(obj)
         if not entries:
             return {"count": 0, "average_rating": None}
         average = sum(entry.rating for entry in entries) / len(entries)

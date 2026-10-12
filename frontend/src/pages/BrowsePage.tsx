@@ -52,10 +52,14 @@ export default function BrowsePage() {
   const [searchInput, setSearchInput] = useState(() => searchParams.get("search") ?? "");
   const [category, setCategory] = useState(() => searchParams.get("category") ?? "");
   const [priceType, setPriceType] = useState(() => searchParams.get("price_type") ?? "");
-  const [building, setBuilding] = useState(() => searchParams.get("building") ?? "");
+  // What is typed in the building field. Requests and the URL follow the
+  // debounced value below: filtering on every keystroke fired one request per
+  // character (each aborting the last) while someone typed "North Hall".
+  const [buildingInput, setBuildingInput] = useState(() => searchParams.get("building") ?? "");
   const [sort, setSort] = useState(() => searchParams.get("sort") ?? "deadline");
 
   const debouncedSearch = useDebounce(searchInput, 350);
+  const building = useDebounce(buildingInput, 350).trim();
 
   const [listings, setListings] = useState<Listing[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,7 +85,8 @@ export default function BrowsePage() {
     if (priceType) params.set("price_type", priceType);
     if (building) params.set("building", building);
     if (sort && sort !== "deadline") params.set("sort", sort);
-    setSearchParams(params, { replace: true });
+    // Same page, new filters: keep the reader where they are.
+    setSearchParams(params, { replace: true, preventScrollReset: true });
   }, [debouncedSearch, category, priceType, building, sort, setSearchParams]);
 
   // Auto-select relevance sort when the user starts typing a search query
@@ -146,7 +151,7 @@ export default function BrowsePage() {
     return () => controller.abort();
   }, [debouncedSearch, category, priceType, building, sort, page, retryKey]);
 
-  // Infinite scroll — advance page when the sentinel enters the viewport
+  // Infinite scroll: advance page when the sentinel enters the viewport
   useEffect(() => {
     if (!sentinelRef.current) return;
     const observer = new IntersectionObserver(
@@ -189,7 +194,7 @@ export default function BrowsePage() {
       setNlChips(data.chips ?? []);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        // silently ignore — user can still use the raw query
+        // silently ignore; user can still use the raw query
       }
     } finally {
       setNlParsing(false);
@@ -207,15 +212,15 @@ export default function BrowsePage() {
   const resetFilters = useCallback(() => {
     setSearchInput("");
     setNlChips([]);
+    setBuildingInput("");
     startTransition(() => {
       setCategory("");
       setPriceType("");
-      setBuilding("");
       setSort("deadline");
     });
   }, []);
 
-  const isFiltered = searchInput || category || priceType || building;
+  const isFiltered = searchInput || category || priceType || buildingInput.trim();
   const showPending = isPending && !loading;
 
   const saveCurrentSearch = useCallback(async () => {
@@ -328,13 +333,14 @@ export default function BrowsePage() {
                 type="text"
                 placeholder="Building / dorm…"
                 aria-label="Filter by building"
-                value={building}
-                onChange={(e) => startTransition(() => setBuilding(e.target.value))}
+                value={buildingInput}
+                onChange={(e) => setBuildingInput(e.target.value)}
                 className="rounded-full border border-black/10 dark:border-white/10 bg-[color:var(--color-surface)] py-2 pl-3 pr-7 text-[13px] text-[color:var(--color-ink)] dark:text-white placeholder:text-[color:var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[color:var(--color-tag)]/10 focus:border-[color:var(--color-tag)] transition-all w-36"
               />
-              {building && (
+              {buildingInput && (
                 <button
-                  onClick={() => startTransition(() => setBuilding(""))}
+                  type="button"
+                  onClick={() => setBuildingInput("")}
                   aria-label="Clear building filter"
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)] hover:text-[color:var(--color-ink)]"
                 >
@@ -370,7 +376,7 @@ export default function BrowsePage() {
         </div>
       </div>
 
-      {/* Authenticated-only strips — skipped for guests so no 401s fire */}
+      {/* Authenticated-only strips, skipped for guests so no 401s fire */}
       {user && <AnnouncementBanner />}
       {user && <TrendingStrip />}
 
@@ -490,7 +496,7 @@ export default function BrowsePage() {
 
             {user && <div className="h-5 w-px bg-black/10 dark:bg-white/10" />}
 
-            {/* Save search — requires an account */}
+            {/* Save search, requires an account */}
             {user && (
             <button
               onClick={saveCurrentSearch}
@@ -512,7 +518,7 @@ export default function BrowsePage() {
           </div>
         </div>
 
-        {/* Guest prompt — browsing is open; acting needs an account */}
+        {/* Guest prompt: browsing is open; acting needs an account */}
         {!user && (
           <div className="mb-6 flex flex-col sm:flex-row sm:items-center gap-3 rounded-[16px] border border-[color:var(--color-tag)]/20 bg-[color:var(--bg-tag-soft)] px-5 py-4">
             <p className="flex-1 text-[14px] text-[color:var(--color-ink)] dark:text-white">

@@ -199,7 +199,7 @@ function ListingCard({ listing, preview = false, onListingChange, onQuickView, c
           <ListingPlaceholder category={listing.category} glyphSize={48} />
         )}
 
-        {/* Urgent badge — top right */}
+        {/* Urgent badge, top right */}
         {listing.is_urgent && (
           <div className="absolute top-3 right-3 z-10 flex items-center gap-1 bg-[color:var(--color-tag)] text-white px-3 py-1.5 rounded-full text-[12px] font-medium shadow-sm">
             <Clock3 size={12} />
@@ -207,7 +207,7 @@ function ListingCard({ listing, preview = false, onListingChange, onQuickView, c
           </div>
         )}
 
-        {/* Free badge — top left */}
+        {/* Free badge, top left */}
         {isFree && (
           <div className="absolute top-3 left-3 z-10 bg-[color:var(--color-free)] text-white px-3 py-1.5 rounded-full text-[12px] font-medium shadow-sm">
             Free
@@ -222,14 +222,14 @@ function ListingCard({ listing, preview = false, onListingChange, onQuickView, c
           </div>
         )}
 
-        {/* Save button — top left (or below free badge) */}
+        {/* Save button, top left (or below free badge) */}
         {!preview && (
           <div className={cn("absolute right-3 z-10", listing.is_urgent ? "top-12" : "top-3")}>
             <SaveButton listing={listing} onListingChange={onListingChange} />
           </div>
         )}
 
-        {/* Quick view — keyboard-reachable path to the preview modal */}
+        {/* Quick view: keyboard-reachable path to the preview modal */}
         {onQuickView && (
           <button
             type="button"

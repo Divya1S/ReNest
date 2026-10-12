@@ -80,7 +80,7 @@ export default function PasswordResetConfirmPage() {
               Set a new password.
             </h2>
             <p className="mt-3 text-[color:var(--text-muted)]">
-              Choose something secure — at least 8 characters.
+              Choose something secure, at least 8 characters.
             </p>
 
             <form onSubmit={handleSubmit} className="mt-10 space-y-6">

@@ -15,7 +15,7 @@ from dormcycle.typed import current_user
 
 
 class VapidPublicKeyView(APIView):
-    """GET /api/push/vapid-key — returns the VAPID public key for the frontend."""
+    """GET /api/push/vapid-key: returns the VAPID public key for the frontend."""
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request: Request) -> Response:
@@ -36,9 +36,10 @@ class PushSubscribeView(APIView):
     def post(self, request: Request) -> Response:
         platform = request.data.get("platform", "web")
 
-        # Phase 22 — native APNs/FCM token from Capacitor shell
+        # Phase 22: native APNs/FCM token from Capacitor shell
         if platform in ("apns", "fcm"):
-            native_token = request.data.get("token", "").strip()
+            # str(): a number or object here must be a 400, not an AttributeError.
+            native_token = str(request.data.get("token") or "").strip()
             if not native_token:
                 return Response({"detail": "token is required for native platforms."}, status=400)
             _, created = PushSubscription.objects.update_or_create(
@@ -55,10 +56,14 @@ class PushSubscribeView(APIView):
         # Web VAPID flow
         endpoint = request.data.get("endpoint", "")
         keys = request.data.get("keys", {})
+        if not isinstance(keys, dict):
+            keys = {}
         p256dh = keys.get("p256dh", "")
         auth = keys.get("auth", "")
 
-        if not endpoint or not p256dh or not auth:
+        # All three must be non-empty text; a list or number used to crash
+        # further down instead of being refused here.
+        if not all(isinstance(value, str) and value for value in (endpoint, p256dh, auth)):
             return Response({"detail": "endpoint, keys.p256dh and keys.auth are required."}, status=400)
 
         sub, created = PushSubscription.objects.update_or_create(
@@ -85,6 +90,8 @@ class PushUnsubscribeView(APIView):
 
     def post(self, request: Request) -> Response:
         endpoint = request.data.get("endpoint", "")
+        if not isinstance(endpoint, str):
+            return Response({"detail": "endpoint must be text."}, status=400)
         deleted, _ = PushSubscription.objects.filter(
             user=current_user(request), endpoint=endpoint
         ).delete()

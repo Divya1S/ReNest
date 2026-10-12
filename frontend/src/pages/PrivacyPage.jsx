@@ -51,7 +51,7 @@ export default function PrivacyPage() {
 
         <Section title="How it's used">
           <p>
-            Your name and campus are shown to other students alongside your listings and requests —
+            Your name and campus are shown to other students alongside your listings and requests;
             that&apos;s the product. Your email is used for account security (verification, password
             reset) and for the notifications you can control in{" "}
             <Link to="/settings/notifications" className="font-semibold text-[color:var(--color-tag)] hover:opacity-70">
@@ -123,7 +123,7 @@ export default function PrivacyPage() {
         <Section title="The short version">
           <p>
             ReNest is a coordination tool for students exchanging dorm items on their own campus.
-            Items are exchanged between students directly — ReNest does not take payment, hold
+            Items are exchanged between students directly; ReNest does not take payment, hold
             funds, inspect items, or act as a party to any exchange.
           </p>
         </Section>
@@ -139,7 +139,7 @@ export default function PrivacyPage() {
 
         <Section title="Safety">
           <p>
-            Meet in public campus locations — lobbies, front desks, and donation hubs. Use the
+            Meet in public campus locations: lobbies, front desks, and donation hubs. Use the
             in-app PIN to confirm handoffs. If something feels off, walk away and use the report
             button; a moderator reviews every report.
           </p>

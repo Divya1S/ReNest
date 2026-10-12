@@ -11,6 +11,7 @@ from django.db.models.functions import Greatest, TruncDate, TruncWeek
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -30,6 +31,7 @@ from ..models import (
     RoomScanSession,
     SavedListing,
 )
+from ..notifications import same_campus_q
 from ..publish_flow import get_publish_readiness
 from ..serializers import (
     ListingSerializer,
@@ -67,11 +69,12 @@ def build_insights_payload(user: UserType, request: Request) -> dict[str, Any]:
     open_report_statuses = [ListingReport.Status.OPEN, ListingReport.Status.REVIEWING]
 
     # ── Scoping filters (campus vs. user-only fallback) ──────────────────────
-    if user.campus_name:
-        campus_listing_filter = Q(owner__campus_name=user.campus_name)
-        campus_req_filter = Q(seeker__campus_name=user.campus_name)
-        campus_res_filter = Q(listing__owner__campus_name=user.campus_name)
-        campus_report_filter = Q(listing__owner__campus_name=user.campus_name)
+    if getattr(user, "campus_id", None) or user.campus_name:
+        # Verified campus first; the editable name only groups unverified accounts.
+        campus_listing_filter = same_campus_q("owner", user)
+        campus_req_filter = same_campus_q("seeker", user)
+        campus_res_filter = same_campus_q("listing__owner", user)
+        campus_report_filter = same_campus_q("listing__owner", user)
     else:
         campus_listing_filter = Q(owner=user)
         campus_req_filter = Q(seeker=user)
@@ -715,26 +718,43 @@ class IsCampusManager(permissions.BasePermission):
         )
 
 
+def resolve_analytics_campus(request: Request) -> Any:
+    """The campus a campus-analytics request is scoped to (None: every campus).
+
+    A campus manager is scoped to the campus their account is verified for,
+    the `campus` foreign key set by email-domain matching. The free-text
+    `campus_name` must never decide this: any user can change it through
+    PATCH /api/auth/me, so a manager could re-point themselves at another
+    campus's data. Only staff may choose a campus with ?campus=<slug or name>
+    or, with no campus of their own, aggregate across all of them.
+    """
+    from accounts.models import Campus
+
+    user = current_user(request)
+    if user.is_staff:
+        requested = (request.query_params.get("campus") or "").strip()
+        if requested:
+            campus = Campus.objects.filter(Q(slug__iexact=requested) | Q(name__iexact=requested)).first()
+            if campus is None:
+                raise NotFound("Campus not found.")
+            return campus
+        return user.campus
+    if user.campus is None:
+        raise PermissionDenied("Your account is not linked to a verified campus.")
+    return user.campus
+
+
 @extend_schema(exclude=True)
 class CampusAnalyticsView(APIView):
     """
     Staff / campus-manager analytics dashboard.
-    GET /api/campus-analytics?campus=<name>&weeks=12
+    GET /api/campus-analytics?weeks=12  (staff may add &campus=<slug or name>)
     """
 
     permission_classes = [IsCampusManager]
 
     def get(self, request: Request) -> Response:
-        # Only staff may aggregate across campuses; a campus manager is scoped
-        # to their own campus regardless of what ?campus= asks for.
-        if request.user.is_staff:
-            campus = request.query_params.get("campus", "") or getattr(request.user, "campus_name", "")
-        else:
-            campus = getattr(request.user, "campus_name", "") or ""
-            if not campus:
-                return Response(
-                    {"detail": "Your account is not linked to a campus yet."}, status=400
-                )
+        campus = resolve_analytics_campus(request)
         weeks = parse_int(
             request.query_params.get("weeks"), field="weeks", default=12, minimum=1, maximum=52
         ) or 12
@@ -742,8 +762,8 @@ class CampusAnalyticsView(APIView):
         since = now - timedelta(weeks=weeks)
 
         base_qs = Listing.objects.filter(is_demo=False)
-        if campus:
-            base_qs = base_qs.filter(owner__campus_name__iexact=campus)
+        if campus is not None:
+            base_qs = base_qs.filter(owner__campus=campus)
 
         # ── Weekly listing volume ──────────────────────────────────────────
         weekly_volume = (
@@ -795,8 +815,9 @@ class CampusAnalyticsView(APIView):
         # ── Hub utilization ───────────────────────────────────────────────
         from hubs.models import DonationHub
         hub_qs = DonationHub.objects.filter(active=True)
-        if campus:
-            hub_qs = hub_qs.filter(campus_name__iexact=campus)
+        if campus is not None:
+            # Hubs carry only a campus name, maintained by staff in the admin.
+            hub_qs = hub_qs.filter(campus_name__iexact=campus.name)
 
         hub_utilization = []
         for hub in hub_qs.annotate(donated_count=Count("donated_listings")):
@@ -814,8 +835,8 @@ class CampusAnalyticsView(APIView):
 
         # ── Cohort retention (% of users who post more than once) ─────────
         users_qs = Listing.objects.filter(is_demo=False, created_at__gte=since)
-        if campus:
-            users_qs = users_qs.filter(owner__campus_name__iexact=campus)
+        if campus is not None:
+            users_qs = users_qs.filter(owner__campus=campus)
 
         poster_counts = (
             users_qs.values("owner_id")
@@ -835,7 +856,7 @@ class CampusAnalyticsView(APIView):
         rescue_rate = round(total_rescued / total_posted * 100, 1) if total_posted else 0.0
 
         return Response({
-            "campus": campus or "all",
+            "campus": campus.name if campus is not None else "all",
             "period_weeks": weeks,
             "summary": {
                 "total_posted": total_posted,
@@ -854,20 +875,23 @@ class CampusAnalyticsView(APIView):
 
 
 class CampusAnalyticsExportView(APIView):
-    """GET /api/campus-analytics/export.csv — streams all listings + reservations as CSV."""
+    """GET /api/campus-analytics/export.csv: streams all listings + reservations as CSV."""
 
     permission_classes = [IsCampusManager]
 
     def get(self, request: Request) -> "Response | StreamingHttpResponse":
         import csv
 
-        campus = getattr(request.user, "campus", None)
-        if campus is None:
-            return Response({"detail": "Your account is not linked to a campus yet."}, status=400)
+        # Same scoping rule as the dashboard above; staff with no campus of
+        # their own export every campus.
+        campus = resolve_analytics_campus(request)
 
         rescued_statuses = {Listing.Status.PICKED_UP, Listing.Status.DONATED}
+        base_qs = Listing.objects.filter(is_demo=False)
+        if campus is not None:
+            base_qs = base_qs.filter(owner__campus=campus)
         qs = (
-            Listing.objects.filter(owner__campus=campus, is_demo=False)
+            base_qs
             .select_related("owner")
             # One aggregate instead of a per-row reservation lookup.
             .annotate(
@@ -940,7 +964,7 @@ class CampusAnalyticsExportView(APIView):
 
 
 class ImpactBenchmarkView(APIView):
-    """GET /api/impact/benchmark — this campus vs. peers (anonymised percentiles)."""
+    """GET /api/impact/benchmark: this campus vs. peers (anonymised percentiles)."""
 
     def get(self, request: Request) -> Response:
         campus = getattr(request.user, "campus", None)

@@ -18,6 +18,7 @@ from .env import (
     env_float,
     env_int,
     env_list,
+    media_upload_origins,
     validate_environment,
 )
 
@@ -86,16 +87,18 @@ INSTALLED_APPS = [
     "listings",
     "hubs",
     "concierge",
+    "risk",
 ]
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     # WhiteNoise serves collected static assets (admin, API docs) straight from
-    # the Django process — no separate web server needed in production.
+    # the Django process; no separate web server needed in production.
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "dormcycle.middleware.ContentSecurityPolicyMiddleware",
     "dormcycle.middleware.RequestIdMiddleware",
+    "risk.middleware.RiskMetricsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -136,7 +139,7 @@ if USE_SQLITE:
     }
 elif os.getenv("DATABASE_URL", ""):
     # Managed-hosting convention (Render/Railway/Heroku): one URL instead of
-    # discrete POSTGRES_* vars. Parsed with stdlib — no extra dependency.
+    # discrete POSTGRES_* vars. Parsed with stdlib, no extra dependency.
     from urllib.parse import parse_qs, unquote, urlsplit
 
     _db_url = urlsplit(os.getenv("DATABASE_URL", ""))
@@ -200,9 +203,13 @@ MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
 # ── File storage ─────────────────────────────────────────────────────────────
-# Static: WhiteNoise with compression + far-future caching.
+# Static: WhiteNoise. Files under /static/ are gzip-compressed by collectstatic
+# but keep their original names (non-manifest storage, see below), so they are
+# served with a short max-age (WhiteNoise default: 60s outside DEBUG), never
+# far-future. Only the built SPA's content-hashed files are cached forever;
+# see WHITENOISE_IMMUTABLE_FILE_TEST.
 # Media: local disk by default; setting AWS_S3_BUCKET_NAME switches user
-# uploads (listing photos, room scans, receipts) to S3-compatible storage —
+# uploads (listing photos, room scans, receipts) to S3-compatible storage,
 # required on hosts with ephemeral filesystems. Works with AWS S3 and
 # Cloudflare R2 (set AWS_S3_ENDPOINT_URL for R2/MinIO). Thumbnails and AI
 # detection read through the storage API, so they work on either backend.
@@ -217,11 +224,22 @@ STORAGES = {
 # When the built SPA is present (production single-service deploys), WhiteNoise
 # serves its files at the URL root (/assets/*, /images/*, /sw.js, /manifest…)
 # and a catch-all view returns index.html for client-side routes. In dev the
-# dist is usually absent and Vite serves the frontend — nothing changes.
+# dist is usually absent and Vite serves the frontend; nothing changes.
 FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", str(BASE_DIR.parent / "frontend" / "dist")))
 SERVE_FRONTEND = (FRONTEND_DIST / "index.html").is_file()
 if SERVE_FRONTEND:
     WHITENOISE_ROOT = FRONTEND_DIST
+
+# Vite names everything it emits into assets/ "<name>-<hash>.<ext>" (8 chars of
+# URL-safe base64, plus ".map" for source maps), so the content behind such a
+# URL never changes and the browser may keep it forever. Without this test
+# WhiteNoise only recognises Django's own hashed-name scheme and serves the
+# SPA bundles with max-age=60, revalidating every chunk on each visit.
+# Unhashed files (index.html, sw.js, manifest.json, images/) do not match and
+# keep the short max-age. Do not put hand-named files in frontend/public/assets/.
+WHITENOISE_IMMUTABLE_FILE_TEST = r"^/assets/[^/]+-[A-Za-z0-9_-]{8}(?:\.[A-Za-z0-9]+)+$"
+# The gzip variants WhiteNoise serves for the SPA are produced at build time
+# (scripts/render-build.sh runs `python -m whitenoise.compress` over the dist).
 
 # One canonical media base URL, derived once and reused by the CSP middleware,
 # the presigned-upload endpoint and the docs. Previously three modules read
@@ -243,6 +261,15 @@ else:
         f"https://{AWS_S3_BUCKET_NAME}.s3.{os.getenv('AWS_S3_REGION_NAME', 'us-east-1')}.amazonaws.com"
     )
 
+# Where the browser sends a presigned direct-to-bucket upload. This is the
+# storage API endpoint, which differs from MEDIA_CDN_BASE_URL whenever a CDN
+# domain fronts the bucket, so the CSP needs it separately (connect-src).
+MEDIA_UPLOAD_ORIGINS = media_upload_origins(
+    AWS_S3_BUCKET_NAME,
+    os.getenv("AWS_S3_REGION_NAME", "us-east-1"),
+    _S3_ENDPOINT,
+)
+
 if AWS_S3_BUCKET_NAME:
     STORAGES["default"] = {
         "BACKEND": "storages.backends.s3.S3Storage",
@@ -251,7 +278,7 @@ if AWS_S3_BUCKET_NAME:
             "region_name": os.getenv("AWS_S3_REGION_NAME", "us-east-1"),
             # R2 / MinIO compatibility; None = real AWS endpoints
             "endpoint_url": os.getenv("AWS_S3_ENDPOINT_URL") or None,
-            # e.g. media.renest.app — serves media through your CDN domain
+            # e.g. media.renest.app, which serves media through your CDN domain
             "custom_domain": os.getenv("AWS_S3_CDN_DOMAIN") or None,
             "default_acl": None,
             "file_overwrite": False,
@@ -270,9 +297,13 @@ EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS")
 EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL")
-# A hung SMTP connection must never pin a Celery worker — cap every send.
+# A hung SMTP connection must never pin a Celery worker, so cap every send.
 EMAIL_TIMEOUT = env_int("EMAIL_TIMEOUT", 10)
 DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "ReNest <noreply@renest.app>")
+# Inbox that receives operator mail (new campus onboarding requests). Falls
+# back to the sender address, which is where that mail went before this
+# setting existed; point it at a monitored inbox in production.
+PLATFORM_ADMIN_EMAIL = os.getenv("PLATFORM_ADMIN_EMAIL", "").strip() or DEFAULT_FROM_EMAIL
 PASSWORD_RESET_TIMEOUT = 3600  # 1 hour
 
 SESSION_COOKIE_SECURE = env_bool("DJANGO_SESSION_COOKIE_SECURE", not DEBUG)
@@ -280,14 +311,16 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SECURE = env_bool("DJANGO_CSRF_COOKIE_SECURE", not DEBUG)
 CSRF_COOKIE_HTTPONLY = False  # JS must read the CSRF token to send it in headers
-SECURE_BROWSER_XSS_FILTER = True
+# JSON 403 for /api/ callers (login, register and password reset are checked
+# by Django's csrf_protect, whose stock failure page is HTML).
+CSRF_FAILURE_VIEW = "dormcycle.views.csrf_failure"
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_SSL_REDIRECT = env_bool("DJANGO_SECURE_SSL_REDIRECT")
 # Tell Django the original request was HTTPS when behind a TLS-terminating proxy
 SECURE_PROXY_SSL_HEADER = (
     ("HTTP_X_FORWARDED_PROTO", "https") if not DEBUG else None
 )
-# HSTS — 0 in dev; set DJANGO_SECURE_HSTS_SECONDS=31536000 in production
+# HSTS: 0 in dev; set DJANGO_SECURE_HSTS_SECONDS=31536000 in production
 SECURE_HSTS_SECONDS = env_int("DJANGO_SECURE_HSTS_SECONDS", 0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS")
 SECURE_HSTS_PRELOAD = env_bool("DJANGO_SECURE_HSTS_PRELOAD")
@@ -314,10 +347,14 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "ReNest API",
     "DESCRIPTION": (
         "Campus move-out rescue marketplace. "
-        "Authenticated via session cookie; obtain a session with POST /api/auth/login/."
+        "Authenticated via session cookie; obtain a session with POST /api/auth/login "
+        "(JSON body). Every unsafe request, login included, must send the CSRF token "
+        "from GET /api/auth/csrf in the X-CSRFToken header."
     ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    # Pinned: an unpinned "latest" lets a CDN release change the docs page.
+    "SWAGGER_UI_DIST": "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14",
     "COMPONENT_SPLIT_REQUEST": True,
     "SCHEMA_PATH_PREFIX": r"/api/",
     "ENUM_NAME_OVERRIDES": {
@@ -379,25 +416,16 @@ LOGGING = {
             "level": os.getenv("DJANGO_DB_LOG_LEVEL", "WARNING"),
             "propagate": False,
         },
-        "dormcycle": {
-            "handlers": ["console"],
-            "level": _LOG_LEVEL,
-            "propagate": False,
-        },
-        "accounts": {
-            "handlers": ["console"],
-            "level": _LOG_LEVEL,
-            "propagate": False,
-        },
-        "listings": {
-            "handlers": ["console"],
-            "level": _LOG_LEVEL,
-            "propagate": False,
-        },
-        "hubs": {
-            "handlers": ["console"],
-            "level": _LOG_LEVEL,
-            "propagate": False,
+        # One entry per first-party app. Root stays at WARNING to keep
+        # third-party libraries quiet, so an app that is missing here has its
+        # INFO lines dropped (risk's per-request structured line was).
+        **{
+            _app_logger: {
+                "handlers": ["console"],
+                "level": _LOG_LEVEL,
+                "propagate": False,
+            }
+            for _app_logger in ("dormcycle", "accounts", "listings", "hubs", "concierge", "risk")
         },
     },
 }
@@ -420,7 +448,7 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "dormcycle.pagination.StandardPagination",
     "PAGE_SIZE": 24,
-    # No global throttle — applied per-view only where needed.
+    # No global throttle; applied per-view only where needed.
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
         "login": "10/min",
@@ -432,6 +460,10 @@ REST_FRAMEWORK = {
         "push_subscribe": "10/day",
         "concierge": "40/hour",
         "campus_onboard": "5/hour",
+        "risk_payment": "3000/hour",
+        "risk_simulation": "30/hour",
+        "risk_investigation": "60/hour",
+        "risk_agent": "600/hour",
     },
     # Anonymous throttles key on the client IP. Behind one reverse proxy
     # (Render, Fly, a single nginx) the client is the last X-Forwarded-For hop;
@@ -492,7 +524,7 @@ if _CELERY_BROKER:
     CELERY_BROKER_URL = _CELERY_BROKER
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", _CELERY_BROKER)
 else:
-    # No Redis in dev — run tasks eagerly (inline, no worker needed)
+    # No Redis in dev, so run tasks eagerly (inline, no worker needed)
     CELERY_TASK_ALWAYS_EAGER = True
     CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_TASK_SERIALIZER = "json"
@@ -507,55 +539,30 @@ CELERY_TASK_ACKS_LATE = True
 
 from celery.schedules import crontab  # noqa: E402
 
+# Beat runs the same three job sets as POST /api/internal/maintenance/ and
+# `manage.py run_maintenance` (listings.ops.SCHEDULED_JOB_SETS), through one
+# task per set. Do not list individual jobs here: a job added to a set is then
+# scheduled everywhere at once, and nothing runs twice. Times are campus time
+# (CELERY_TIMEZONE); daily and weekly sit off the quarter hour so they do not
+# start in the same minute as a tick.
+_SCHEDULED_JOBS_TASK = "dormcycle.run_scheduled_jobs"
 CELERY_BEAT_SCHEDULE = {
-    # Fire handoff reminders every 30 minutes (deduped per-reservation via Notification)
-    "handoff-reminders": {
-        "task": "listings.send_handoff_reminder_emails",
-        "schedule": crontab(minute="*/30"),
-    },
-    # Expire overdue listings every 15 minutes
-    "expire-listings": {
-        "task": "listings.expire_listings",
+    # Expiry, reminders, saved-search alerts, trending cache, push queue, risk events
+    "scheduled-jobs-tick": {
+        "task": _SCHEDULED_JOBS_TASK,
         "schedule": crontab(minute="*/15"),
+        "args": ("tick",),
     },
-    # Bump emails for stale listings — once daily at 09:00 campus time
-    "bump-emails": {
-        "task": "listings.send_bump_emails",
-        "schedule": crontab(hour=9, minute=0),
+    # Demand forecast
+    "scheduled-jobs-daily": {
+        "task": _SCHEDULED_JOBS_TASK,
+        "schedule": crontab(hour=3, minute=20),
+        "args": ("daily",),
     },
-    # Phase 16 — sweep confirmed reservations that passed 48h without resolution
-    "sweep-stale-confirmations": {
-        "task": "listings.sweep_stale_confirmations",
-        "schedule": crontab(minute=0, hour="*/6"),
-    },
-    # Phase 18 — demand forecast (Sunday midnight)
-    "demand-forecast": {
-        "task": "listings.recompute_demand_forecast",
-        "schedule": crontab(hour=0, minute=0, day_of_week="sunday"),
-    },
-    # Phase 18 — completion rate recompute (Monday 03:00)
-    "completion-rates": {
-        "task": "listings.recompute_completion_rates",
-        "schedule": crontab(hour=3, minute=0, day_of_week="monday"),
-    },
-    # Phase 20 — weekly campus digest (Sunday 08:00)
-    "weekly-campus-digest": {
-        "task": "listings.weekly_campus_digest",
-        "schedule": crontab(hour=8, minute=0, day_of_week="sunday"),
-    },
-    # Phase 25 — saved search alerts (every 15 min)
-    "check-saved-searches": {
-        "task": "listings.check_saved_searches",
-        "schedule": crontab(minute="*/15"),
-    },
-    # Phase 25 — refresh trending cache (every 30 min)
-    "refresh-trending-cache": {
-        "task": "listings.refresh_trending_cache",
-        "schedule": crontab(minute="*/30"),
-    },
-    # Phase 26 — flush quiet-hours push queue (every 5 min)
-    "flush-quiet-queue": {
-        "task": "listings.flush_quiet_queue",
-        "schedule": crontab(minute="*/5"),
+    # Completion rates and the weekly campus digest (Sunday morning)
+    "scheduled-jobs-weekly": {
+        "task": _SCHEDULED_JOBS_TASK,
+        "schedule": crontab(hour=8, minute=5, day_of_week="sunday"),
+        "args": ("weekly",),
     },
 }

@@ -24,7 +24,7 @@ class Campus(models.Model):
     move_out_start = models.DateField(null=True, blank=True)
     move_out_end = models.DateField(null=True, blank=True)
     active = models.BooleanField(default=True)
-    # Phase 17 — Revenue & Sustainability
+    # Phase 17: Revenue & Sustainability
     subscription_tier = models.CharField(
         max_length=16,
         choices=SubscriptionTier.choices,
@@ -41,7 +41,7 @@ class Campus(models.Model):
         help_text="Invoice recipient for campus license billing.",
     )
     stripe_customer_id = models.CharField(max_length=64, blank=True)
-    # Phase 19 — Multi-Campus Expansion
+    # Phase 19: Multi-Campus Expansion
     class OnboardingStatus(models.TextChoices):
         PENDING = "pending", "Pending Approval"
         APPROVED = "approved", "Approved"
@@ -57,7 +57,7 @@ class Campus(models.Model):
     contact_email = models.EmailField(blank=True)
     last_digest_sent_at = models.DateTimeField(null=True, blank=True)
     annual_report = models.FileField(upload_to="campus-reports/", null=True, blank=True)
-    # Phase 27 — White-label theming (primary_color, logo_url, font_family, hero_message)
+    # Phase 27: White-label theming (primary_color, logo_url, font_family, hero_message)
     theme = models.JSONField(
         null=True,
         blank=True,
@@ -81,7 +81,7 @@ class Campus(models.Model):
         """Exact-domain campus match for onboarding.
 
         Compares the email's domain against each active campus's parsed domain
-        list — never substring matching (icontains would let "myusc.edu"
+        list, never substring matching (icontains would let "myusc.edu"
         claim "usc.edu" addresses). If two campuses claim the same domain
         (a config error), the first by name wins deterministically instead of
         erroring or silently assigning none.
@@ -124,7 +124,7 @@ class CampusSubscription(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.campus} — {self.tier} ({self.created_at:%Y-%m-%d})"
+        return f"{self.campus}: {self.tier} ({self.created_at:%Y-%m-%d})"
 
 
 class UserManager(BaseUserManager):
@@ -221,12 +221,12 @@ class User(AbstractUser):
         default=0,
         help_text="0=incomplete, 1=profile_done, 2=first_listing, 3=complete",
     )
-    # Phase 21 — Social & Community
+    # Phase 21: Social & Community
     show_on_leaderboard = models.BooleanField(
         default=True,
         help_text="Opt-in to the campus leaderboard. Default True.",
     )
-    # Phase 18 — completion rate as a trust signal
+    # Phase 18: completion rate as a trust signal
     completion_rate = models.FloatField(
         null=True,
         blank=True,

@@ -168,7 +168,7 @@ def build_missing_fields(
     if item.triage_status != RoomScanItemDraft.TriageStatus.SELL:
         return missing_fields
 
-    # Resolve session — caller may pass it to avoid an FK lookup when items
+    # Resolve session: caller may pass it to avoid an FK lookup when items
     # were loaded from a prefetch cache that did not include scan_session.
     if session is None:
         session = item.scan_session

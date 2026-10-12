@@ -14,11 +14,27 @@ interface UseApiOptions<T> {
   ttl?: number;
 }
 
+interface RefetchOptions {
+  force?: boolean;
+}
+
 interface UseApiResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
-  refetch: (overridePath?: string, opts?: { force?: boolean }) => Promise<T | null>;
+  /** HTTP status behind `error`; null when the request never reached the server. */
+  errorStatus: number | null;
+  /**
+   * Fetch again and resolve with the data. Rejects when the request fails, so
+   * await it inside try/catch. Do not pass it straight to `onClick`: use
+   * `retry` for that.
+   */
+  refetch: (overridePath?: string, opts?: RefetchOptions) => Promise<T | null>;
+  /**
+   * Event-handler-safe refetch: ignores its arguments and never rejects. A
+   * failure lands in `error` / `errorStatus` like any other failed load.
+   */
+  retry: () => void;
   setData: (valueOrUpdater: T | ((prev: T | null) => T)) => void;
 }
 
@@ -45,30 +61,34 @@ export function useApi<T = unknown>(
   );
 
   const execute = useCallback(
-    async (
-      overridePath?: string,
-      { force = true }: { force?: boolean } = {},
-    ): Promise<T | null> => {
-      const target = overridePath ?? path;
+    async (overridePath?: string, opts?: RefetchOptions): Promise<T | null> => {
+      // `refetch` is routinely wired to buttons. A caller that passes it
+      // straight to onClick hands us the click event here, which used to be
+      // interpolated into the URL as "/api[object Object]". Only a real path
+      // string overrides the hook's own path.
+      const target = typeof overridePath === "string" && overridePath ? overridePath : path;
+      const force = typeof opts?.force === "boolean" ? opts.force : true;
       if (!target) return null;
 
       controllerRef.current?.abort();
-      controllerRef.current = new AbortController();
+      const controller = new AbortController();
+      controllerRef.current = controller;
 
+      // Loading means "nothing to show yet". Set it both ways: a request that
+      // was superseded no longer clears it (see the finally below), so a switch
+      // to a path that is already cached has to clear it here.
       const targetRecord = getCachedApi<T>(target);
-      if (targetRecord.data === undefined) setLoading(true);
+      setLoading(targetRecord.data === undefined);
 
       try {
-        return await prefetchApi<T>(target, {
-          force,
-          signal: controllerRef.current.signal,
-          ttl,
-        });
+        return await prefetchApi<T>(target, { force, signal: controller.signal, ttl });
       } catch (err) {
         if ((err as Error).name !== "AbortError") throw err;
         return null;
       } finally {
-        setLoading(false);
+        // A request superseded by a newer one must not end the newer one's
+        // loading state (double refetch, path change, StrictMode remount).
+        if (controllerRef.current === controller) setLoading(false);
       }
     },
     [path, ttl],
@@ -82,6 +102,27 @@ export function useApi<T = unknown>(
     execute().catch(() => {});
     return () => controllerRef.current?.abort();
   }, [execute, path, skip]);
+
+  // Logout and session expiry clear the whole cache. A public page that stays
+  // mounted through that (a listing detail, the hubs list) lost its data with
+  // nothing to fetch it again, and rendered its "not found" state. Refetch
+  // when the entry this hook was showing is evicted. Deferred a tick so a
+  // component that unmounts in the same pass (a protected page redirecting to
+  // /login) never fires a request.
+  const populatedPathRef = useRef<string | null>(null);
+  const evicted = cacheRecord.updatedAt === 0;
+  useEffect(() => {
+    if (!evicted) {
+      populatedPathRef.current = path ?? null;
+      return undefined;
+    }
+    if (skip || !path || populatedPathRef.current !== path) return undefined;
+    populatedPathRef.current = null;
+    const timer = setTimeout(() => {
+      execute().catch(() => {});
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [evicted, execute, path, skip]);
 
   const setData = useCallback(
     (valueOrUpdater: T | ((prev: T | null) => T)): void => {
@@ -98,8 +139,15 @@ export function useApi<T = unknown>(
     [initialData, path],
   );
 
+  const retry = useCallback((): void => {
+    // The failure is already recorded in the cache (and so in `error`); the
+    // rejection itself has no other consumer when called from a click handler.
+    execute().catch(() => undefined);
+  }, [execute]);
+
   const data = cacheRecord.data !== undefined ? cacheRecord.data : (initialData ?? null);
   const error = cacheRecord.error;
+  const errorStatus = cacheRecord.errorStatus;
 
-  return { data, loading, error, refetch: execute, setData };
+  return { data, loading, error, errorStatus, refetch: execute, retry, setData };
 }

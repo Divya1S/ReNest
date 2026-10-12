@@ -2,11 +2,11 @@
 
 Two tiers:
 
-  * **Offline** — router classification and KB retrieval against
+  * **Offline**: router classification and KB retrieval against
     evals/golden.json. Deterministic, free, no network; runs in CI and as part
     of the test suite. Editing exemplars, the knowledge base, or embedding
     logic without breaking these is the bar for merging.
-  * **Live** — full engine turns against the real Gemini API, graded with
+  * **Live**: full engine turns against the real Gemini API, graded with
     simple containment rules. Opt-in (`run_concierge_evals --live`): costs
     tokens and needs a key, so it's a pre-release smoke check, not CI.
 """

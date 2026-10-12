@@ -2,53 +2,43 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from listings.models import Listing
-from listings.ops import send_stale_listing_bump_emails
+from listings.ops import (
+    BUMP_EMAIL_BATCH_SIZE,
+    BUMP_EMAIL_QUIET_DAYS,
+    bump_email_candidates,
+    send_stale_listing_bump_emails,
+)
 
 
 class Command(BaseCommand):
     help = (
-        "Email owners of active listings that have had zero new view events "
-        "in the last 3 days asking if the item is still available. "
-        "Each listing is emailed at most once every 7 days."
+        f"Email owners of available listings posted at least {BUMP_EMAIL_QUIET_DAYS} days ago "
+        f"that have had no views in the last {BUMP_EMAIL_QUIET_DAYS} days, asking if the item "
+        "is still available. Each listing is emailed at most once, owners who opted out of "
+        f"email are skipped, and one run sends at most {BUMP_EMAIL_BATCH_SIZE}."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Print which listings would be bumped without sending emails.",
+            help=(
+                "Print the listings the next real run would email, without sending "
+                "anything or marking them as emailed."
+            ),
         )
 
     def handle(self, *args, **options):
         if options["dry_run"]:
-            from datetime import timedelta
-
-            from django.utils import timezone
-
-            now = timezone.now()
-            inactive_cutoff = now - timedelta(days=3)
-            resend_cooldown = now - timedelta(days=7)
-
-            candidates = (
-                Listing.objects.select_related("owner")
-                .filter(
-                    status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED],
-                    is_demo=False,
-                    available_until__gt=now,
-                    updated_at__lt=inactive_cutoff,
-                )
-                .exclude(bump_emailed_at__gt=resend_cooldown)
-                .exclude(view_events__viewed_at__gt=inactive_cutoff)
-                .distinct()
-            )
-            count = candidates.count()
+            # The same queryset and batch limit the task uses, so this is a
+            # preview of the real run rather than a description of another rule.
+            candidates = list(bump_email_candidates()[:BUMP_EMAIL_BATCH_SIZE])
             for listing in candidates:
                 self.stdout.write(
                     f'[dry-run] Would bump listing #{listing.id}: "{listing.title}" '
                     f"(owner: {listing.owner.email})"
                 )
-            self.stdout.write(self.style.SUCCESS(f"Would bump {count} listing(s)."))
+            self.stdout.write(self.style.SUCCESS(f"Would bump {len(candidates)} listing(s)."))
             return
 
         sent = send_stale_listing_bump_emails()

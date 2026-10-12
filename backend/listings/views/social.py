@@ -1,16 +1,17 @@
 """
 Trust & Safety social endpoints:
 
-  POST   /api/users/:id/block       — block a user
-  DELETE /api/users/:id/block       — unblock a user
-  POST   /api/reservations/:id/dispute  — open a dispute
-  PATCH  /api/disputes/:id          — resolve/dismiss (staff only)
-  GET    /api/disputes              — list disputes (staff: all; user: own)
+  POST   /api/users/:id/block       - block a user
+  DELETE /api/users/:id/block       - unblock a user
+  POST   /api/reservations/:id/dispute  - open a dispute
+  PATCH  /api/disputes/:id          - resolve/dismiss (staff only)
+  GET    /api/disputes              - list disputes (staff: all; user: own)
 """
 from __future__ import annotations
 
 from django.contrib.auth import get_user_model
-from django.db.models import F
+from django.db import IntegrityError, transaction
+from django.db.models import F, Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers as drf_serializers, status
@@ -30,8 +31,8 @@ User = get_user_model()
 
 class BlockUserView(APIView):
     """
-    POST   /api/users/:id/block  — block the user
-    DELETE /api/users/:id/block  — unblock the user
+    POST   /api/users/:id/block  - block the user
+    DELETE /api/users/:id/block  - unblock the user
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -86,8 +87,15 @@ def _dispute_to_dict(d: Dispute) -> dict:
     }
 
 
+def _disputed_party_id(reservation: Reservation, opened_by_id: int) -> int:
+    """The participant a dispute is raised against: whoever did not open it."""
+    if opened_by_id == reservation.claimant_id:
+        return int(reservation.listing.owner_id)
+    return int(reservation.claimant_id)
+
+
 class ReservationDisputeView(APIView):
-    """POST /api/reservations/:id/dispute — open a dispute on a completed reservation."""
+    """POST /api/reservations/:id/dispute: open a dispute on a completed reservation."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -100,17 +108,15 @@ class ReservationDisputeView(APIView):
         responses={201: _DisputeSerializer},
     )
     def post(self, request: Request, pk: int) -> Response:
+        # Scoped to the caller's own reservations, so someone else's id is a
+        # plain 404. Fetching by pk first and answering 403 told any signed-in
+        # user which reservation ids exist.
         reservation = get_object_or_404(
-            Reservation.objects.select_related("listing", "listing__owner", "claimant"),
+            Reservation.objects.select_related("listing", "listing__owner", "claimant").filter(
+                Q(claimant=request.user) | Q(listing__owner=request.user)
+            ),
             pk=pk,
         )
-
-        # Only the listing owner or claimant can open a dispute
-        if request.user.pk not in {reservation.listing.owner_id, reservation.claimant_id}:
-            return Response(
-                {"detail": "Only the listing owner or claimant can open a dispute."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
         # A dispute is about a handoff that went wrong, so there has to have
         # been a handoff: opening one on a brand-new request would let anyone
@@ -130,24 +136,30 @@ class ReservationDisputeView(APIView):
         if not reason:
             return Response({"reason": "This field is required."}, status=400)
 
-        dispute, created = Dispute.objects.get_or_create(
-            reservation=reservation,
-            opened_by=request.user,
-            defaults={"reason": reason},
+        already_open = Response(
+            {"detail": "A dispute from you on this reservation already exists."},
+            status=status.HTTP_409_CONFLICT,
         )
+        opener = current_user(request)
+        other_id = _disputed_party_id(reservation, opener.pk)
+        # The dispute and the strike it carries are one unit, and the unique
+        # constraint (reservation, opened_by) is what makes a double submit
+        # safe: get_or_create alone could insert twice and strike twice.
+        try:
+            with transaction.atomic():
+                dispute, created = Dispute.objects.get_or_create(
+                    reservation=reservation,
+                    opened_by=opener,
+                    defaults={"reason": reason},
+                )
+                if created:
+                    # F() so concurrent disputes cannot overwrite each
+                    # other's increment.
+                    User.objects.filter(pk=other_id).update(trust_strikes=F("trust_strikes") + 1)
+        except IntegrityError:
+            return already_open
         if not created:
-            return Response(
-                {"detail": "A dispute from you on this reservation already exists."},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # Increment trust_strikes on the other party (F() so concurrent
-        # disputes cannot overwrite each other's increment).
-        if request.user.pk == reservation.claimant_id:
-            other = reservation.listing.owner
-        else:
-            other = reservation.claimant
-        User.objects.filter(pk=other.pk).update(trust_strikes=F("trust_strikes") + 1)
+            return already_open
 
         # Notify the actual moderators. The previous version addressed the row
         # to the person who opened the dispute, so staff were never told.
@@ -168,7 +180,7 @@ class ReservationDisputeView(APIView):
 
 
 class DisputeListView(APIView):
-    """GET /api/disputes — staff sees all open disputes; users see their own."""
+    """GET /api/disputes: staff sees all open disputes; users see their own."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -188,7 +200,7 @@ class DisputeListView(APIView):
 
 
 class DisputeDetailView(APIView):
-    """PATCH /api/disputes/:id — staff resolves or dismisses a dispute."""
+    """PATCH /api/disputes/:id: staff resolves or dismisses a dispute."""
 
     permission_classes = [permissions.IsAdminUser]
 
@@ -204,7 +216,6 @@ class DisputeDetailView(APIView):
         responses={200: _DisputeSerializer},
     )
     def patch(self, request: Request, pk: int) -> Response:
-        dispute = get_object_or_404(Dispute, pk=pk)
         action = request.data.get("action", "")
         note = str(request.data.get("resolution_note", "")).strip()
 
@@ -214,15 +225,28 @@ class DisputeDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if dispute.status != Dispute.Status.OPEN:
-            return Response({"detail": "Dispute is already closed."}, status=400)
+        with transaction.atomic():
+            # Locked so two moderators closing the same dispute cannot both
+            # pass the OPEN check and hand the strike back twice.
+            dispute = get_object_or_404(Dispute.objects.select_for_update(), pk=pk)
+            if dispute.status != Dispute.Status.OPEN:
+                return Response({"detail": "Dispute is already closed."}, status=400)
 
-        dispute.status = (
-            Dispute.Status.RESOLVED if action == "resolve" else Dispute.Status.DISMISSED
-        )
-        dispute.resolved_by = current_user(request)
-        dispute.resolution_note = note
-        dispute.save(update_fields=["status", "resolved_by", "resolution_note", "updated_at"])
+            dispute.status = (
+                Dispute.Status.RESOLVED if action == "resolve" else Dispute.Status.DISMISSED
+            )
+            dispute.resolved_by = current_user(request)
+            dispute.resolution_note = note
+            dispute.save(update_fields=["status", "resolved_by", "resolution_note", "updated_at"])
+
+            if dispute.status == Dispute.Status.DISMISSED:
+                # Opening the dispute struck the other party. A dismissal
+                # says the complaint did not hold, so the strike goes back.
+                # The filter keeps the counter from going below zero.
+                reservation = Reservation.objects.select_related("listing").get(pk=dispute.reservation_id)
+                User.objects.filter(
+                    pk=_disputed_party_id(reservation, dispute.opened_by_id), trust_strikes__gt=0
+                ).update(trust_strikes=F("trust_strikes") - 1)
 
         # Notify the opener
         Notification.objects.get_or_create(

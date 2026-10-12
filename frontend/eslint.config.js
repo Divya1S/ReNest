@@ -88,7 +88,7 @@ export default [
       ],
     },
   },
-  // ── Test files — add vitest/jsdom globals ─────────────────────────────────
+  // ── Test files: add vitest/jsdom globals ──────────────────────────────────
   {
     files: ["src/**/*.test.{js,jsx,ts,tsx}"],
     languageOptions: {

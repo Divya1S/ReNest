@@ -79,7 +79,7 @@ export function useNotificationBadge(enabled = true) {
     });
 
     es.addEventListener("stream.end", () => {
-      // Server closed cleanly after max_duration — reconnect
+      // Server closed cleanly after max_duration, so reconnect
       closeSse();
       openSse();
     });
@@ -90,7 +90,7 @@ export function useNotificationBadge(enabled = true) {
     es.onerror = () => {
       closeSse();
       if (!opened) {
-        // Connection never established — fall back to polling
+        // Connection never established, so fall back to polling
         startPolling();
       } else {
         // Transient error after a good connection; retry after a short delay.

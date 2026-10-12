@@ -35,7 +35,7 @@ class ConciergeMessage(models.Model):
     )
     role = models.CharField(max_length=12, choices=Role.choices)
     content = models.TextField()
-    # Names of tools the assistant invoked while producing this reply — kept for
+    # Names of tools the assistant invoked while producing this reply, kept for
     # transparency in the UI ("Checked live listings") and for debugging.
     used_tools = models.JSONField(default=list, blank=True)
     # True once this row has been folded into ConciergeThread.summary; folded
@@ -62,7 +62,7 @@ class ConciergeMessage(models.Model):
 class KnowledgeChunk(models.Model):
     """A retrievable section of the product knowledge base.
 
-    ``vector`` stores a hashed bag-of-terms embedding (see concierge.rag) — the
+    ``vector`` stores a hashed bag-of-terms embedding (see concierge.rag), the
     same dependency-free technique the listing search uses. Swapping in a real
     embedding model later only requires replacing rag.embed() and reseeding.
     """
@@ -82,3 +82,29 @@ class KnowledgeChunk(models.Model):
 
     def __str__(self) -> str:
         return self.title
+
+
+class ConciergeTurnOutcome(models.Model):
+    """Daily tally of how concierge turns ended, including the ones that failed.
+
+    A failed turn stores no message (the user simply retries), so message rows
+    alone can never show a failure rate. Every turn increments exactly one
+    primary outcome here: ``ok`` or the reason it degraded (see
+    ``engine.DEGRADED_REASONS``). ``kb_answer`` is an extra tally, on top of
+    the primary outcome, of degraded turns that still got a help-section
+    answer. One row per day and outcome keeps the table tiny and holds no
+    user or message data.
+    """
+
+    day = models.DateField()
+    outcome = models.CharField(max_length=32)
+    count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-day", "outcome")
+        constraints = [
+            models.UniqueConstraint(fields=("day", "outcome"), name="concierge_outcome_day_unique"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.day} {self.outcome}: {self.count}"

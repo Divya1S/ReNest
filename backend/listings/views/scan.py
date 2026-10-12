@@ -50,7 +50,12 @@ from ..serializers import (
     compute_scan_summary,
 )
 from ..image_utils import compress_image
-from .helpers import annotate_listing_queryset, parse_int, parse_int_list, run_listing_created_hooks
+from .helpers import (
+    LISTING_SERIALIZER_RELATIONS,
+    parse_int,
+    parse_int_list,
+    run_listing_created_hooks,
+)
 
 logger = logging.getLogger(__name__)
 from dormcycle.typed import current_user
@@ -225,7 +230,7 @@ def build_publish_queue_payload(scan_session: RoomScanSession, request: Request)
         "summary": serialize_summary(summary),
         "items": serialized_items,
         "published_listings": ListingSerializer(
-            scan_session.generated_listings.select_related("owner", "source_scan_session"),
+            scan_session.generated_listings.select_related(*LISTING_SERIALIZER_RELATIONS),
             many=True,
             context={"request": request},
         ).data,
@@ -350,7 +355,7 @@ def build_scan_board_payload(scan_session: RoomScanSession, request: Request) ->
             for key in TRIAGE_ORDER
         ],
         "published_listings": ListingSerializer(
-            scan_session.generated_listings.select_related("owner", "source_scan_session"),
+            scan_session.generated_listings.select_related(*LISTING_SERIALIZER_RELATIONS),
             many=True,
             context={"request": request},
         ).data,
@@ -532,7 +537,7 @@ class RoomScanItemCreateView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
         payload = request.data.copy()
-        source_image_id = payload.get("source_image")
+        source_image_id = parse_int(payload.get("source_image"), field="source_image", minimum=1)
         source_image: RoomScanImage | None
         if source_image_id:
             source_image = get_object_or_404(scan_session.images, pk=source_image_id)
@@ -610,13 +615,17 @@ class RoomScanSessionBatchUpdateView(APIView):
 
     def patch(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
-        item_ids = request.data.get("item_ids") or []
+        raw_item_ids = request.data.get("item_ids") or []
         changes = request.data.get("changes") or {}
 
-        if not item_ids:
+        if not raw_item_ids:
             return Response({"detail": "Select at least one rescue draft first."}, status=400)
         if not changes:
             return Response({"detail": "Choose at least one field to update."}, status=400)
+        if not isinstance(changes, dict):
+            return Response({"changes": "Must be an object of field names and values."}, status=400)
+        # Junk ids ("abc", nested lists) used to reach the ORM and fail as a 500.
+        item_ids = parse_int_list(raw_item_ids, field="item_ids", max_items=200)
 
         items = list(
             scan_session.items.select_related(
@@ -626,7 +635,7 @@ class RoomScanSessionBatchUpdateView(APIView):
                 "source_image",
             ).filter(id__in=item_ids)
         )
-        if len(items) != len(item_ids):
+        if len(items) != len(set(item_ids)):
             return Response({"detail": "One or more selected drafts could not be found."}, status=400)
 
         session_changes = {}
@@ -634,16 +643,6 @@ class RoomScanSessionBatchUpdateView(APIView):
             session_changes["pickup_zone"] = changes["pickup_zone"]
         if "move_out_deadline" in changes:
             session_changes["move_out_deadline"] = changes["move_out_deadline"]
-
-        if session_changes:
-            session_serializer = RoomScanSessionSerializer(
-                scan_session,
-                data=session_changes,
-                partial=True,
-                context={"request": request},
-            )
-            session_serializer.is_valid(raise_exception=True)
-            scan_session = session_serializer.save()
 
         allowed_item_fields = {
             "title",
@@ -662,10 +661,24 @@ class RoomScanSessionBatchUpdateView(APIView):
 
         preset_key = item_changes.pop("preset_key", None) if "preset_key" in item_changes else None
         if preset_key:
-            if not get_publish_preset(preset_key):
+            if not isinstance(preset_key, str) or not get_publish_preset(preset_key):
                 return Response({"detail": "That preset could not be found."}, status=400)
 
+        # One transaction for the session and every draft. The session used
+        # to be saved first, on its own, so a draft that failed validation
+        # afterwards left the pickup zone or deadline changed with none of
+        # the item edits applied.
         with transaction.atomic():
+            if session_changes:
+                session_serializer = RoomScanSessionSerializer(
+                    scan_session,
+                    data=session_changes,
+                    partial=True,
+                    context={"request": request},
+                )
+                session_serializer.is_valid(raise_exception=True)
+                scan_session = session_serializer.save()
+
             for item in items:
                 if preset_key:
                     apply_draft_preset(item, preset_key)
@@ -847,12 +860,21 @@ class AiDetectItemsView(APIView):
         from ..tasks import ai_detect_cache_key, run_ai_detection
 
         key = ai_detect_cache_key(scan_session.pk, scan_image.pk)
+        claim = {"status": "processing"}
         # cache.add is atomic: two rapid taps cannot both dispatch the job.
         # A shorter claim than the old 10 minutes means a lost task (worker
         # restart) unblocks the image in three minutes rather than ten.
-        if not cache.add(key, {"status": "processing"}, timeout=180):
+        if not cache.add(key, claim, timeout=180):
             existing = cache.get(key) or {}
             if existing.get("status") == "processing":
+                return Response({"status": "processing"}, status=202)
+            # The key holds the finished result (done or error) of an earlier
+            # run. Left in place, this request would dispatch a new job and
+            # then read that old value back as its own answer. Drop it and
+            # claim again; losing the second add means another request just
+            # started the re-run.
+            cache.delete(key)
+            if not cache.add(key, claim, timeout=180):
                 return Response({"status": "processing"}, status=202)
         try:
             run_ai_detection.delay(scan_session.pk, scan_image.pk)
@@ -863,7 +885,7 @@ class AiDetectItemsView(APIView):
                 {"detail": "AI detection could not be started. Try again shortly."}, status=503
             )
 
-        # Eager mode (dev/tests) finishes inline — return the result directly
+        # Eager mode (dev/tests) finishes inline, so return the result directly
         # so the old synchronous contract still holds where there's no worker.
         result = cache.get(key) or {"status": "processing"}
         if result.get("status") == "done":
@@ -880,21 +902,21 @@ class AiDetectItemsView(APIView):
 
 @extend_schema(exclude=True)
 class AiDetectStatusView(APIView):
-    """GET /scan-sessions/:id/ai-detect/status?image_id=N — poll detection state."""
+    """GET /scan-sessions/:id/ai-detect/status?image_id=N: poll detection state."""
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(RoomScanSession, pk=pk, owner=request.user, is_demo=False)
-        image_id = request.query_params.get("image_id")
-        if not image_id:
+        image_id = parse_int(request.query_params.get("image_id"), field="image_id", minimum=1)
+        if image_id is None:
             return Response({"detail": "image_id query param is required."}, status=400)
 
         from django.core.cache import cache
 
         from ..tasks import ai_detect_cache_key
 
-        result = cache.get(ai_detect_cache_key(scan_session.pk, int(image_id)))
+        result = cache.get(ai_detect_cache_key(scan_session.pk, image_id))
         if result is None:
             return Response({"status": "unknown"}, status=404)
         if result.get("status") == "done":

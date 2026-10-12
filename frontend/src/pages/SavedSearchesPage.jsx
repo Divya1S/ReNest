@@ -8,7 +8,7 @@ import { apiFetch } from "../lib/api";
 
 export default function SavedSearchesPage() {
   usePageTitle("Saved Searches");
-  const { data, loading, error, refetch, setData } = useApi("/saved-searches");
+  const { data, loading, error, retry, setData } = useApi("/saved-searches");
   const searches = data?.results ?? (Array.isArray(data) ? data : []);
 
   async function remove(id) {
@@ -50,7 +50,7 @@ export default function SavedSearchesPage() {
           <p className="font-semibold text-[color:var(--color-ink)] dark:text-white">Couldn&apos;t load saved searches</p>
           <p className="text-sm text-[color:var(--text-muted)] mt-1">{error}</p>
           <button
-            onClick={() => refetch()}
+            onClick={retry}
             className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-full bg-[color:var(--color-tag)] text-white text-sm font-semibold hover:opacity-90"
           >
             <RefreshCw size={14} /> Try again

@@ -1,23 +1,35 @@
 from __future__ import annotations
 
+import hashlib
 import logging
+import smtplib
 from datetime import timedelta
 from decimal import Decimal
-from typing import Any, TYPE_CHECKING
+from typing import Any, Sequence
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.mail import EmailMessage
 from django.utils import timezone
 
 from .models import Listing, Notification, Reservation
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
 
 _REMINDER_WINDOW_HOURS = 24
 _REMINDER_LOOKAHEAD_HOURS = 4  # ± window so 30-min cron cadence never double-fires
+
+# How long a "sent" marker lives. It has to outlast a task's whole retry
+# ladder and any broker redelivery of the same message; a day is far beyond
+# both and short enough that the keys do not accumulate.
+_SENT_MARKER_TTL_SECONDS = 24 * 60 * 60
+
+
+class EmailDeliveryError(Exception):
+    """A delivery attempt failed in a way a later attempt may fix.
+
+    Raised by `send_once` so the calling Celery task can retry.
+    """
 
 
 def _sanitise_subject(subject: Any) -> str:
@@ -27,38 +39,138 @@ def _sanitise_subject(subject: Any) -> str:
     return text[:200]
 
 
+def _build_message(*, subject: str, message: str, recipient: str, user: Any = None) -> EmailMessage:
+    footer = ""
+    headers: dict[str, str] = {}
+    if user is not None:
+        from accounts.views import make_unsubscribe_api_url, make_unsubscribe_url
+
+        unsubscribe_url = make_unsubscribe_url(user)
+        footer = f"\n\n---\nTo stop receiving emails from ReNest: {unsubscribe_url}"
+        # RFC 8058 one-click unsubscribe: Gmail/Yahoo require these headers
+        # for bulk senders. The header URL must accept POST, so it points at
+        # the API endpoint; the footer link stays on the SPA confirmation page.
+        headers = {
+            "List-Unsubscribe": f"<{make_unsubscribe_api_url(user)}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        }
+    return EmailMessage(
+        subject=subject,
+        body=message + footer,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[recipient],
+        headers=headers,
+    )
+
+
 def _send(*, subject: Any, message: Any, recipient: Any, user: Any = None) -> Any:
+    """Best-effort delivery: a failure is logged and never raised.
+
+    For sweeps and digests that loop over many recipients with no task retry
+    behind them, where one bad address must not abort the rest of the batch.
+    Emails sent from a retrying task use `send_once` instead.
+    """
     if user is not None and not getattr(user, "email_notifications", True):
         return
     subject = _sanitise_subject(subject)
     try:
-        footer = ""
-        headers: dict[str, str] = {}
-        if user is not None:
-            from accounts.views import make_unsubscribe_url
-
-            from accounts.views import make_unsubscribe_api_url
-
-            unsubscribe_url = make_unsubscribe_url(user)
-            footer = f"\n\n---\nTo stop receiving emails from ReNest: {unsubscribe_url}"
-            # RFC 8058 one-click unsubscribe: Gmail/Yahoo require these headers
-            # for bulk senders. The header URL must accept POST, so it points at
-            # the API endpoint; the footer link stays on the SPA confirmation page.
-            headers = {
-                "List-Unsubscribe": f"<{make_unsubscribe_api_url(user)}>",
-                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-            }
-        EmailMessage(
-            subject=subject,
-            body=message + footer,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[recipient],
-            headers=headers,
-        ).send(fail_silently=False)
+        _build_message(subject=subject, message=message, recipient=recipient, user=user).send(
+            fail_silently=False
+        )
     except Exception:
         logger.exception(
-            "Transactional email failed to %s — subject: %s", recipient, subject
+            "Transactional email failed to %s (subject: %s)", recipient, subject
         )
+
+
+def _is_permanent_failure(exc: Exception) -> bool:
+    """True when the mail server refused the message outright (a 5xx reply).
+
+    Retrying cannot change that answer. Everything else (timeouts, dropped
+    connections, 4xx "try again later" replies) is treated as transient.
+    """
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        codes = [code for code, _ in exc.recipients.values()]
+        return bool(codes) and all(500 <= code < 600 for code in codes)
+    if isinstance(exc, smtplib.SMTPResponseException):
+        return 500 <= exc.smtp_code < 600
+    return False
+
+
+def _marker_key(kind: str, obj: Any, recipient: str) -> str:
+    # created_at is part of the object's identity here: primary keys can be
+    # reused (SQLite after a rollback, a restored database), and a marker left
+    # by an earlier row must not silence mail about a different one.
+    created_at = getattr(obj, "created_at", None)
+    stamp = int(created_at.timestamp() * 1_000_000) if created_at else 0
+    digest = hashlib.sha256(recipient.strip().lower().encode("utf-8")).hexdigest()[:16]
+    return f"sent:{kind}:{obj.pk}:{stamp}:{digest}"
+
+
+def claim_once(kind: str, obj: Any, recipient: str) -> bool:
+    """Atomically claim the right to notify `recipient` about `obj`. False if already claimed."""
+    return bool(cache.add(_marker_key(kind, obj, recipient), 1, timeout=_SENT_MARKER_TTL_SECONDS))
+
+
+def send_once(
+    *,
+    kind: str,
+    obj: Any,
+    subject: Any,
+    message: str,
+    recipient: str,
+    user: Any = None,
+    attachments: Sequence[tuple[str, bytes, str]] = (),
+) -> bool:
+    """Send one email at most once per (kind, object, recipient).
+
+    Built for tasks that retry and that write to more than one person. The
+    recipient's marker is claimed before sending (cache.add is atomic, the
+    same claim-then-act shape as the reminder job's conditional UPDATE), so:
+
+      * a retry caused by one recipient's failure skips everyone whose copy
+        already went out
+      * a duplicate run of the task (broker redelivery) sends nothing twice
+
+    Returns True if this call sent the email, False if it was skipped
+    (opted out, already sent, or refused for good by the mail server).
+    Raises EmailDeliveryError on a transient failure, after releasing the
+    marker so the retry can claim it again.
+    """
+    if user is not None and not getattr(user, "email_notifications", True):
+        return False
+    subject = _sanitise_subject(subject)
+    if not claim_once(f"email:{kind}", obj, recipient):
+        return False
+    try:
+        email = _build_message(subject=subject, message=message, recipient=recipient, user=user)
+        for filename, content, mimetype in attachments:
+            email.attach(filename, content, mimetype)
+        email.send(fail_silently=False)
+    except Exception as exc:
+        # Nothing was delivered, so the marker must not claim otherwise.
+        cache.delete(_marker_key(f"email:{kind}", obj, recipient))
+        logger.exception("Transactional email failed to %s (subject: %s)", recipient, subject)
+        if _is_permanent_failure(exc):
+            return False
+        raise EmailDeliveryError(f"{kind} email for object {obj.pk} was not delivered") from exc
+    return True
+
+
+def _send_each_once(kind: str, obj: Any, emails: Sequence[dict[str, Any]]) -> None:
+    """`send_once` for several recipients: try them all, then report a failure.
+
+    One party's mail server being down must not hold back the other party's
+    copy until the retry.
+    """
+    failure: EmailDeliveryError | None = None
+    for email in emails:
+        try:
+            send_once(kind=kind, obj=obj, **email)
+        except EmailDeliveryError as exc:
+            failure = failure or exc
+    if failure is not None:
+        raise failure
 
 
 def _handoff_url(reservation: Any) -> Any:
@@ -66,7 +178,11 @@ def _handoff_url(reservation: Any) -> Any:
 
 
 def send_reservation_confirmed_email(reservation: Any) -> Any:
-    """Both parties get an email + push when status transitions to CONFIRMED."""
+    """Both parties get an email + push when status transitions to CONFIRMED.
+
+    Retry-safe (see `send_once`); raises EmailDeliveryError if a delivery
+    should be attempted again.
+    """
     from .webpush import send_push_to_user
 
     listing = reservation.listing
@@ -75,60 +191,74 @@ def send_reservation_confirmed_email(reservation: Any) -> Any:
     url = _handoff_url(reservation)
     path = f"/handoffs/{reservation.pk}"
 
-    _send(
-        subject=f'Your reservation for "{listing.title}" is confirmed',
-        message=(
-            f"Hi {claimant.display_name},\n\n"
-            f'{owner.display_name} confirmed your pickup for "{listing.title}".\n\n'
-            f"Agreed pickup window: {reservation.pickup_time_window}\n\n"
-            f"Head to the handoff page to coordinate the details:\n{url}\n\n"
-            "Good luck with the move-out!"
-        ),
-        recipient=claimant.email,
-        user=claimant,
-    )
-    send_push_to_user(
-        claimant,
-        title="Reservation confirmed!",
-        body=f'{owner.display_name} confirmed your pickup for "{listing.title}".',
-        url=path,
-        notification_type="reservation",
-    )
+    # The push carries its own marker: it is not an email, but a retried task
+    # would repeat it just the same.
+    if claim_once("push:reservation_confirmed", reservation, f"user:{claimant.pk}"):
+        send_push_to_user(
+            claimant,
+            title="Reservation confirmed!",
+            body=f'{owner.display_name} confirmed your pickup for "{listing.title}".',
+            url=path,
+            notification_type="reservation",
+        )
 
-    _send(
-        subject=f'You confirmed the pickup for "{listing.title}"',
-        message=(
-            f"Hi {owner.display_name},\n\n"
-            f"You confirmed {claimant.display_name}'s reservation for \"{listing.title}\".\n\n"
-            f"Agreed pickup window: {reservation.pickup_time_window}\n\n"
-            f"Track the handoff here:\n{url}\n\n"
-            "Thanks for rescuing campus waste!"
-        ),
-        recipient=owner.email,
-        user=owner,
+    _send_each_once(
+        "reservation_confirmed",
+        reservation,
+        [
+            dict(
+                subject=f'Your reservation for "{listing.title}" is confirmed',
+                message=(
+                    f"Hi {claimant.display_name},\n\n"
+                    f'{owner.display_name} confirmed your pickup for "{listing.title}".\n\n'
+                    f"Agreed pickup window: {reservation.pickup_time_window}\n\n"
+                    f"Head to the handoff page to coordinate the details:\n{url}\n\n"
+                    "Good luck with the move-out!"
+                ),
+                recipient=claimant.email,
+                user=claimant,
+            ),
+            dict(
+                subject=f'You confirmed the pickup for "{listing.title}"',
+                message=(
+                    f"Hi {owner.display_name},\n\n"
+                    f"You confirmed {claimant.display_name}'s reservation for \"{listing.title}\".\n\n"
+                    f"Agreed pickup window: {reservation.pickup_time_window}\n\n"
+                    f"Track the handoff here:\n{url}\n\n"
+                    "Thanks for rescuing campus waste!"
+                ),
+                recipient=owner.email,
+                user=owner,
+            ),
+        ],
     )
 
 
 def send_reservation_completed_email(reservation: Any) -> Any:
-    """Both parties get a feedback-request email when status transitions to COMPLETED."""
+    """Both parties get a feedback-request email when status transitions to COMPLETED.
+
+    Retry-safe (see `send_once`).
+    """
     listing = reservation.listing
     owner = listing.owner
     claimant = reservation.claimant
     url = _handoff_url(reservation)
 
+    emails = []
     for user, counterparty in [(claimant, owner), (owner, claimant)]:
-        _send(
+        emails.append(dict(
             subject=f'How did the handoff go? Leave feedback for "{listing.title}"',
             message=(
                 f"Hi {user.display_name},\n\n"
-                f'Your pickup of "{listing.title}" with {counterparty.display_name} is complete — great work!\n\n'
+                f'Your pickup of "{listing.title}" with {counterparty.display_name} is complete. Great work!\n\n'
                 f"Take a moment to leave feedback on the handoff. "
                 f"It helps build trust in the ReNest community:\n{url}\n\n"
                 "Thank you for being part of ReNest."
             ),
             recipient=user.email,
             user=user,
-        )
+        ))
+    _send_each_once("reservation_completed", reservation, emails)
 
 
 def send_handoff_reminder_emails() -> Any:
@@ -197,7 +327,7 @@ def send_handoff_reminder_emails() -> Any:
             )
             send_push_to_user(
                 user,
-                title="Pickup reminder — 24 h left",
+                title="Pickup reminder: 24 h left",
                 body=f'Your handoff for "{listing.title}" closes around {deadline}.',
                 url=f"/handoffs/{reservation.pk}",
                 notification_type="handoff_urgent",
@@ -254,28 +384,36 @@ def send_handoff_impact_notification(reservation: Reservation) -> None:
     item_retail = Decimal(str(listing.estimated_retail_value or 0))
     cumulative = _build_cumulative_impact(owner)
 
-    # In-app notification
-    Notification.objects.create(
-        user=owner,
-        type=Notification.Type.SYSTEM,
-        priority=Notification.Priority.LOW,
-        title="Rescue complete 🌱",
-        body=(
-            f'"{listing.title}" was picked up! '
-            f"That's ~{item_weight:.0f} lb diverted from the landfill"
-            + (f" and ${item_retail:.0f} in retail value rescued" if item_retail > 0 else "")
-            + f". Your ReNest total: {cumulative['count']} item{'s' if cumulative['count'] != 1 else ''}, "
-            f"${cumulative['total_retail']:.0f} rescued."
-        ),
-        link_path=f"/my-listings",
+    # In-app notification. get_or_create, not create: dedupe_key is unique, so
+    # a retried task used to die here on IntegrityError before reaching the
+    # email it was retrying for.
+    Notification.objects.get_or_create(
         dedupe_key=f"impact:reservation:{reservation.id}",
+        defaults=dict(
+            user=owner,
+            type=Notification.Type.SYSTEM,
+            priority=Notification.Priority.LOW,
+            title="Rescue complete 🌱",
+            body=(
+                f'"{listing.title}" was picked up! '
+                f"That's ~{item_weight:.0f} lb diverted from the landfill"
+                + (f" and ${item_retail:.0f} in retail value rescued" if item_retail > 0 else "")
+                + f". Your ReNest total: {cumulative['count']} item{'s' if cumulative['count'] != 1 else ''}, "
+                f"${cumulative['total_retail']:.0f} rescued."
+            ),
+            link_path="/my-listings",
+        ),
     )
+
+    # The milestone is database work and must not wait on a mail server, so
+    # it runs before the email that may raise for a retry.
+    check_and_award_milestone(owner)
 
     # Email
     body_lines = [
         f"Hi {owner.display_name},",
         "",
-        f'"{listing.title}" was just picked up — great work keeping it out of the trash.',
+        f'"{listing.title}" was just picked up. Great work keeping it out of the trash.',
         "",
         "This rescue:",
         f"  • Estimated retail value: ${item_retail:.0f}" if item_retail > 0 else "  • Listed for free",
@@ -288,14 +426,14 @@ def send_handoff_impact_notification(reservation: Reservation) -> None:
         "",
         "Thank you for being part of ReNest.",
     ]
-    _send(
+    send_once(
+        kind="handoff_impact",
+        obj=reservation,
         subject=f'Your rescue of "{listing.title}" is complete',
         message="\n".join(body_lines),
         recipient=owner.email,
         user=owner,
     )
-
-    check_and_award_milestone(owner)
 
 
 # ---------------------------------------------------------------------------
@@ -345,7 +483,7 @@ def check_and_award_milestone(user: Any) -> str | None:
             "title": f"You earned the {new_label} badge!",
             "body": (
                 f"You've completed {completed} handoff{'s' if completed != 1 else ''} "
-                f"on ReNest. Keep it up — your campus thanks you."
+                f"on ReNest. Keep it up. Your campus thanks you."
             ),
             "link_path": "/trust/me",
             "priority": Notification.Priority.NORMAL,
@@ -356,11 +494,11 @@ def check_and_award_milestone(user: Any) -> str | None:
         subject=f"You earned the {new_label} badge on ReNest!",
         message=(
             f"Hi {user.display_name},\n\n"
-            f"You've completed {completed} handoff{'s' if completed != 1 else ''} — "
-            f"that earns you the \"{new_label}\" badge.\n\n"
+            f"You've completed {completed} handoff{'s' if completed != 1 else ''}, "
+            f"and that earns you the \"{new_label}\" badge.\n\n"
             f"Your badge is now visible on your listings and trust page:\n"
             f"{settings.APP_BASE_URL}/trust/me\n\n"
-            "Keep rescuing — every item counts.\n\nReNest"
+            "Keep rescuing: every item counts.\n\nReNest"
         ),
         recipient=user.email,
         user=user,
@@ -370,37 +508,41 @@ def check_and_award_milestone(user: Any) -> str | None:
 
 
 def send_donation_receipt_email(listing: Listing) -> None:
-    """Email the PDF donation receipt to the listing owner after a hub drop-off."""
+    """Email the PDF donation receipt to the listing owner after a hub drop-off.
+
+    Retry-safe (see `send_once`): raises EmailDeliveryError on a transient
+    failure instead of swallowing it, so the task's retries actually happen.
+    """
     owner = listing.owner
     if not getattr(owner, "email_notifications", True):
         return
 
     hub_name = listing.donation_hub.name if listing.donation_hub else "a campus donation hub"
-    subject = f"Your ReNest donation receipt — {listing.title}"
+    subject = f"Your ReNest donation receipt: {listing.title}"
 
-    from accounts.views import make_unsubscribe_url
-    footer = f"\n\n---\nTo stop receiving emails from ReNest: {make_unsubscribe_url(owner)}"
     body = (
         f"Hi {owner.get_full_name() or 'there'},\n\n"
         f"Thank you for donating \"{listing.title}\" to {hub_name} through ReNest.\n\n"
         f"Your PDF receipt is attached. Keep it for your personal records.\n\n"
-        f"— The ReNest Team\n"
+        f"The ReNest Team\n"
         f"{settings.APP_BASE_URL}"
-        f"{footer}"
     )
-    try:
-        msg = EmailMessage(
-            subject=subject,
-            body=body,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            to=[owner.email],
-        )
-        if listing.donation_receipt:
-            listing.donation_receipt.open("rb")
+    attachments: list[tuple[str, bytes, str]] = []
+    if listing.donation_receipt:
+        listing.donation_receipt.open("rb")
+        try:
             pdf_bytes = listing.donation_receipt.read()
+        finally:
             listing.donation_receipt.close()
-            filename = f"receipt-{listing.pk}.pdf"
-            msg.attach(filename, pdf_bytes, "application/pdf")
-        msg.send(fail_silently=False)
-    except Exception:
-        logger.exception("Donation receipt email failed for listing %s", listing.pk)
+        attachments.append((f"receipt-{listing.pk}.pdf", pdf_bytes, "application/pdf"))
+    # The unsubscribe footer and List-Unsubscribe headers come from the shared
+    # message builder, like every other transactional email.
+    send_once(
+        kind="donation_receipt",
+        obj=listing,
+        subject=subject,
+        message=body,
+        recipient=owner.email,
+        user=owner,
+        attachments=attachments,
+    )

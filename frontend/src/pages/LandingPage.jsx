@@ -49,7 +49,7 @@ const featureCards = [
 const faqs = [
   {
     question: "How does the room scan work?",
-    answer: "Snap a few photos of your dorm room. Our studio lets you tag rescue-worthy items with simple hotspots — much faster than listing items one by one.",
+    answer: "Snap a few photos of your dorm room. Our studio lets you tag rescue-worthy items with simple hotspots, much faster than listing items one by one.",
   },
   {
     question: "Is there a fee for students?",
@@ -156,7 +156,7 @@ export default function LandingPage() {
           transition={{ duration: 0.6, delay: 0.15 }}
           className="w-full max-w-4xl"
         >
-          {/* Deliberately light in both themes — framed like a product still */}
+          {/* Deliberately light in both themes, framed like a product still */}
           <div className="relative w-full aspect-[16/9] bg-white rounded-[20px] border border-black/10 dark:border-white/10 shadow-sm overflow-hidden">
             <img
               src="/images/hero-room-vignette.png"
@@ -205,7 +205,7 @@ export default function LandingPage() {
                 Real stuff rescued. Real waste avoided.
               </h2>
               <p className="mt-2 text-sm text-[color:var(--text-muted)]">
-                Counted live from actual rescues on this platform — no vanity numbers.
+                Counted live from actual rescues on this platform, no vanity numbers.
               </p>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
@@ -276,6 +276,42 @@ export default function LandingPage() {
               </motion.div>
             );
           })}
+        </div>
+      </section>
+
+      {/* ── Risk Intelligence ────────────────────────────────────────────── */}
+      <section className="mt-16 px-4 md:px-8 max-w-[1200px] mx-auto" aria-labelledby="risk-intelligence-heading">
+        <div className="grid gap-8 rounded-[28px] bg-[color:var(--color-night)] p-8 text-white md:grid-cols-[1.4fr_1fr] md:p-12">
+          <div>
+            <p className="text-[0.7rem] font-semibold uppercase tracking-[0.2em] text-white/60">Risk Intelligence</p>
+            <h2 id="risk-intelligence-heading" className="mt-3 text-[1.8rem] sm:text-[2.2rem] font-bold tracking-[-0.025em] leading-tight">
+              Payments that explain themselves.
+            </h2>
+            <p className="mt-4 max-w-xl leading-relaxed text-white/75">
+              A sandbox payment pipeline with an explainable risk engine, idempotent APIs, an append-only event log and a Fraud Lab that measures detection against friction on labelled synthetic attacks. No real money moves.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link to="/risk" className="primary-button">
+                Open the risk dashboard <ArrowRight size={16} aria-hidden="true" />
+              </Link>
+              <Link to="/risk/lab" className="secondary-button !border-white/30 !text-white hover:!bg-white/10">
+                Try the Fraud Lab
+              </Link>
+            </div>
+          </div>
+          <ul className="grid gap-3 self-center text-[0.95rem] text-white/85">
+            {[
+              "Every decision lists the signals behind it, with points.",
+              "Idempotency keys make retries safe by design.",
+              "Events retry with backoff and dead-letter instead of vanishing.",
+              "Precision and recall only where the labels are known.",
+            ].map((line) => (
+              <li key={line} className="flex items-start gap-3">
+                <ShieldCheck size={18} className="mt-0.5 shrink-0 text-[color:var(--color-box)]" aria-hidden="true" />
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 
@@ -353,7 +389,7 @@ export default function LandingPage() {
               Ready to rescue your room?
             </h2>
             <p className="text-[1rem] leading-relaxed mb-8" style={{ color: "rgba(255,255,255,0.7)" }}>
-              Make your campus move-out faster, cheaper, and more sustainable — starting with your own room.
+              Make your campus move-out faster, cheaper, and more sustainable, starting with your own room.
             </p>
             <div className="flex flex-col sm:flex-row justify-center gap-3">
               <Link

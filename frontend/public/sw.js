@@ -31,22 +31,29 @@ self.addEventListener("notificationclick", (event) => {
 });
 
 // ─── Cache config ────────────────────────────────────────────────────────────
-// v2: API responses are no longer written to Cache Storage — they can contain
+// v2: API responses are no longer written to Cache Storage, since they can contain
 // personal data (profile, messages, pickup addresses) that must not persist on
 // shared devices. Only same-origin static assets and the offline page cache.
 // v3: /media/ (room-scan photos, listing images, donation receipts) is excluded
 // too; the old extension-based match had been caching those uploads. The
 // version bump makes existing clients discard what v2 already stored.
-const CACHE_VERSION = "v3";
+// v4: "/", "/dashboard" and "/browse" are no longer precached. Navigations are
+// network-first and fall back only to /offline.html, so those copies were
+// never served: they were a stale app shell stored for nothing. The bump
+// removes them from clients that already hold them.
+const CACHE_VERSION = "v4";
 const STATIC_CACHE = `renest-static-${CACHE_VERSION}`;
 
-// Static assets to pre-cache on install
-const PRECACHE_URLS = [
-  "/",
-  "/dashboard",
-  "/browse",
-  "/offline.html",
-];
+// Pre-cached on install: only what the worker can actually serve offline.
+const PRECACHE_URLS = ["/offline.html"];
+
+// Server-sent event streams (the notification badge listens on /api/events).
+function isEventStream(request, url) {
+  return (
+    url.pathname === "/api/events" ||
+    (request.headers.get("accept") || "").includes("text/event-stream")
+  );
+}
 
 // ─── Install: pre-cache shell ────────────────────────────────────────────────
 self.addEventListener("install", (event) => {
@@ -79,9 +86,13 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Never intercept: non-GET, cross-origin (Sentry, fonts, S3), or SSE streams
+  // Never intercept: non-GET, cross-origin (Sentry, fonts, S3), or SSE streams.
+  // An event stream has to reach the browser untouched: the synthetic 503 the
+  // /api/ branch below returns when offline is a fatal error to EventSource,
+  // which then stops reconnecting, whereas a plain network failure is retried.
   if (request.method !== "GET") return;
   if (url.origin !== self.location.origin) return;
+  if (isEventStream(request, url)) return;
 
   // API calls → network only. Responses may contain personal data and are
   // never written to Cache Storage; the in-memory apiCache handles reuse.

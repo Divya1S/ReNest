@@ -7,12 +7,42 @@ from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers as drf_serializers
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
-from ..ai_client import ai_available, generate_json
+from ..ai_client import (
+    UNTRUSTED_TEXT_RULE,
+    ai_available,
+    coerce_number,
+    generate_json,
+    quote_untrusted,
+)
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+class SuggestCategoriesThrottle(UserRateThrottle):
+    """Per-user cap on the model-backed category suggester.
+
+    Each request is a paid model call, and the endpoint had no limit at all.
+    The rate is set on the class, which DRF uses in preference to a
+    DEFAULT_THROTTLE_RATES lookup, so no settings entry is needed. The scope
+    still matters: it keeps this counter separate from other user throttles.
+    """
+
+    scope = "suggest_categories"
+    rate = "30/hour"
+
+
+_CATEGORY_SUGGESTIONS_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {"category": {"type": "STRING"}, "confidence": {"type": "NUMBER"}},
+        "required": ["category", "confidence"],
+    },
+}
 
 
 class DemandForecastView(APIView):
@@ -58,6 +88,7 @@ class SuggestCategoriesView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [SuggestCategoriesThrottle]
 
     @extend_schema(
         operation_id="listings_suggest_categories",
@@ -109,28 +140,42 @@ class SuggestCategoriesView(APIView):
 
         categories = ["storage", "lighting", "supplies", "comfort", "toiletries", "decor", "other"]
         prompt = (
-            f"A student is listing a dorm item.\n"
-            f"Title: {title}\nDescription: {description[:300]}\n\n"
+            "A student is listing a dorm item.\n"
+            f"Title: {quote_untrusted(title, limit=140)}\n"
+            f"Description: {quote_untrusted(description, limit=300)}\n\n"
+            f"{UNTRUSTED_TEXT_RULE}\n"
             f"{peak_hint}"
             f"From these categories: {', '.join(categories)}\n"
-            "Return the 3 best-matching categories with confidence 0.0–1.0. "
+            "Return the 3 best-matching categories with confidence 0.0 to 1.0. "
             'Output JSON only: [{"category": "...", "confidence": 0.9}, ...]'
         )
 
         try:
-            raw_suggestions = generate_json(prompt, max_tokens=200)
-            suggestions = raw_suggestions if isinstance(raw_suggestions, list) else []
-            suggestions = [
-                s for s in suggestions
-                if isinstance(s, dict) and s.get("category") in categories
-            ][:3]
+            raw_suggestions = generate_json(
+                prompt, max_tokens=200, response_schema=_CATEGORY_SUGGESTIONS_SCHEMA
+            )
         except Exception:
             logger.exception("SuggestCategoriesView failed")
             return Response({"suggestions": []})
 
-        # Annotate is_peak_demand
-        for s in suggestions:
-            s["is_peak_demand"] = s.get("category") in peak_cats
+        # Rebuild each item from validated parts instead of passing the
+        # model's objects through: the response schema promises exactly
+        # category, confidence and is_peak_demand.
+        suggestions: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in raw_suggestions if isinstance(raw_suggestions, list) else []:
+            category = item.get("category") if isinstance(item, dict) else None
+            if not isinstance(category, str) or category not in categories or category in seen:
+                continue
+            confidence = coerce_number(item.get("confidence"))
+            seen.add(category)
+            suggestions.append({
+                "category": category,
+                "confidence": min(max(confidence, 0.0), 1.0) if confidence is not None else 0.0,
+                "is_peak_demand": category in peak_cats,
+            })
+            if len(suggestions) >= 3:
+                break
 
         return Response({"suggestions": suggestions})
 

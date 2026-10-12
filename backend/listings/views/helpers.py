@@ -24,6 +24,7 @@ from ..models import (
     Reservation,
     RescueRequest,
     SavedListing,
+    StorageHold,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +76,45 @@ def parse_int_list(value: Any, *, field: str, max_items: int = 200) -> list[int]
     return ids
 
 
+# Relations ListingSerializer reads on every row. scan_draft_source is a
+# reverse one-to-one: left out of select_related it costs one query per
+# listing, including every listing that has no scan draft at all.
+LISTING_SERIALIZER_RELATIONS = ("owner", "source_scan_session", "scan_draft_source")
+
+_ACTIVE_LISTING_STATUSES = (Listing.Status.AVAILABLE, Listing.Status.RESERVED)
+
+
+def owner_campus_name(owner: Any) -> str:
+    """Campus name partner webhooks are addressed by.
+
+    The verified campus foreign key wins; the free-text profile field is
+    only a fallback for accounts that were never matched to a campus.
+    """
+    campus = getattr(owner, "campus", None)
+    return campus.name if campus else (getattr(owner, "campus_name", "") or "")
+
+
+def _is_signed_in(user: Any) -> bool:
+    return user is not None and bool(getattr(user, "is_authenticated", False))
+
+
+def _visible_listings(user: Any, *, include_flagged: bool) -> QuerySet[Listing]:
+    now = timezone.now()
+    qs = Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(
+        is_demo=False,
+        status__in=_ACTIVE_LISTING_STATUSES,
+        available_until__gte=now,
+    )
+    if not include_flagged:
+        qs = qs.exclude(moderation_status=Listing.ModerationStatus.FLAGGED)
+    if _is_signed_in(user):
+        blocked = BlockedUser.objects.filter(
+            Q(blocker=user, blocked_id=OuterRef("owner_id")) | Q(blocked=user, blocker_id=OuterRef("owner_id"))
+        )
+        qs = qs.filter(~Exists(blocked))
+    return qs
+
+
 def visible_listing_queryset(user: Any = None) -> QuerySet[Listing]:
     """Base queryset for every public discovery surface (browse, search, map,
     trending, embed, semantic search).
@@ -84,19 +124,46 @@ def visible_listing_queryset(user: Any = None) -> QuerySet[Listing]:
     status, deadline not passed, and (for signed-in users) neither party has
     blocked the other.
     """
-    now = timezone.now()
-    qs = (
-        Listing.objects.select_related("owner", "source_scan_session")
-        .filter(is_demo=False, status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED])
-        .exclude(moderation_status=Listing.ModerationStatus.FLAGGED)
-        .filter(available_until__gte=now)
-    )
-    if user is not None and getattr(user, "is_authenticated", False):
-        blocked = BlockedUser.objects.filter(
-            Q(blocker=user, blocked_id=OuterRef("owner_id")) | Q(blocked=user, blocker_id=OuterRef("owner_id"))
-        )
-        qs = qs.annotate(_blocked_ann=Exists(blocked)).filter(_blocked_ann=False)
+    return _visible_listings(user, include_flagged=False)
+
+
+def browse_listing_queryset(
+    user: Any = None,
+    *,
+    include_flagged: bool = False,
+    campus_slug: Optional[str] = None,
+) -> QuerySet[Listing]:
+    """`marketplace_listing_queryset` with the two switches only browse has.
+
+    `include_flagged` lets staff see listings awaiting moderation.
+    `campus_slug` replaces the viewer's own campus scope; the browse view
+    decides who may pass it (guests, staff and campus managers).
+    """
+    from django.contrib.auth import get_user_model
+
+    qs = _visible_listings(user, include_flagged=include_flagged)
+    # Owners with a poor completion record (below 30%) are suppressed.
+    poor_owners = get_user_model().objects.filter(
+        completion_rate__lt=0.3, completion_rate__isnull=False
+    ).values_list("id", flat=True)
+    qs = qs.exclude(owner_id__in=poor_owners)
+    if campus_slug:
+        qs = qs.filter(owner__campus__slug=campus_slug)
+    elif _is_signed_in(user) and getattr(user, "campus_id", None):
+        qs = qs.filter(owner__campus_id=user.campus_id)
     return qs
+
+
+def marketplace_listing_queryset(user: Any = None) -> QuerySet[Listing]:
+    """What a given person may discover in the marketplace.
+
+    `visible_listing_queryset` plus the two rules browse adds on top: owners
+    with a poor completion record are suppressed, and a signed-in user with a
+    campus only sees that campus. Every surface that shows inventory to a
+    user (browse, search, the concierge tools and its listing cards) builds
+    on this one function so the rules cannot drift apart.
+    """
+    return browse_listing_queryset(user)
 
 
 def run_listing_created_hooks(listing: Listing) -> None:
@@ -119,11 +186,10 @@ def run_listing_created_hooks(listing: Listing) -> None:
     try:
         from .partner import dispatch_webhook_event
 
-        owner = listing.owner
         dispatch_webhook_event(
             "listing_created",
             {"id": listing.pk, "title": listing.title, "category": listing.category, "status": listing.status},
-            owner.campus.name if owner.campus else (owner.campus_name or ""),
+            owner_campus_name(listing.owner),
         )
     except Exception:
         logger.exception("listing_created webhook dispatch failed for listing %s", listing.pk)
@@ -155,6 +221,14 @@ def annotate_listing_queryset(queryset: QuerySet[Listing], user: Optional[User] 
         update_count_ann=Count("updates", distinct=True),
         view_count_ann=Count("view_events", distinct=True),
         completeness_score_ann=completeness_score,
+        # Lets can_reserve reflect an active storage hold without a query per row.
+        on_hold_ann=Exists(
+            StorageHold.objects.filter(
+                listing=OuterRef("pk"),
+                status=StorageHold.Status.ACTIVE,
+                expires_at__gt=timezone.now(),
+            )
+        ),
     )
     if user and user.is_authenticated:
         qs = qs.annotate(
@@ -171,22 +245,18 @@ def annotate_listing_queryset(queryset: QuerySet[Listing], user: Optional[User] 
     return qs
 
 
-def _exclude_deadline_passed(queryset: QuerySet[Listing]) -> QuerySet[Listing]:
-    # Read-only: hide listings whose deadline passed but cron hasn't run yet.
-    now = timezone.now()
-    return queryset.exclude(
-        status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED],
-        available_until__lt=now,
-    )
-
-
 def _expire_for_user(user: User) -> None:
     # Scoped write: only touches this user's listings, not the full table.
-    Listing.objects.filter(
+    # Row by row through Listing.refresh_status, like ops.expire_stale_listings:
+    # a queryset .update() would skip the repost token, and a listing expired
+    # without one can never be revived by its owner.
+    stale = Listing.objects.filter(
         owner=user,
-        status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED],
+        status__in=_ACTIVE_LISTING_STATUSES,
         available_until__lt=timezone.now(),
-    ).update(status=Listing.Status.EXPIRED)
+    )
+    for listing in stale.iterator(chunk_size=200):
+        listing.refresh_status(commit=True)
 
 
 def get_rescue_request_queryset(user: User) -> QuerySet[RescueRequest]:
@@ -195,9 +265,14 @@ def get_rescue_request_queryset(user: User) -> QuerySet[RescueRequest]:
         "matched_listing",
         "matched_listing__owner",
         "matched_listing__source_scan_session",
+        "matched_listing__scan_draft_source",
     )
-    if user.campus_name:
-        queryset = queryset.filter(Q(seeker__campus_name=user.campus_name) | Q(seeker=user))
+    # The verified campus (the foreign key set from the email domain) decides
+    # whose requests a user sees. The free-text campus name on a profile is
+    # editable, so it only groups accounts that have no verified campus.
+    from ..notifications import same_campus_q
+
+    queryset = queryset.filter(same_campus_q("seeker", user) | Q(seeker=user))
     return queryset.exclude(
         Q(status__in=[RescueRequest.Status.FULFILLED, RescueRequest.Status.CLOSED])
         & ~Q(seeker=user)

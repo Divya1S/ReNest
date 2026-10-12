@@ -8,7 +8,25 @@ from django.utils import timezone
 from typing import Any
 
 
-class ListingManager(models.Manager):
+class ListingQuerySet(models.QuerySet):
+    """Queryset behind Listing.objects: bulk deletes are soft deletes too.
+
+    Listing.delete() already soft-deletes one row, but a queryset .delete()
+    (admin bulk action, a related manager, a shell one-liner) went straight
+    to SQL DELETE and cascaded through reservations, feedback and reports.
+    """
+
+    def delete(self):
+        now = timezone.now()
+        count = self.update(deleted_at=now, updated_at=now)
+        return count, {self.model._meta.label: count}
+
+    def hard_delete(self):
+        """Really remove the rows (and cascade). Use deliberately."""
+        return super().delete()
+
+
+class ListingManager(models.Manager.from_queryset(ListingQuerySet)):  # type: ignore[misc]
     def get_queryset(self):
         return super().get_queryset().filter(deleted_at__isnull=True)
 
@@ -111,13 +129,13 @@ class Listing(models.Model):
         db_index=True,
         help_text="Phase 17: listings boosted via Stripe tip surface first in browse until this datetime.",
     )
-    # Phase 25 — Semantic Search
+    # Phase 25: Semantic Search
     embedding = models.JSONField(
         null=True,
         blank=True,
-        help_text="HashingVectorizer feature vector for semantic search similarity ranking.",
+        help_text="Versioned lexical search vector (hashing trick over title and description). Not a learned embedding.",
     )
-    # Phase 18 — Platform Intelligence
+    # Phase 18: Platform Intelligence
     quality_hints = models.JSONField(
         default=list,
         blank=True,
@@ -153,6 +171,18 @@ class Listing(models.Model):
             # Category + status filter (browse page filters + insights market map)
             models.Index(fields=["category", "status", "available_until"], name="listing_category_filter_idx"),
         ]
+        constraints = [
+            # The serializers already refuse negative money; these stop every
+            # other writer (admin, scripts, bulk updates) from storing it.
+            models.CheckConstraint(
+                condition=models.Q(price_amount__gte=0),
+                name="listing_price_amount_non_negative",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(estimated_retail_value__gte=0),
+                name="listing_retail_value_non_negative",
+            ),
+        ]
 
     def __str__(self):
         return self.title
@@ -170,15 +200,26 @@ class Listing(models.Model):
     def hard_delete(self, using=None, keep_parents=False):
         super().delete(using=using, keep_parents=keep_parents)
 
+    def mark_expired(self, commit=True):
+        """Expire an active listing and mint the token that lets it be reposted.
+
+        Every expiry path goes through here. A bare queryset update to
+        EXPIRED skips the token, and without it the owner can never revive
+        the listing from the expiry notification.
+        """
+        if self.status not in {self.Status.AVAILABLE, self.Status.RESERVED}:
+            return self.status
+        self.status = self.Status.EXPIRED
+        if not self.repost_token:
+            self.repost_token = secrets.token_urlsafe(32)
+            self.repost_token_expires_at = timezone.now() + timedelta(days=7)
+        if commit:
+            self.save(update_fields=["status", "repost_token", "repost_token_expires_at", "updated_at"])
+        return self.status
+
     def refresh_status(self, commit=True):
         if self.status in {self.Status.AVAILABLE, self.Status.RESERVED} and self.available_until < timezone.now():
-            newly_expired = self.status != self.Status.EXPIRED
-            self.status = self.Status.EXPIRED
-            if newly_expired and not self.repost_token:
-                self.repost_token = secrets.token_urlsafe(32)
-                self.repost_token_expires_at = timezone.now() + timedelta(days=7)
-            if commit:
-                self.save(update_fields=["status", "repost_token", "repost_token_expires_at", "updated_at"])
+            self.mark_expired(commit=commit)
         return self.status
 
 
@@ -495,7 +536,7 @@ class Reservation(models.Model):
     )
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.REQUESTED)
     pickup_time_window = models.CharField(max_length=140)
-    # Phase 16 — Handoff Coordination
+    # Phase 16: Handoff Coordination
     pickup_slots = models.JSONField(
         default=list,
         blank=True,
@@ -711,6 +752,11 @@ class HandoffFeedback(models.Model):
                 fields=("reservation", "reviewer"),
                 name="unique_handoff_feedback_per_reviewer",
             ),
+            # Field validators only run through forms and serializers.
+            models.CheckConstraint(
+                condition=models.Q(rating__gte=1, rating__lte=5),
+                name="handoff_feedback_rating_between_1_and_5",
+            ),
         ]
 
     def __str__(self):
@@ -719,7 +765,7 @@ class HandoffFeedback(models.Model):
 
 class ListingInteractionEvent(models.Model):
     """
-    Authenticated user interactions with listings — used for personalised re-ranking.
+    Authenticated user interactions with listings, used for personalised re-ranking.
     Separate from the anonymous ListingViewEvent.
     """
 
@@ -739,6 +785,11 @@ class ListingInteractionEvent(models.Model):
         related_name="interactions",
     )
     action = models.CharField(max_length=16, choices=Action.choices)
+    day = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Calendar day of a VIEW; with the unique constraint it caps views at one row per user, listing and day.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -746,13 +797,21 @@ class ListingInteractionEvent(models.Model):
         indexes = [
             models.Index(fields=["user", "action", "created_at"], name="interaction_user_action_idx"),
         ]
+        constraints = [
+            # Rows without a day (history, other actions) never collide:
+            # NULLs are distinct in a unique index on PostgreSQL and SQLite.
+            models.UniqueConstraint(
+                fields=("user", "listing", "action", "day"),
+                name="unique_listing_interaction_per_day",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user} {self.action} {self.listing_id}"
 
 
 class BlockedUser(models.Model):
-    """A user has blocked another user — hides their listings and prevents interaction."""
+    """A user has blocked another user: hides their listings and prevents interaction."""
 
     blocker = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -812,6 +871,14 @@ class Dispute(models.Model):
         indexes = [
             models.Index(fields=["status", "created_at"], name="dispute_status_date_idx"),
         ]
+        constraints = [
+            # Opening a dispute strikes the other party's trust score, so a
+            # double submit must not be able to create (and strike) twice.
+            models.UniqueConstraint(
+                fields=("reservation", "opened_by"),
+                name="unique_dispute_per_reservation_opener",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Dispute #{self.pk} on reservation {self.reservation_id} ({self.status})"
@@ -853,12 +920,12 @@ class PushSubscription(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.user} — {self.endpoint[:60]}"
+        return f"{self.user}: {self.endpoint[:60]}"
 
 
 class DemandForecast(models.Model):
     """
-    Phase 18 — weekly per-category demand forecast computed by a scikit-learn
+    Phase 18: weekly per-category demand forecast computed by a scikit-learn
     linear regression over the last 3 semesters of interaction data.
     Recomputed every Sunday midnight by a Celery beat task.
     """
@@ -878,7 +945,7 @@ class DemandForecast(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.category} w{self.week_number}/{self.year} — {self.predicted_views:.0f} views"
+        return f"{self.category} w{self.week_number}/{self.year}: {self.predicted_views:.0f} views"
 
 
 class ListingBoostPayment(models.Model):
@@ -902,7 +969,7 @@ class ListingBoostPayment(models.Model):
 
 class Organization(models.Model):
     """
-    Phase 17 — Tip Jar: campus sustainability clubs, dorm councils, and donation hubs
+    Phase 17 (Tip Jar): campus sustainability clubs, dorm councils, and donation hubs
     can register here and receive optional tip allocations from listing completions.
     """
 
@@ -922,8 +989,8 @@ class Organization(models.Model):
 
 class DonationIntent(models.Model):
     """
-    Phase 17 — Honour-system tip logged when a listing completes.
-    No actual payment processing — the owner's Venmo QR does the transfer.
+    Phase 17: Honour-system tip logged when a listing completes.
+    No actual payment processing; the owner's Venmo QR does the transfer.
     """
 
     listing = models.ForeignKey(
@@ -952,7 +1019,7 @@ class DonationIntent(models.Model):
 
 
 class Announcement(models.Model):
-    """Phase 21 — Campus-manager posts pinned to the browse/dashboard header."""
+    """Phase 21: Campus-manager posts pinned to the browse/dashboard header."""
 
     campus = models.ForeignKey(
         "accounts.Campus",
@@ -991,7 +1058,7 @@ class ReservationMessage(models.Model):
         related_name="reservation_messages",
     )
     body = models.TextField(max_length=1000)
-    # Set when the counterparty fetches the thread — reservation chat is
+    # Set when the counterparty fetches the thread. Reservation chat is
     # two-party, so a single timestamp fully captures "seen by the other side".
     read_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1117,7 +1184,7 @@ def sync_system_move_out_tasks(scan_session):
 
 
 class BuildingCoord(models.Model):
-    """Phase 25 — lat/lon for a named building on a campus, used for map view and proximity sort."""
+    """Phase 25: lat/lon for a named building on a campus, used for map view and proximity sort."""
 
     campus = models.ForeignKey(
         "accounts.Campus",
@@ -1138,7 +1205,7 @@ class BuildingCoord(models.Model):
 
 
 class SavedSearch(models.Model):
-    """Phase 25 — a persisted search preset that triggers push alerts when new matches appear."""
+    """Phase 25: a persisted search preset that triggers push alerts when new matches appear."""
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1162,14 +1229,18 @@ class SavedSearch(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.user} — {self.label or self.keyword or self.category}"
+        return f"{self.user}: {self.label or self.keyword or self.category}"
 
 
 class StorageHold(models.Model):
     """
-    Phase 24 — Logistics & Batching.
+    Phase 24: Logistics & Batching.
     A hub staff member places a temporary hold on a listing to batch it with
     a scheduled collection event, preventing it from being reserved elsewhere.
+
+    Enforced in two places: ReservationSerializer refuses a claim while an
+    unexpired ACTIVE hold exists, and the partial unique constraint below
+    allows at most one ACTIVE hold per listing.
     """
 
     class Status(models.TextChoices):
@@ -1209,14 +1280,35 @@ class StorageHold(models.Model):
         indexes = [
             models.Index(fields=["hub", "status"], name="hold_hub_status_idx"),
         ]
+        constraints = [
+            # Partial unique index; works on PostgreSQL and SQLite.
+            models.UniqueConstraint(
+                fields=["listing"],
+                condition=models.Q(status="active"),
+                name="unique_active_hold_per_listing",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"Hold on listing {self.listing_id} at {self.hub}"
 
+    @classmethod
+    def live_for_listing(cls, listing_id: Any) -> "models.QuerySet[StorageHold]":
+        """Holds that currently block claims: ACTIVE and not past expires_at.
+
+        An ACTIVE row whose expires_at has passed has auto-released; nothing
+        flips its status, so every reader has to apply the time check.
+        """
+        return cls.objects.filter(
+            listing_id=listing_id,
+            status=cls.Status.ACTIVE,
+            expires_at__gt=timezone.now(),
+        )
+
 
 class CollectionEvent(models.Model):
     """
-    Phase 24 — Logistics & Batching.
+    Phase 24: Logistics & Batching.
     A scheduled hub collection run: a van/person picks up multiple held listings
     from dorms in a defined route window.
     """
@@ -1268,7 +1360,7 @@ class CollectionEvent(models.Model):
 
 class NotificationPreference(models.Model):
     """
-    Phase 26 — per-user, per-type notification delivery preferences.
+    Phase 26: per-user, per-type notification delivery preferences.
     Quiet hours are stored as naive Time values interpreted in the user's campus timezone.
     """
 
@@ -1321,12 +1413,12 @@ class NotificationPreference(models.Model):
         ]
 
     def __str__(self) -> str:
-        return f"{self.user} — {self.notification_type} ({self.channel})"
+        return f"{self.user}: {self.notification_type} ({self.channel})"
 
 
 class PartnerAPIKey(models.Model):
     """
-    Phase 27 — API key for partner integrations (housing portals, sustainability dashboards).
+    Phase 27: API key for partner integrations (housing portals, sustainability dashboards).
     The raw key is shown once at creation; only the SHA-256 hash is stored.
     """
 
@@ -1374,7 +1466,7 @@ class PartnerAPIKey(models.Model):
 
 
 class WebhookEndpoint(models.Model):
-    """Phase 27 — A partner-registered URL that receives signed event payloads."""
+    """Phase 27: A partner-registered URL that receives signed event payloads."""
 
     partner = models.ForeignKey(
         PartnerAPIKey,
@@ -1400,7 +1492,7 @@ class WebhookEndpoint(models.Model):
 
 
 class WebhookDelivery(models.Model):
-    """Phase 27 — Delivery attempt log for a webhook event."""
+    """Phase 27: Delivery attempt log for a webhook event."""
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"

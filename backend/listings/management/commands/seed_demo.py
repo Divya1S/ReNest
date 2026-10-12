@@ -210,7 +210,7 @@ class Command(BaseCommand):
             created.append(listing)
 
         # Browsable marketplace inventory (is_demo=False so it appears in
-        # public browse) — real photos flowing through the thumbnail pipeline.
+        # public browse), with real photos flowing through the thumbnail pipeline.
         browse_listings = [
             ("Gooseneck desk lamp", "seed-lamp-gooseneck", Listing.Category.LIGHTING,
              Listing.Condition.GOOD, Listing.PriceType.LOW_COST, Decimal("6.00"), Decimal("19.00"), 3),

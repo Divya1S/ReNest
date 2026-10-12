@@ -65,7 +65,7 @@ export default function CampusAnalyticsPage() {
   usePageTitle("Campus Analytics");
   const { user } = useAuth();
   const [weeks, setWeeks] = useState(12);
-  const { data, loading, error, refetch } = useApi(`/campus-analytics?weeks=${weeks}`);
+  const { data, loading, error, retry } = useApi(`/campus-analytics?weeks=${weeks}`);
 
   const canAccess = user?.is_staff || user?.is_campus_manager;
 
@@ -105,7 +105,7 @@ export default function CampusAnalyticsPage() {
       <div className="flex flex-col items-center justify-center py-20 gap-4">
         <AlertCircle size={40} className="text-red-500" />
         <p className="text-[color:var(--text-muted)]">{error}</p>
-        <button onClick={refetch} className="primary-button">
+        <button type="button" onClick={retry} className="primary-button">
           <RefreshCw size={15} /> Retry
         </button>
       </div>

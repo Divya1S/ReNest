@@ -4,7 +4,27 @@ from typing import Any
 
 from rest_framework import serializers
 
-from .models import DonationHub
+from .models import DonationHub, HubManager
+
+_MANAGED_HUB_IDS_ATTR = "_managed_hub_ids"
+
+
+def managed_hub_ids(request: Any) -> frozenset[int]:
+    """Ids of the hubs the requesting user manages, loaded once per request.
+
+    is_manager used to run one EXISTS query per serialized hub, so a list of N
+    hubs (or N listings that each nest a hub) cost N extra queries for every
+    signed-in viewer. A user manages a handful of hubs at most, so the whole
+    set is fetched with a single query and remembered on the request object,
+    which every serializer in the response shares.
+    """
+    cached = getattr(request, _MANAGED_HUB_IDS_ATTR, None)
+    if cached is None:
+        cached = frozenset(
+            HubManager.objects.filter(user=request.user).values_list("hub_id", flat=True)
+        )
+        setattr(request, _MANAGED_HUB_IDS_ATTR, cached)
+    return cached
 
 
 class DonationHubSerializer(serializers.ModelSerializer):
@@ -37,7 +57,7 @@ class DonationHubSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         if not request or not request.user.is_authenticated:
             return False
-        return obj.hub_managers.filter(user=request.user).exists()
+        return obj.pk in managed_hub_ids(request)
 
 
 class HubManagerUpdateSerializer(serializers.ModelSerializer):

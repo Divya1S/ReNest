@@ -28,7 +28,7 @@ def generate_listing_thumbnail(sender: Any, instance: Listing, **kwargs: Any) ->
 
     buf = make_thumbnail(instance.image)
     if buf is None:
-        # Non-rasterisable source (e.g. seeded SVG) — card falls back to image_url.
+        # Non-rasterisable source (e.g. seeded SVG): card falls back to image_url.
         return
 
     stem = (instance.image.name or "cover").rsplit("/", 1)[-1].rsplit(".", 1)[0]

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch } from "../lib/api";
+import { getPushSubscription, removePushSubscription } from "../lib/push";
 
 /**
  * Manages the Web Push subscription lifecycle for the current user.
@@ -14,7 +15,8 @@ import { apiFetch } from "../lib/api";
  *   - loading: async operation in progress
  *   - subscribe(): request permission + subscribe + POST to backend, resolving
  *     to { ok, reason } so the caller can surface why it failed
- *   - unsubscribe(): remove subscription from backend + browser
+ *   - unsubscribe(): remove the subscription from the backend and the browser,
+ *     resolving to true once this browser holds none
  */
 export function usePushNotifications(enabled = true) {
   const supported =
@@ -47,8 +49,9 @@ export function usePushNotifications(enabled = true) {
     if (!supported || !enabled) return undefined;
     let active = true;
 
-    serviceWorkerReady()
-      .then((reg) => reg.pushManager.getSubscription())
+    // getRegistration-based, so it answers immediately even where no worker
+    // is registered (development builds) instead of waiting out `ready`.
+    getPushSubscription()
       .then((sub) => {
         if (active) setSubscribed(!!sub);
       })
@@ -59,7 +62,7 @@ export function usePushNotifications(enabled = true) {
     return () => {
       active = false;
     };
-  }, [supported, enabled, serviceWorkerReady]);
+  }, [supported, enabled]);
 
   // Ask the server once whether push is configured at all. Without VAPID keys
   // the opt-in can only ever fail, so the UI should not offer it.
@@ -84,6 +87,7 @@ export function usePushNotifications(enabled = true) {
     if (!supported || loading) return { ok: false, reason: "unavailable" };
     if (!publicKey) return { ok: false, reason: "unavailable" };
     setLoading(true);
+    let sub = null;
     try {
       // 1. Request permission
       const result = await Notification.requestPermission();
@@ -92,7 +96,7 @@ export function usePushNotifications(enabled = true) {
 
       // 2. Subscribe via PushManager
       const reg = await serviceWorkerReady();
-      const sub = await reg.pushManager.subscribe({
+      sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: _urlBase64ToUint8Array(publicKey),
       });
@@ -110,6 +114,9 @@ export function usePushNotifications(enabled = true) {
       setSubscribed(true);
       return { ok: true };
     } catch (error) {
+      // The server never recorded it. Leaving the browser subscribed would
+      // make the next visit report push as enabled while nothing is delivered.
+      if (sub) await sub.unsubscribe().catch(() => {});
       return { ok: false, reason: "failed", message: error?.message };
     } finally {
       setLoading(false);
@@ -117,25 +124,18 @@ export function usePushNotifications(enabled = true) {
   }, [supported, loading, publicKey, serviceWorkerReady]);
 
   const unsubscribe = useCallback(async () => {
-    if (!supported || loading) return;
+    if (!supported || loading) return false;
     setLoading(true);
     try {
-      const reg = await serviceWorkerReady();
-      const sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        await apiFetch("/push/unsubscribe", {
-          method: "POST",
-          body: { endpoint: sub.endpoint },
-        });
-        await sub.unsubscribe();
-      }
-      setSubscribed(false);
-    } catch {
-      // best-effort
+      await removePushSubscription();
+      // Report what the browser actually holds now, not what we hoped for.
+      const remaining = await getPushSubscription().catch(() => null);
+      setSubscribed(!!remaining);
+      return !remaining;
     } finally {
       setLoading(false);
     }
-  }, [supported, loading, serviceWorkerReady]);
+  }, [supported, loading]);
 
   return {
     supported,

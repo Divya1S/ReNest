@@ -77,7 +77,7 @@ function BulkUpdateModal({ activeCount, onClose, onSuccess }) {
               Update all {activeCount} active listing{activeCount !== 1 ? "s" : ""}
             </h2>
             <p className="mt-1 text-sm text-[color:var(--text-muted)]">
-              Fill in what you want to change — leave blank to keep as-is.
+              Fill in what you want to change; leave blank to keep as-is.
             </p>
           </div>
           <button
@@ -249,7 +249,7 @@ function ListingAnalyticsPanel({ listingId }) {
               )}
 
               {data.total_views === 0 && (
-                <p className="text-sm text-[color:var(--text-muted)]">No views yet — share the link to get started.</p>
+                <p className="text-sm text-[color:var(--text-muted)]">No views yet. Share the link to get started.</p>
               )}
             </div>
           ) : null}
@@ -261,7 +261,7 @@ function ListingAnalyticsPanel({ listingId }) {
 
 export default function MyListingsPage() {
   usePageTitle("My Listings");
-  const { data, loading, error, refetch, setData } = useApi("/listings?mine=1&page_size=100");
+  const { data, loading, error, retry, setData } = useApi("/listings?mine=1&page_size=100");
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [repostingId, setRepostingId] = useState(null);
   const [donatingId, setDonatingId] = useState(null);
@@ -272,7 +272,7 @@ export default function MyListingsPage() {
     const repostId = searchParams.get("repost");
     const repostToken = searchParams.get("token");
     if (!repostId || !repostToken) return;
-    setSearchParams({}, { replace: true });
+    setSearchParams({}, { replace: true, preventScrollReset: true });
     handleRepost(Number(repostId), repostToken);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -286,7 +286,7 @@ export default function MyListingsPage() {
       updateListing(listingId, () => data.listing);
       toast.success(`Relisted for ${data.extended_days} more days.`);
     } catch (err) {
-      toast.error(err.message || "Could not relist — try editing the listing directly.");
+      toast.error(err.message || "Could not relist. Try editing the listing directly.");
     } finally {
       setRepostingId(null);
     }
@@ -326,7 +326,7 @@ export default function MyListingsPage() {
     setShowBulkModal(false);
     // The bulk endpoint returns only active listings; refetch so expired and
     // picked-up rows stay on the page.
-    refetch();
+    retry();
   }
 
   if (loading) {
@@ -354,7 +354,7 @@ export default function MyListingsPage() {
         </div>
         <h2 className="text-[24px] font-bold tracking-[-0.02em] text-[color:var(--color-ink)] dark:text-white">Could not load your listings</h2>
         <p className="mt-4 text-[color:var(--text-muted)]">{error}</p>
-        <button onClick={refetch} className="primary-button mt-8">Try Again</button>
+        <button type="button" onClick={retry} className="primary-button mt-8">Try Again</button>
       </div>
     );
   }

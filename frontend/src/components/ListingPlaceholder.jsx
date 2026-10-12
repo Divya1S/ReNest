@@ -16,8 +16,8 @@ const CATEGORY_GLYPHS = {
 /**
  * No-photo state for listings. Category-aware so adjacent placeholder cards
  * differ (reads as designed, not broken), quiet so it never competes with
- * real photos. `draft` wraps the glyph in a gold dashed badge — "in
- * progress", not "missing" — for the owner's own unpublished drafts.
+ * real photos. `draft` wraps the glyph in a gold dashed badge ("in
+ * progress", not "missing") for the owner's own unpublished drafts.
  */
 export default function ListingPlaceholder({ category, glyphSize = 48, draft = false, className = "" }) {
   const Glyph = CATEGORY_GLYPHS[category] ?? Tag;

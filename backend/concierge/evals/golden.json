@@ -59,6 +59,146 @@
     {
       "text": "let me know when a mini fridge shows up",
       "expect": "task"
+    },
+    {
+      "text": "ok cool thanks",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "how do I delete my listing",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "is the app available on iOS",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "awesome, really appreciate it!",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "good morning",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "thanks a bunch!",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "how can I change the photo on my listing",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "what's the easiest way to cancel my reservation",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "does ReNest cost anything to use",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "how does the handoff code thing work",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "what does the Reserved label mean",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "how to turn off push notifications",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "can you explain what a rescue request is",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "is there a way to hide my listing for a few days",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "what's the process for handing an item over",
+      "expect": "chat",
+      "held_out": true
+    },
+    {
+      "text": "got any mini fridges left?",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "I'm looking for a cheap bookshelf",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "anything free in the lighting category today?",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "has anyone asked for my desk lamp yet",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "which of my drafts are ready to publish",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "ping me if a microwave gets posted",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "what time is my pickup tomorrow",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "is there a rug up for grabs",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "how many of my tasks are still open",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "how far along is my room scan",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "how do I find a free lamp right now",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "what about the cheaper one",
+      "expect": "task",
+      "held_out": true
+    },
+    {
+      "text": "yes please",
+      "expect": "task",
+      "held_out": true
     }
   ],
   "retrieval": [

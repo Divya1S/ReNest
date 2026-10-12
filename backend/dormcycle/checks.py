@@ -4,21 +4,34 @@ from pathlib import Path
 from django.conf import settings
 from django.core.checks import Error, Warning, register
 
-from .env import DEFAULT_DEV_SECRET_KEY
+from .env import env_bool, is_default_secret_key
 
 _SMTP_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
 _DEFAULT_POSTGRES_PASSWORD = "postgres"
+
+
+def _configured_for_production() -> bool:
+    """DEBUG is off because the deployment says so, not because a test run forced it.
+
+    Django's test runner sets settings.DEBUG to False for every run. Judged on
+    settings.DEBUG alone, `manage.py test` on a developer machine counts as
+    production and fails its system check whenever the secret key is a
+    placeholder, which is exactly what a .env copied from .env.example holds.
+    DJANGO_DEBUG is the switch a deployment actually sets, so require both.
+    """
+    return not settings.DEBUG and not env_bool("DJANGO_DEBUG", True)
 
 
 @register()
 def dormcycle_runtime_checks(app_configs, **kwargs):
     checks = []
 
-    # E000 — dev secret key in production blocks `manage.py check --deploy`
-    if not settings.DEBUG and settings.SECRET_KEY == DEFAULT_DEV_SECRET_KEY:
+    # E000: any published development key (settings fallback, docker-compose
+    # fallback, .env.example placeholder) blocks `manage.py check --deploy`.
+    if _configured_for_production() and is_default_secret_key(settings.SECRET_KEY):
         checks.append(
             Error(
-                "ReNest is running with the default development secret key.",
+                "ReNest is running with a default development secret key.",
                 hint="Set DJANGO_SECRET_KEY to a cryptographically random value before deploying.",
                 id="dormcycle.E000",
             )
@@ -40,7 +53,7 @@ def dormcycle_runtime_checks(app_configs, **kwargs):
                 )
             )
 
-    # W001 — APP_BASE_URL missing from CSRF trusted origins
+    # W001: APP_BASE_URL missing from CSRF trusted origins
     if settings.APP_BASE_URL and settings.APP_BASE_URL not in settings.CSRF_TRUSTED_ORIGINS:
         checks.append(
             Warning(
@@ -50,7 +63,7 @@ def dormcycle_runtime_checks(app_configs, **kwargs):
             )
         )
 
-    # W002 — media directory missing
+    # W002: media directory missing
     media_root = Path(settings.MEDIA_ROOT)
     if not media_root.exists():
         checks.append(
@@ -61,7 +74,7 @@ def dormcycle_runtime_checks(app_configs, **kwargs):
             )
         )
 
-    # W003 — default Postgres password in production is a weak credential
+    # W003: default Postgres password in production is a weak credential
     if not settings.DEBUG and not getattr(settings, "USE_SQLITE", False):
         if os.getenv("POSTGRES_PASSWORD", _DEFAULT_POSTGRES_PASSWORD) == _DEFAULT_POSTGRES_PASSWORD:
             checks.append(

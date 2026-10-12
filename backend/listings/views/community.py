@@ -13,7 +13,7 @@ from typing import Any
 
 
 class LeaderboardView(APIView):
-    """GET /api/leaderboard — top 20 rescuers on the user's campus (opt-in)."""
+    """GET /api/leaderboard: top 20 rescuers on the user's campus (opt-in)."""
 
     def get(self, request: Request) -> Response:
         campus = getattr(request.user, "campus", None)
@@ -79,7 +79,7 @@ class LeaderboardView(APIView):
 
 
 class BuildingLeaderboardView(APIView):
-    """GET /api/leaderboard/buildings — dorm vs dorm aggregate for user's campus."""
+    """GET /api/leaderboard/buildings: dorm vs dorm aggregate for user's campus."""
 
     def get(self, request: Request) -> Response:
         campus = getattr(request.user, "campus", None)
@@ -124,8 +124,8 @@ class AnnouncementSerializer(serializers.ModelSerializer):
 
 
 class AnnouncementListCreateView(APIView):
-    """GET /api/announcements — active announcements for user's campus.
-       POST — campus manager only.
+    """GET /api/announcements: active announcements for user's campus.
+       POST: campus manager only.
     """
 
     def get(self, request: Request) -> Response:
@@ -156,7 +156,7 @@ class AnnouncementListCreateView(APIView):
 
 
 class AnnouncementDetailView(APIView):
-    """PATCH/DELETE /api/announcements/:id — campus manager only."""
+    """PATCH/DELETE /api/announcements/:id: campus manager only."""
 
     def _get_object(self, pk: int, user: Any) -> Announcement:
         announcement = Announcement.objects.get(pk=pk)
@@ -191,7 +191,7 @@ class AnnouncementDetailView(APIView):
 
 
 class ReservationThankView(APIView):
-    """POST /api/reservations/:id/thank — claimant sends a thank-you message."""
+    """POST /api/reservations/:id/thank: claimant sends a thank-you message."""
 
     def post(self, request: Request, pk: int) -> Response:
         try:
@@ -207,7 +207,9 @@ class ReservationThankView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        body = request.data.get("body", "").strip()
+        # str(): a non-string body (list, number) must be a message, not a 500.
+        # 1000 is the documented ReservationMessage.body limit.
+        body = str(request.data.get("body") or "").strip()[:1000]
         if not body:
             item_title = reservation.listing.title
             body = f"Thanks so much for the {item_title}! Really appreciate it."
@@ -224,6 +226,9 @@ class ReservationThankView(APIView):
             dedupe_key=f"thankyou:{reservation.pk}",
             defaults={
                 "user": reservation.listing.owner,
+                # Without a type the row has an empty type, which no inbox
+                # filter or notification preference matches.
+                "type": Notification.Type.CHAT,
                 "title": f"{current_user(request).display_name} sent you a thank you",
                 "body": body[:120],
                 "link_path": f"/handoffs/{reservation.pk}",

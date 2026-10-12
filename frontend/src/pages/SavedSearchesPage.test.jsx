@@ -99,7 +99,7 @@ describe("SavedSearchesPage", () => {
     const deleteButtons = screen.getAllByRole("button", { name: /delete saved search/i });
     fireEvent.click(deleteButtons[1]); // delete "Storage bins"
 
-    // Row gone immediately — DELETE hasn't resolved yet
+    // Row gone immediately; DELETE hasn't resolved yet
     await waitFor(() => expect(screen.queryByText("Storage bins")).not.toBeInTheDocument());
     expect(screen.getByText("Lamps under $10")).toBeInTheDocument();
 

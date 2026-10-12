@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
+import { usePushNotifications } from "../hooks/usePushNotifications";
 import { apiFetch } from "../lib/api";
 import { cn } from "../lib/cn";
 
@@ -26,9 +27,75 @@ const CHANNEL_OPTIONS = [
 
 const DEFAULT_QUIET = { start: "23:00", end: "08:00" };
 
+/**
+ * Push is per browser, not per account: this card is where a subscription on
+ * this device is switched off (and back on). It renders nothing when the
+ * browser cannot do push, or when there is nothing to turn off and the server
+ * has no push keys to turn it on with.
+ */
+function PushDeviceCard() {
+  const { available, permission, subscribed, loading, subscribe, unsubscribe } = usePushNotifications(true);
+
+  if (!subscribed && !available) return null;
+
+  async function turnOff() {
+    const removed = await unsubscribe();
+    if (removed) {
+      toast.success("Push notifications are off for this browser.");
+    } else {
+      toast.error("Could not turn push notifications off. Try again.");
+    }
+  }
+
+  async function turnOn() {
+    const result = await subscribe();
+    if (result.ok) {
+      toast.success("Push notifications enabled.");
+    } else if (result.reason === "denied") {
+      toast.error("Notifications are blocked. Enable them in your browser settings.");
+    } else {
+      toast.error(result.message || "Could not enable push notifications.");
+    }
+  }
+
+  const blocked = !subscribed && permission === "denied";
+
+  return (
+    <section
+      aria-labelledby="push-device-heading"
+      className="soft-panel mb-6 flex flex-wrap items-center justify-between gap-4 px-5 py-4"
+    >
+      <div className="min-w-0">
+        <h2 id="push-device-heading" className="flex items-center gap-2 text-sm font-semibold text-[color:var(--color-ink)] dark:text-white">
+          <Smartphone size={15} aria-hidden="true" className="text-[color:var(--color-tag)]" />
+          Push on this device
+        </h2>
+        <p className="mt-1 text-xs leading-5 text-[color:var(--text-muted)]">
+          {subscribed
+            ? "This browser receives your ReNest push notifications. Turn them off before handing the device to someone else."
+            : blocked
+              ? "Notifications are blocked for this site in your browser settings."
+              : "This browser is not receiving push notifications."}
+        </p>
+      </div>
+      {subscribed ? (
+        <button type="button" onClick={turnOff} disabled={loading} className="secondary-button shrink-0">
+          <BellOff size={15} aria-hidden="true" />
+          {loading ? "Turning off…" : "Turn off push"}
+        </button>
+      ) : blocked ? null : (
+        <button type="button" onClick={turnOn} disabled={loading} className="primary-button shrink-0">
+          <Bell size={15} aria-hidden="true" />
+          {loading ? "Turning on…" : "Turn on push"}
+        </button>
+      )}
+    </section>
+  );
+}
+
 export default function NotificationPreferencesPage() {
   usePageTitle("Notification Preferences");
-  const { data, loading, error, refetch, setData } = useApi("/notifications/preferences");
+  const { data, loading, error, retry, setData } = useApi("/notifications/preferences");
   const prefs = data?.preferences ?? [];
 
   const [saving, setSaving] = useState(false);
@@ -78,6 +145,8 @@ export default function NotificationPreferencesPage() {
         </div>
       </div>
 
+      <PushDeviceCard />
+
       {loading ? (
         <div className="space-y-3">
           {[1, 2, 3, 4].map((i) => (
@@ -89,7 +158,8 @@ export default function NotificationPreferencesPage() {
           <p className="font-semibold text-[color:var(--color-ink)] dark:text-white">Couldn&apos;t load preferences</p>
           <p className="text-sm text-[color:var(--text-muted)] mt-1">{error}</p>
           <button
-            onClick={() => refetch()}
+            type="button"
+            onClick={retry}
             className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-full bg-[color:var(--color-tag)] text-white text-sm font-semibold hover:opacity-90"
           >
             <RefreshCw size={14} /> Try again

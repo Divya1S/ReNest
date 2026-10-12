@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, ArrowRight, X } from "lucide-react";
-import React, { useEffect, useId, useRef } from "react";
+import React, { useId, useRef } from "react";
+
+import { useDialogFocus } from "../hooks/useDialogFocus";
 
 export default function UnsavedChangesDialog({
   open,
@@ -16,48 +18,12 @@ export default function UnsavedChangesDialog({
   const descriptionId = useId();
   const panelRef = useRef(null);
   const confirmRef = useRef(null);
-  const restoreFocusRef = useRef(null);
 
   // Focus moves into the dialog on open and returns to the trigger on close,
   // Escape cancels, and Tab cycles inside: the behaviours a native <dialog>
   // would provide and that a confirmation prompt needs to be usable without a
   // mouse.
-  useEffect(() => {
-    if (!open) return undefined;
-    restoreFocusRef.current = document.activeElement;
-    confirmRef.current?.focus();
-
-    const onKey = (event) => {
-      if (event.key === "Escape") {
-        event.stopPropagation();
-        onCancel?.();
-        return;
-      }
-      if (event.key !== "Tab" || !panelRef.current) return;
-      const focusable = panelRef.current.querySelectorAll(
-        'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      const previous = restoreFocusRef.current;
-      if (previous && typeof previous.focus === "function" && document.contains(previous)) {
-        previous.focus();
-      }
-    };
-  }, [open, onCancel]);
+  useDialogFocus({ open, panelRef, initialFocusRef: confirmRef, onClose: onCancel });
 
   return (
     <AnimatePresence>

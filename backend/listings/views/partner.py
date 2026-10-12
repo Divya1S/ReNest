@@ -1,16 +1,16 @@
 """
-Phase 27 — White-Label & Partner API
+Phase 27: White-Label & Partner API
 
 Endpoints:
-  GET  /api/embed/:campus_slug/listings   — public listing feed (no auth, CORS-open)
-  GET  /api/partner/listings              — listing feed (Bearer key auth)
-  GET  /api/partner/reservations          — reservation feed (Bearer key auth)
-  GET  /api/partner/usage                 — usage stats for key's campus
-  GET  /api/partner/webhooks              — list webhook endpoints
-  POST /api/partner/webhooks              — register a webhook endpoint
-  DELETE /api/partner/webhooks/:pk        — remove a webhook endpoint
-  POST /api/partner/keys                  — provision a new API key (campus-manager gated)
-  GET  /api/campus/:slug/theme            — public campus theme (no auth)
+  GET  /api/embed/:campus_slug/listings   - public listing feed (no auth, CORS-open)
+  GET  /api/partner/listings              - listing feed (Bearer key auth)
+  GET  /api/partner/reservations          - reservation feed (Bearer key auth)
+  GET  /api/partner/usage                 - usage stats for key's campus
+  GET  /api/partner/webhooks              - list webhook endpoints
+  POST /api/partner/webhooks              - register a webhook endpoint
+  DELETE /api/partner/webhooks/:pk        - remove a webhook endpoint
+  POST /api/partner/keys                  - provision a new API key (campus-manager gated)
+  GET  /api/campus/:slug/theme            - public campus theme (no auth)
 """
 from __future__ import annotations
 
@@ -43,37 +43,12 @@ def validate_webhook_url(url: str) -> str | None:
 
     Returns an error message, or None when the URL is acceptable. Deliveries
     are made server-side, so an unvalidated URL is a server-side request
-    forgery primitive; only public HTTPS endpoints are allowed.
+    forgery primitive; only public HTTPS endpoints are allowed. The rules
+    live in `listings.net_safety` so every outbound fetch shares them.
     """
-    import ipaddress
-    import socket
-    from urllib.parse import urlsplit
+    from ..net_safety import public_https_url_error
 
-    from django.core.exceptions import ValidationError as DjangoValidationError
-    from django.core.validators import URLValidator
-
-    try:
-        URLValidator(schemes=["https"])(url)
-    except DjangoValidationError:
-        return "Enter a valid https:// URL."
-
-    host = urlsplit(url).hostname or ""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
-        return "The webhook host could not be resolved."
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0])
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-            or address.is_multicast
-            or address.is_unspecified
-        ):
-            return "The webhook host must be a public address."
-    return None
+    return public_https_url_error(url, noun="webhook")
 
 
 _ALLOWED_FONTS = {"Inter", "Roboto", "Open Sans", "Lato", "Poppins", "system-ui"}
@@ -113,6 +88,9 @@ class PartnerKeyPermission(permissions.BasePermission):
 
     def has_permission(self, request: Any, view: Any) -> bool:
         return isinstance(request.auth, PartnerAPIKey)
+
+
+_KNOWN_SCOPES = frozenset({"listing_read", "reservation_read", "webhook"})
 
 
 def _require_scope(request: Any, scope: str) -> Response | None:
@@ -201,7 +179,7 @@ class EmbedListingsView(APIView):
 # ── Partner listings & reservations ───────────────────────────────────────────
 
 class PartnerListingsView(APIView):
-    """GET /api/partner/listings — listing feed for the key's campus."""
+    """GET /api/partner/listings: listing feed for the key's campus."""
     authentication_classes = [PartnerKeyAuthentication]
     permission_classes = [PartnerKeyPermission]
 
@@ -235,7 +213,7 @@ class PartnerListingsView(APIView):
 
 
 class PartnerReservationsView(APIView):
-    """GET /api/partner/reservations — reservation feed for the key's campus."""
+    """GET /api/partner/reservations: reservation feed for the key's campus."""
     authentication_classes = [PartnerKeyAuthentication]
     permission_classes = [PartnerKeyPermission]
 
@@ -271,7 +249,7 @@ class PartnerReservationsView(APIView):
 # ── Usage stats ────────────────────────────────────────────────────────────────
 
 class PartnerUsageView(APIView):
-    """GET /api/partner/usage — usage stats for the key's campus."""
+    """GET /api/partner/usage: usage stats for the key's campus."""
     authentication_classes = [PartnerKeyAuthentication]
     permission_classes = [PartnerKeyPermission]
 
@@ -281,20 +259,35 @@ class PartnerUsageView(APIView):
         from ..models import Listing, Reservation
 
         key = cast(PartnerAPIKey, request.auth)
+        scopes = set(key.scopes or [])
+        # Usage used to answer any active key, whatever it was scoped for,
+        # and never counted against the daily quota. A key needs at least one
+        # scope, and each figure needs the scope that guards the same data on
+        # the other partner endpoints; figures it may not see are null.
+        if not scopes & _KNOWN_SCOPES:
+            return Response({"detail": "No scope granted for this key."}, status=403)
+        _enforce_daily_quota(key)
 
-        listing_count = Listing.objects.filter(
-            owner__campus=key.campus, deleted_at__isnull=True
-        ).count()
-        reserved_count = Reservation.objects.filter(
-            listing__owner__campus=key.campus,
-            status__in=["confirmed", "completed"],
-        ).count()
-        webhook_count = WebhookEndpoint.objects.filter(partner=key, active=True).count()
-        delivery_stats = (
-            WebhookDelivery.objects.filter(endpoint__partner=key)
-            .values("status")
-            .annotate(total=Count("id"))
-        )
+        listing_count = None
+        if "listing_read" in scopes:
+            listing_count = Listing.objects.filter(owner__campus=key.campus, is_demo=False).count()
+        reserved_count = None
+        if "reservation_read" in scopes:
+            reserved_count = Reservation.objects.filter(
+                listing__owner__campus=key.campus,
+                listing__is_demo=False,
+                status__in=["confirmed", "completed"],
+            ).count()
+        webhook_count = None
+        webhook_deliveries = None
+        if "webhook" in scopes:
+            webhook_count = WebhookEndpoint.objects.filter(partner=key, active=True).count()
+            delivery_stats = (
+                WebhookDelivery.objects.filter(endpoint__partner=key)
+                .values("status")
+                .annotate(total=Count("id"))
+            )
+            webhook_deliveries = {row["status"]: row["total"] for row in delivery_stats}
 
         return Response({
             "campus": key.campus.name,
@@ -303,7 +296,7 @@ class PartnerUsageView(APIView):
             "listing_count": listing_count,
             "reservation_count": reserved_count,
             "webhook_endpoints": webhook_count,
-            "webhook_deliveries": {row["status"]: row["total"] for row in delivery_stats},
+            "webhook_deliveries": webhook_deliveries,
             "rate_limit_per_day": key.rate_limit_per_day,
         })
 
@@ -342,7 +335,7 @@ class PartnerWebhookListCreateView(APIView):
         import secrets
 
         key = cast(PartnerAPIKey, request.auth)
-        url = request.data.get("url", "").strip()
+        url = str(request.data.get("url") or "").strip()
         events = request.data.get("events", [])
         if not url:
             return Response({"detail": "url is required."}, status=400)
@@ -389,9 +382,9 @@ class PartnerWebhookDetailView(APIView):
 
 class PartnerKeyProvisionView(APIView):
     """
-    POST /api/partner/keys — provision a new partner API key.
+    POST /api/partner/keys: provision a new partner API key.
     Gated to authenticated campus managers / staff.
-    Returns the raw key once — it is never stored.
+    Returns the raw key once; it is never stored.
     """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [StrictJSONParser]
@@ -404,15 +397,14 @@ class PartnerKeyProvisionView(APIView):
         if not (user.is_staff or getattr(user, "is_campus_manager", False)):
             return Response({"detail": "Campus manager or staff required."}, status=403)
 
-        partner_name = request.data.get("partner_name", "").strip()
+        partner_name = str(request.data.get("partner_name") or "").strip()[:200]
         scopes = request.data.get("scopes", ["listing_read"])
         if not partner_name:
             return Response({"detail": "partner_name is required."}, status=400)
-        if not isinstance(scopes, list):
-            return Response({"detail": "scopes must be a list."}, status=400)
+        if not isinstance(scopes, list) or not all(isinstance(scope, str) for scope in scopes):
+            return Response({"detail": "scopes must be a list of scope names."}, status=400)
 
-        allowed_scopes = {"listing_read", "reservation_read", "webhook"}
-        invalid = set(scopes) - allowed_scopes
+        invalid = set(scopes) - _KNOWN_SCOPES
         if invalid:
             return Response({"detail": f"Invalid scopes: {invalid}"}, status=400)
 
@@ -426,7 +418,7 @@ class PartnerKeyProvisionView(APIView):
             "partner_name": key_obj.partner_name,
             "key": raw_key,
             "scopes": key_obj.scopes,
-            "note": "Store this key securely — it will not be shown again.",
+            "note": "Store this key securely. It will not be shown again.",
         }, status=201)
 
 
@@ -436,7 +428,7 @@ _SAFE_HEX_RE = __import__("re").compile(r"^#[0-9A-Fa-f]{3,8}$")
 
 
 class CampusThemeView(APIView):
-    """GET /api/campus/:slug/theme — return the campus white-label theme."""
+    """GET /api/campus/:slug/theme: return the campus white-label theme."""
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
 

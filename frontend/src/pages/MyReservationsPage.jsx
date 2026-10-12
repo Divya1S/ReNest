@@ -20,7 +20,16 @@ const itemVariants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
 };
 
+// The status changes a card can request directly. Completion is not one of
+// them: a handoff completes only when the owner enters the claimant's PIN in
+// the Handoff Hub, so it is never offered here even if the API listed it.
+const ACTION_LABELS = {
+  confirmed: "Approve request",
+  cancelled: "Cancel reservation",
+};
+
 const ReservationCard = React.memo(function ReservationCard({ reservation, onAction }) {
+  const actions = (reservation.allowed_actions ?? []).filter((action) => action in ACTION_LABELS);
   return (
     <article className="bulletin-card">
       <p className="label-title">{reservation.relationship === "owner" ? "Incoming request" : "Your claim"}</p>
@@ -54,11 +63,11 @@ const ReservationCard = React.memo(function ReservationCard({ reservation, onAct
           Open Handoff Hub
         </Link>
       </div>
-      {reservation.allowed_actions.length ? (
+      {actions.length ? (
         <div className="mt-5 flex flex-wrap gap-3">
-          {reservation.allowed_actions.map((action) => (
+          {actions.map((action) => (
             <button key={action} type="button" onClick={() => onAction(reservation.id, action)} className="secondary-button">
-              {action.replaceAll("_", " ")}
+              {ACTION_LABELS[action]}
             </button>
           ))}
         </div>

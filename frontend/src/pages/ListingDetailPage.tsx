@@ -67,7 +67,15 @@ export default function ListingDetailPage() {
   const { listingId } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { data: listing, loading, error, refetch, setData } = useApi<Listing>(`/listings/${listingId}`);
+  const {
+    data: listing,
+    loading,
+    error,
+    errorStatus,
+    refetch,
+    retry,
+    setData,
+  } = useApi<Listing>(`/listings/${listingId}`);
   usePageTitle(listing?.title ?? "Listing");
 
   const [pickupWindow, setPickupWindow] = useState("");
@@ -149,15 +157,42 @@ export default function ListingDetailPage() {
   }
 
   if (!listing) {
+    // Only a 404 means the listing is gone. A 500, a timeout or a dropped
+    // connection is a failed load and gets a retry, not "not found".
+    const notFound = errorStatus === 404;
     return (
       <div className="flex flex-col items-center justify-center py-32">
-        <div className="p-10 rounded-[20px] border border-black/10 dark:border-white/10 bg-[color:var(--color-surface)] text-center max-w-md">
-          <BadgeInfo size={48} className="mx-auto text-red-500 mb-5" />
-          <h3 className="text-[28px] font-bold text-[color:var(--color-ink)] dark:text-white">Listing not found</h3>
-          <p className="mt-3 text-[color:var(--text-muted)] text-[14px]">{error}</p>
-          <button onClick={() => navigate("/browse")} className="mt-8 px-8 py-3 bg-[color:var(--color-tag)] text-white rounded-full font-semibold text-[14px] hover:opacity-90 transition-opacity">
-            Return to Marketplace
-          </button>
+        <div
+          role={notFound ? undefined : "alert"}
+          className="p-10 rounded-[20px] border border-black/10 dark:border-white/10 bg-[color:var(--color-surface)] text-center max-w-md"
+        >
+          {notFound ? (
+            <BadgeInfo size={48} className="mx-auto text-red-500 mb-5" aria-hidden="true" />
+          ) : (
+            <AlertTriangle size={48} className="mx-auto text-amber-500 mb-5" aria-hidden="true" />
+          )}
+          <h2 className="text-[28px] font-bold text-[color:var(--color-ink)] dark:text-white">
+            {notFound ? "Listing not found" : "This listing could not be loaded"}
+          </h2>
+          <p className="mt-3 text-[color:var(--text-muted)] text-[14px]">
+            {notFound
+              ? "It may have been picked up, removed or expired."
+              : error || "Something interrupted the request."}
+          </p>
+          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+            {!notFound && (
+              <button type="button" onClick={retry} className="primary-button">
+                Try Again
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => navigate("/browse")}
+              className={notFound ? "primary-button" : "secondary-button"}
+            >
+              Return to Marketplace
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -218,11 +253,11 @@ export default function ListingDetailPage() {
             </div>
             {!heroImage && (
               <p className="text-[12px] text-[color:var(--text-muted)]">
-                No photo yet — ask the owner in coordination updates below.
+                No photo yet. Ask the owner in coordination updates below.
               </p>
             )}
 
-            {/* Thumbnails — only when the listing actually has multiple photos */}
+            {/* Thumbnails, only when the listing actually has multiple photos */}
             {allImages.length > 1 && (
               <div className="grid grid-cols-4 gap-3" role="group" aria-label="Listing photos">
                 {allImages.map((url, i) => (
@@ -523,7 +558,7 @@ export default function ListingDetailPage() {
             <div className="lg:col-span-4">
               <div className="sticky top-24 space-y-4">
 
-                {/* How pickups work — honest trust signals, no invented guarantees */}
+                {/* How pickups work: honest trust signals, no invented guarantees */}
                 <div className="p-5 rounded-[20px] border border-black/10 dark:border-white/10 bg-[color:var(--color-surface)] dark:bg-[#1c1c1e] shadow-sm">
                   <h3 className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--color-tag)] mb-3">
                     <Shield size={13} />

@@ -2,13 +2,13 @@ import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import React from "react";
 import { expect } from "vitest";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 import { configureAxe } from "vitest-axe";
 import * as axeMatchers from "vitest-axe/matchers";
 
 expect.extend(axeMatchers);
 
-// Axe defaults — skip rules that require a real layout engine, computed CSS,
+// Axe defaults: skip rules that require a real layout engine, computed CSS,
 // or a full page structure (unit tests render components without AppFrame).
 export const axe = configureAxe({
   rules: {
@@ -21,6 +21,15 @@ export const axe = configureAxe({
 
 afterEach(() => {
   cleanup();
+});
+
+// Unit tests exercise an app that has already booted: the CSRF cookie is set,
+// as it is once AuthContext's bootstrap has run. Without it every unsafe
+// apiFetch would first request /api/auth/csrf and consume a mocked response
+// meant for the request under test. The bootstrap path itself is covered in
+// src/lib/api.test.ts, which clears this cookie.
+beforeEach(() => {
+  document.cookie = "csrftoken=test-csrf-token; path=/";
 });
 
 vi.mock("framer-motion", async () => {
