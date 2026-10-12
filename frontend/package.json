@@ -40,7 +40,7 @@
     "vite": "^8.0.10"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.4",
+    "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.59.1",
     "@sentry/vite-plugin": "^5.2.1",
     "@testing-library/dom": "^10.4.1",
