@@ -32,6 +32,10 @@ def current_sensitivity() -> int:
     return value
 
 
+def _invalidate_cache() -> None:
+    cache.delete(_CACHE_KEY)
+
+
 def update_sensitivity(*, actor: Any, sensitivity: int, reason: str = "", request_id: str = "") -> RiskPolicy:
     if not 0 <= sensitivity <= 100:
         raise ValueError("sensitivity must be between 0 and 100")
@@ -45,7 +49,9 @@ def update_sensitivity(*, actor: Any, sensitivity: int, reason: str = "", reques
         # between the first delete and the commit would otherwise repopulate
         # the cache with the old value for 60 seconds.
         cache.delete(_CACHE_KEY)
-        transaction.on_commit(lambda: cache.delete(_CACHE_KEY))
+        # robust: a cache outage after the commit must not report a policy
+        # change that did happen as a failure (the 60 s TTL bounds staleness).
+        transaction.on_commit(_invalidate_cache, robust=True)
         thresholds = thresholds_for(sensitivity)
         audit.record(
             action="risk.policy_modified",

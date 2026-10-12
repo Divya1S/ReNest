@@ -7,7 +7,7 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .checks import dormcycle_runtime_checks
-from .middleware import RequestIdFilter, RequestIdMiddleware, _local, get_request_id
+from .middleware import RequestIdFilter, RequestIdMiddleware, get_request_id, set_request_id
 from .env import DEFAULT_DEV_SECRET_KEY
 
 _SMTP = "django.core.mail.backends.smtp.EmailBackend"
@@ -21,14 +21,19 @@ def _run(**overrides):
 
 
 class SecretKeyCheckTests(SimpleTestCase):
+    # E000 now needs DJANGO_DEBUG=0 as well as settings.DEBUG=False: the test
+    # runner forces settings.DEBUG off on every run, so on its own that flag
+    # cannot tell a deployment from a developer running the suite.
     @override_settings(DEBUG=False, SECRET_KEY=DEFAULT_DEV_SECRET_KEY)
     def test_dev_key_in_production_raises_error(self):
-        ids = _run()
+        with patch.dict("os.environ", {"DJANGO_DEBUG": "0"}):
+            ids = _run()
         self.assertIn("dormcycle.E000", ids)
 
     @override_settings(DEBUG=False, SECRET_KEY="super-secure-random-key-xyz-987")
     def test_rotated_key_passes(self):
-        ids = _run()
+        with patch.dict("os.environ", {"DJANGO_DEBUG": "0"}):
+            ids = _run()
         self.assertNotIn("dormcycle.E000", ids)
 
     @override_settings(DEBUG=True, SECRET_KEY=DEFAULT_DEV_SECRET_KEY)
@@ -126,13 +131,13 @@ class RequestIdFilterTests(SimpleTestCase):
         self.assertEqual(record.request_id, "-")
 
     def test_filter_reflects_active_request_id(self):
-        _local.request_id = "active-123"
+        set_request_id("active-123")
         try:
             record = logging.LogRecord("test", logging.INFO, "", 0, "msg", (), None)
             RequestIdFilter().filter(record)
             self.assertEqual(record.request_id, "active-123")
         finally:
-            _local.request_id = "-"
+            set_request_id(None)
 
 
 class ProductionReadinessWarningTests(SimpleTestCase):

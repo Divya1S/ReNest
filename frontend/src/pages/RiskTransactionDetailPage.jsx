@@ -94,7 +94,7 @@ export default function RiskTransactionDetailPage() {
         </Link>
       }
     >
-      <StateBlock loading={detail.loading && !txn} error={detail.error} onRetry={detail.refetch} skeleton="h-72">
+      <StateBlock loading={detail.loading && !txn} error={detail.error} onRetry={detail.retry} skeleton="h-72">
         {txn ? (
           <>
             <PageSection className="grid gap-6 lg:grid-cols-3">

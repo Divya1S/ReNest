@@ -126,7 +126,15 @@ export function StateBlock({ loading, error, onRetry, empty, emptyText = "Nothin
           <AlertCircle size={16} aria-hidden="true" /> {error}
         </p>
         {onRetry ? (
-          <button type="button" onClick={() => onRetry()} className="secondary-button">
+          <button
+            type="button"
+            onClick={() => {
+              // Never forward the click event, and never leave a rejected
+              // refetch promise unhandled: the failure is already on screen.
+              Promise.resolve(onRetry()).catch(() => {});
+            }}
+            className="secondary-button"
+          >
             <RefreshCw size={14} aria-hidden="true" /> Retry
           </button>
         ) : null}

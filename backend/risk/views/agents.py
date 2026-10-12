@@ -12,9 +12,14 @@ from dormcycle.pagination import StandardPagination
 from dormcycle.typed import current_user
 
 from ..models import AgentPolicy, AgentTransaction
-from ..serializers import AgentPolicySerializer, AgentTransactionCreateSerializer, AgentTransactionSerializer
+from ..serializers import (
+    AgentPolicySerializer,
+    AgentTransactionCreateSerializer,
+    AgentTransactionResolveSerializer,
+    AgentTransactionSerializer,
+)
 from ..services import audit
-from ..services.agents import evaluate_agent_transaction, visible_agents
+from ..services.agents import AttemptNotHeld, evaluate_agent_transaction, resolve_agent_transaction, visible_agents
 from ..throttles import AgentAttemptThrottle
 from .payments import _request_id
 
@@ -112,3 +117,37 @@ class AgentTransactionView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class AgentTransactionResolveView(APIView):
+    """A human decides an attempt the policy engine held for review.
+
+    POST {"approve": bool, "note": string}. Open to the agent's owner (it is
+    their agent asking for their approval) and to staff. Approving keeps the
+    purchase counted toward the daily budget; rejecting releases it. The
+    response is the attempt, in the same shape as the attempts list.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AgentAttemptThrottle]
+
+    def post(self, request: Request, public_id: str, attempt_id: int) -> Response:
+        # visible_agents is the access rule: owners see their own agents,
+        # staff see all, everyone else gets a 404 rather than a hint.
+        agent = get_object_or_404(visible_agents(current_user(request)), public_id=public_id)
+        serializer = AgentTransactionResolveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            attempt = resolve_agent_transaction(
+                agent=agent,
+                attempt_id=attempt_id,
+                approve=serializer.validated_data["approve"],
+                note=serializer.validated_data["note"],
+                actor=current_user(request),
+                request_id=_request_id(request),
+            )
+        except AgentTransaction.DoesNotExist:
+            return Response({"detail": "No such attempt for this agent."}, status=status.HTTP_404_NOT_FOUND)
+        except AttemptNotHeld as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_409_CONFLICT)
+        return Response(AgentTransactionSerializer(attempt).data)

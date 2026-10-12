@@ -16,13 +16,16 @@ if TYPE_CHECKING:
     from accounts.models import User as UserType
 
 from ..models import Listing, RescueRequest
+from ..notifications import same_campus_q
 from ..permissions import IsRescueRequestOwnerOrReadOnly
 from ..serializers import ListingSerializer, RescueRequestSerializer
 from dormcycle.typed import current_user
 
 from .helpers import (
+    LISTING_SERIALIZER_RELATIONS,
     annotate_listing_queryset,
     get_rescue_request_queryset,
+    parse_int,
 )
 
 
@@ -31,7 +34,7 @@ def build_match_center_payload(user: UserType, request: Request) -> dict[str, An
 
     available_owned_listings = list(
         annotate_listing_queryset(
-            Listing.objects.select_related("owner", "source_scan_session").filter(
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(
                 owner=user,
                 is_demo=False,
                 status=Listing.Status.AVAILABLE,
@@ -52,7 +55,7 @@ def build_match_center_payload(user: UserType, request: Request) -> dict[str, An
     )
 
     # One bulk query for all requests matching any of the user's listing categories,
-    # then partition by category in Python — eliminates 2 queries per listing.
+    # then partition by category in Python, which eliminates 2 queries per listing.
     fulfill_opportunities = []
     if available_owned_listings:
         listing_categories = {l.category for l in available_owned_listings}
@@ -66,8 +69,7 @@ def build_match_center_payload(user: UserType, request: Request) -> dict[str, An
             .exclude(seeker=user)
             .order_by("needed_by", "-created_at")
         )
-        if user.campus_name:
-            requests_qs = requests_qs.filter(seeker__campus_name=user.campus_name)
+        requests_qs = requests_qs.filter(same_campus_q("seeker", user))
         requests_pool = list(requests_qs)
 
         requests_by_category: dict[str, list[Any]] = {}
@@ -98,12 +100,12 @@ def build_match_center_payload(user: UserType, request: Request) -> dict[str, An
             )
 
     # One bulk query for all listings matching any of the user's request categories,
-    # then partition by category in Python — eliminates 2 queries per request.
+    # then partition by category in Python, which eliminates 2 queries per request.
     request_recommendations = []
     if open_my_requests:
         request_categories = {req.category for req in open_my_requests}
         listings_qs = annotate_listing_queryset(
-            Listing.objects.select_related("owner", "source_scan_session")
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS)
             .exclude(is_demo=True)
             .filter(
                 category__in=request_categories,
@@ -114,8 +116,7 @@ def build_match_center_payload(user: UserType, request: Request) -> dict[str, An
             .order_by("available_until", "-created_at"),
             user,
         )
-        if user.campus_name:
-            listings_qs = listings_qs.filter(owner__campus_name=user.campus_name)
+        listings_qs = listings_qs.filter(same_campus_q("owner", user))
         listings_pool = list(listings_qs)
 
         listings_by_category: dict[str, list[Any]] = {}
@@ -221,12 +222,12 @@ class RescueRequestMatchView(APIView):
         if rescue_request.status != RescueRequest.Status.OPEN:
             return Response({"detail": "Only open requests can be matched."}, status=400)
 
-        listing_id = request.data.get("listing")
+        listing_id = parse_int(request.data.get("listing"), field="listing", minimum=1)
         if not listing_id:
             return Response({"listing": "Choose one of your listings to match."}, status=400)
 
         listing = get_object_or_404(
-            Listing.objects.select_related("owner", "source_scan_session").exclude(is_demo=True),
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).exclude(is_demo=True),
             pk=listing_id,
             owner=request.user,
         )

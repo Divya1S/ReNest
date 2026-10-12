@@ -6,7 +6,7 @@ import { useConciergeChat } from "../components/concierge/useConciergeChat";
 
 /**
  * Full-page surface for the Nest Concierge. Same thread, same backend, same
- * conversation core as the floating widget — this page just gives long
+ * conversation core as the floating widget; this page just gives long
  * conversations room to breathe.
  */
 export default function AssistantPage() {
@@ -25,7 +25,7 @@ export default function AssistantPage() {
           </h1>
           <p className="mt-1 text-sm text-[color:var(--text-muted)]">
             Searches live listings, checks your reservations and scan progress, and answers
-            how-ReNest-works questions. It looks things up — reserving and posting stay with you.
+            how-ReNest-works questions. It looks things up; reserving and posting stay with you.
           </p>
         </div>
         {chat.messages.length > 0 && (

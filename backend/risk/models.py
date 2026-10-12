@@ -275,6 +275,10 @@ class AuditLog(models.Model):
     model_version = models.CharField(max_length=40, blank=True)
     request_id = models.CharField(max_length=64, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
+    # Set only for rows that must exist at most once (an event handler's
+    # outcome row). NULL for everything else: NULLs never collide in a unique
+    # index, so ordinary rows are unaffected.
+    dedupe_key = models.CharField(max_length=160, null=True, blank=True, unique=True, editable=False)
     created_at = models.DateTimeField(default=timezone.now)
 
     objects = AuditLogQuerySet.as_manager()
@@ -315,9 +319,18 @@ class IdempotencyKey(models.Model):
     )
     response_status = models.PositiveSmallIntegerField(null=True, blank=True)
     response_body = models.JSONField(null=True, blank=True)
+    # Set in the same database transaction that inserts the payment, so a key
+    # with a payment is always bound to it and a bound key always has one.
     transaction = models.ForeignKey(
         PaymentTransaction, null=True, blank=True, on_delete=models.SET_NULL, related_name="+"
     )
+    # Fencing token of the request that currently owns an in-progress key.
+    # Every write by that request is conditional on it, so a request that was
+    # taken over after its lease ran out can no longer bind, complete or
+    # release the key.
+    owner_token = models.CharField(max_length=32, blank=True, default="")
+    # When the current owner took the key; the in-progress lease runs from here.
+    locked_at = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(default=timezone.now)
     completed_at = models.DateTimeField(null=True, blank=True)
     expires_at = models.DateTimeField()

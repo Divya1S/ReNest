@@ -6,6 +6,11 @@ from .ai_client import generate_vision_json
 
 logger = logging.getLogger(__name__)
 
+# The prompt asks for 2 to 8 items. Only the upper bound can be enforced on
+# the answer: a photo of a nearly empty room honestly has fewer than two, and
+# rejecting that would turn a correct result into an error.
+MAX_DETECTED_ITEMS = 8
+
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -29,7 +34,7 @@ _PROMPT = (
     "Focus on: lamps, fans, storage bins, mirrors, hangers, school supplies, "
     "toiletries, small decor, mini appliances.\n"
     "Skip: walls, floors, major furniture, people, built-in fixtures.\n\n"
-    "Return ONLY a valid JSON array — no markdown, no explanation."
+    "Return ONLY a valid JSON array, no markdown, no explanation."
 )
 
 
@@ -37,7 +42,7 @@ def detect_items_in_image(image_file: Any) -> Any:
     """
     Call Gemini vision to detect rescue-worthy items in a room photo.
 
-    Accepts a filesystem path or a Django File/FieldFile — file objects are
+    Accepts a filesystem path or a Django File/FieldFile; file objects are
     read through the storage API, so this works identically on local disk and
     S3/R2 remote storage (remote FieldFiles have no usable .path).
 
@@ -60,7 +65,7 @@ def detect_items_in_image(image_file: Any) -> Any:
 
     items = generate_vision_json(image_bytes, media_type, _PROMPT, max_tokens=1500)
     if not isinstance(items, list):
-        raise ValueError("Model returned unexpected shape — expected a JSON array.")
+        raise ValueError("Model returned unexpected shape: expected a JSON array.")
     return items
 
 
@@ -80,8 +85,32 @@ def clamp(value: Any, lo: Any = 0.0, hi: Any = 1.0, default: float = 0.0) -> flo
     return max(lo, min(hi, number))
 
 
-def sanitise_suggestions(suggestions: Any) -> Any:
-    """Validate and clamp the model's output before writing to DB."""
+def box_overlap(a: Any, b: Any) -> float:
+    """Intersection over union of two hotspot boxes (0.0 when either is unusable).
+
+    Used to recognise that a freshly detected item is the same object as a
+    draft that already exists for the photo.
+    """
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return 0.0
+    ax, ay = clamp(a.get("x")), clamp(a.get("y"))
+    aw, ah = clamp(a.get("width")), clamp(a.get("height"))
+    bx, by = clamp(b.get("x")), clamp(b.get("y"))
+    bw, bh = clamp(b.get("width")), clamp(b.get("height"))
+    overlap_w = max(0.0, min(ax + aw, bx + bw) - max(ax, bx))
+    overlap_h = max(0.0, min(ay + ah, by + bh) - max(ay, by))
+    intersection = overlap_w * overlap_h
+    union = aw * ah + bw * bh - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def sanitise_suggestions(suggestions: Any, *, limit: int = MAX_DETECTED_ITEMS) -> Any:
+    """Validate and clamp the model's output before writing to DB.
+
+    At most `limit` items are kept: the "up to 8" in the prompt is a request,
+    and a model that ignores it must not be able to flood a session with
+    drafts.
+    """
     valid_categories = {"storage", "lighting", "supplies", "comfort", "toiletries", "decor", "other"}
     valid_conditions = {"new", "good", "fair"}
     valid_price_types = {"free", "low_cost"}
@@ -89,8 +118,10 @@ def sanitise_suggestions(suggestions: Any) -> Any:
     if not isinstance(suggestions, list):
         return []
 
-    cleaned = []
+    cleaned: list[dict[str, Any]] = []
     for item in suggestions:
+        if len(cleaned) >= limit:
+            break
         if not isinstance(item, dict):
             continue
         try:

@@ -98,7 +98,7 @@ export default function VerifyEmailPage() {
 
         <p className="mt-8 text-xs text-[color:var(--text-muted)]">
           Can&apos;t find it? Check your spam folder. You can also browse listings
-          while you wait — you just need to verify before posting.
+          while you wait; you just need to verify before posting.
         </p>
       </motion.section>
     </PageSection>

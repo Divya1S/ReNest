@@ -35,7 +35,7 @@ urlpatterns = [
     path("account", AccountDeleteView.as_view(), name="auth-account-delete"),
     path("data-export", DataExportView.as_view(), name="auth-data-export"),
     path("impact-card.png", ImpactCardView.as_view(), name="auth-impact-card"),
-    # Phase 19 — Multi-Campus Expansion
+    # Phase 19: Multi-Campus Expansion
     path("campus/onboard", CampusOnboardingRequestView.as_view(), name="campus-onboard"),
     path("campus/<slug:slug>/stats", CampusPublicStatsView.as_view(), name="campus-public-stats"),
     path("admin/campuses", SuperAdminCampusListView.as_view(), name="admin-campus-list"),

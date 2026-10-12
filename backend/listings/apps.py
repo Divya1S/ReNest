@@ -8,7 +8,7 @@ class ListingsConfig(AppConfig):
 
     def ready(self) -> None:
         from dormcycle import checks  # noqa: F401
-        from . import signals  # noqa: F401  — listing thumbnail generation
+        from . import signals  # noqa: F401  (listing thumbnail generation)
 
         # Enable `field__length` lookups used by the completeness-score
         # annotation in views/helpers.py.

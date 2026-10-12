@@ -6,6 +6,55 @@ from django.core.exceptions import ImproperlyConfigured
 
 DEFAULT_DEV_SECRET_KEY = "django-insecure-(9!qv-hdc*!id3x$0i*@)opjwzdl@$y-(cv+0zo14!5tm!2ys!"
 
+# Every secret key this repository ships as a placeholder. All of them are
+# public, so the production guard must refuse each one, not only the settings
+# fallback above.
+KNOWN_DEV_SECRET_KEYS = frozenset({
+    DEFAULT_DEV_SECRET_KEY,
+    # docker-compose.yml fallback
+    "dev-only-insecure-key-change-in-production",
+    # backend/.env.example placeholder
+    "change-me-for-production",
+})
+
+
+def is_default_secret_key(secret_key: str) -> bool:
+    """True when the key is one of the published development placeholders.
+
+    The "django-insecure-" prefix is what `django-admin startproject` stamps
+    on a generated key to mark it as not for production, so any key carrying
+    it counts as a development key too.
+    """
+    return secret_key in KNOWN_DEV_SECRET_KEYS or secret_key.startswith("django-insecure-")
+
+
+def media_upload_origins(bucket: str, region: str, endpoint_url: str) -> list[str]:
+    """Origins a presigned S3 PUT can point at, for the CSP connect-src.
+
+    Mirrors how boto3 addresses the bucket in listings/views/uploads.py:
+    - a custom endpoint (Cloudflare R2, MinIO) is used as given, path style;
+    - on AWS a DNS-compatible bucket is addressed as a subdomain of the
+      global endpoint, which may redirect to the regional one, so both are
+      listed;
+    - a bucket name containing dots cannot be a TLS subdomain and falls back
+      to path style on the regional (or global) endpoint.
+    """
+    bucket = (bucket or "").strip()
+    if not bucket:
+        return []
+    endpoint_url = (endpoint_url or "").strip()
+    if endpoint_url:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(endpoint_url)
+        if parts.scheme and parts.netloc:
+            return [f"{parts.scheme}://{parts.netloc}"]
+        return []
+    region = (region or "").strip() or "us-east-1"
+    if "." in bucket:
+        return ["https://s3.amazonaws.com", f"https://s3.{region}.amazonaws.com"]
+    return [f"https://{bucket}.s3.amazonaws.com", f"https://{bucket}.s3.{region}.amazonaws.com"]
+
 
 def env_bool(name, default=False):
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
@@ -77,7 +126,7 @@ def validate_environment(
     if debug:
         return
 
-    if not secret_key or secret_key == DEFAULT_DEV_SECRET_KEY:
+    if not secret_key or is_default_secret_key(secret_key):
         raise ImproperlyConfigured(
             "DJANGO_SECRET_KEY must be set to a non-default value when DJANGO_DEBUG=0."
         )
@@ -99,7 +148,7 @@ def validate_environment(
             "Do not ship with localhost origins."
         )
 
-    # Soft warnings — the app boots and works, but these will bite real users
+    # Soft warnings: the app boots and works, but these will bite real users
     # (password resets never arrive; uploads vanish on redeploy). Warnings, not
     # errors, so a staging deploy without email/S3 is still possible.
     if "console" in email_backend or not email_host:

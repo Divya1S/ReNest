@@ -36,7 +36,7 @@ class EmissionTests(TestCase):
             self.assertEqual(row.request_id, "req-1")
             self.assertEqual(row.status, EventStatus.PROCESSED)
         self.assertEqual(rows[1].payload["decision"], "allow")
-        self.assertEqual(rows[1].payload["model_version"], "risk-rules-v1")
+        self.assertEqual(rows[1].payload["model_version"], "risk-rules-v2")
 
     def test_unknown_event_type_is_rejected(self):
         with self.assertRaises(ValueError):

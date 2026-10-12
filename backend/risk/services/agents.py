@@ -17,12 +17,20 @@ structured reason so the verdict is fully explainable.
 
 Approved and reviewed attempts count toward daily spend (a reviewed purchase
 is reserved until a human resolves it); blocked ones never do.
+
+A held attempt is resolved with `resolve_agent_transaction`: approving turns
+it into an ALLOW that keeps counting toward the day it was made on, rejecting
+turns it into a BLOCK and releases the budget it had reserved.
+
+"Today" is the owner's campus day when the owner has a campus (its time zone
+is where the agent's purchases happen), otherwise the project's time zone.
 """
 
 from __future__ import annotations
 
+import zoneinfo
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
 
@@ -32,6 +40,8 @@ from django.utils import timezone
 
 from ..engine import evaluate_transaction, thresholds_for
 from ..engine.context import TransactionContext
+from ..engine.currency import to_usd
+from ..engine.rules import MIN_HISTORY_FOR_AVERAGE
 from ..models import AgentPolicy, AgentTransaction, Decision, PaymentTransaction, TransactionStatus
 from . import audit, events
 from .policy import current_sensitivity
@@ -65,16 +75,34 @@ class _Checks:
         self.reasons.append({"code": code, "outcome": "pass", "text": text, **detail})
 
 
-def _day_start(now: datetime) -> datetime:
-    """Midnight in the project's time zone (the campus day, not the UTC day)."""
-    local = timezone.localtime(now)
+def budget_timezone(agent: AgentPolicy) -> tzinfo:
+    """The zone whose midnight resets the agent's daily budget.
+
+    The owner's campus zone when there is one: a student in New York should
+    not get a fresh budget at 3 a.m. because the server keeps Pacific time.
+    Falls back to the project zone when the owner has no campus or the
+    campus carries a zone name this system does not know.
+    """
+    campus = getattr(agent.user, "campus", None)
+    name = getattr(campus, "timezone", None)
+    if name:
+        try:
+            return zoneinfo.ZoneInfo(str(name))
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+            pass
+    return timezone.get_default_timezone()
+
+
+def _day_start(now: datetime, zone: tzinfo | None = None) -> datetime:
+    """Midnight of the day `now` falls on, in the budget's time zone."""
+    local = now.astimezone(zone or timezone.get_default_timezone())
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def spent_today(agent: AgentPolicy, now: datetime | None = None) -> Decimal:
     now = now or timezone.now()
     total = AgentTransaction.objects.filter(
-        agent=agent, counts_toward_spend=True, created_at__gte=_day_start(now)
+        agent=agent, counts_toward_spend=True, created_at__gte=_day_start(now, budget_timezone(agent))
     ).aggregate(total=Sum("amount"))["total"]
     return Decimal(total or 0).quantize(Decimal("0.01"))
 
@@ -85,9 +113,20 @@ def _risk_context(agent: AgentPolicy, amount: Decimal, currency: str, merchant_i
     day_ago = now - timedelta(hours=24)
     prior = AgentTransaction.objects.filter(agent=agent)
     approved = prior.filter(decision=Decision.ALLOW)
-    avg = approved.aggregate(avg=Sum("amount"))["avg"]
+    total = approved.aggregate(total=Sum("amount"))["total"]
     approved_count = approved.count()
-    avg_amount = (Decimal(avg) / approved_count).quantize(Decimal("0.01")) if avg and approved_count else None
+    # The engine trusts an average once successful_txn_count reaches
+    # MIN_HISTORY_FOR_AVERAGE, and for an agent that count also includes the
+    # owner's own payments (below). The average here is over the agent's
+    # approved attempts only, so it is withheld until there are enough of
+    # THOSE; otherwise one small purchase by a new agent of a long-standing
+    # customer would be treated as a reliable baseline. Like every average
+    # the engine sees, it is in approximate USD.
+    avg_amount = (
+        to_usd(Decimal(total) / approved_count, agent.currency)
+        if total and approved_count >= MIN_HISTORY_FOR_AVERAGE
+        else None
+    )
     joined = getattr(owner, "created_at", None)
     account_age_days = (now - joined).total_seconds() / 86400 if joined else 0.0
     # The owner's real payment history contributes to trust, the agent's own
@@ -106,6 +145,10 @@ def _risk_context(agent: AgentPolicy, amount: Decimal, currency: str, merchant_i
         device_id=device_id,
         timestamp=now,
         account_age_days=max(0.0, account_age_days),
+        # An agent's "history" is its approved purchases: the agent id is
+        # also the device id, and counting blocked attempts as history would
+        # make every agent look like an account on a new device after its
+        # first block. Trust additionally draws on the owner's payments.
         historical_txn_count=approved_count,
         successful_txn_count=max(approved_count, owner_success),
         historical_avg_amount=avg_amount,
@@ -280,5 +323,87 @@ def _evaluate_locked(
     )
 
 
+class AttemptNotHeld(Exception):
+    """The attempt is not waiting for a decision (never held, or already resolved)."""
+
+
+def resolve_agent_transaction(
+    *,
+    agent: AgentPolicy,
+    attempt_id: int,
+    approve: bool,
+    note: str = "",
+    actor: Any = None,
+    request_id: str = "",
+) -> AgentTransaction:
+    """A human resolves an attempt the policy engine held for review.
+
+    Approve: the attempt becomes ALLOW and keeps counting toward spend (the
+    budget was reserved when it was held, so approving cannot overspend).
+    Reject: it becomes BLOCK and stops counting, which frees that budget.
+
+    Raises AgentTransaction.DoesNotExist when the attempt is not this
+    agent's, AttemptNotHeld when there is nothing to resolve.
+    """
+    outcome = "approved" if approve else "rejected"
+    with transaction.atomic():
+        # The same lock an evaluation takes: budget arithmetic for an agent
+        # is serialised, so an attempt evaluated while a hold is being
+        # rejected sees the budget either still reserved or already free.
+        locked = AgentPolicy.objects.select_for_update().get(pk=agent.pk)
+        attempt = AgentTransaction.objects.select_for_update().get(agent=locked, pk=attempt_id)
+        if attempt.decision != Decision.REVIEW:
+            raise AttemptNotHeld("Only attempts held for review can be resolved.")
+
+        by_owner = actor is not None and getattr(actor, "pk", None) == locked.user_id
+        resolver = "owner" if by_owner else "staff"
+        attempt.decision = Decision.ALLOW if approve else Decision.BLOCK
+        attempt.counts_toward_spend = approve
+        # The verdict stays explainable after the fact: the checks that held
+        # the attempt remain, followed by who released or refused it. The
+        # note is not copied here because the owner reads this list and a
+        # staff note is not theirs to see; it lives in the audit row.
+        attempt.reasons = [
+            *(attempt.reasons or []),
+            {
+                "code": "manual_approval" if approve else "manual_rejection",
+                "outcome": "pass" if approve else "block",
+                "text": (
+                    f"Approved by {resolver} after review."
+                    if approve
+                    else f"Rejected by {resolver} after review; the reserved budget was released."
+                ),
+                "resolved_by": resolver,
+            },
+        ]
+        attempt.save(update_fields=["decision", "counts_toward_spend", "reasons"])
+        audit.record(
+            action="agent.transaction_resolved",
+            target_type="agent",
+            target_id=locked.public_id,
+            actor=actor,
+            reason=note[:500] or f"Held purchase {outcome}",
+            decision=attempt.decision,
+            request_id=request_id,
+            metadata={"attempt_id": attempt.pk, "outcome": outcome, "amount": str(attempt.amount), "resolved_by": resolver},
+        )
+        events.emit(
+            events.AGENT_DECISION,
+            entity_type="agent",
+            entity_id=locked.public_id,
+            payload={
+                "attempt_id": attempt.pk,
+                "decision": attempt.decision,
+                "amount": str(attempt.amount),
+                "category": attempt.category,
+                "risk_score": attempt.risk_score,
+                "resolution": outcome,
+            },
+            request_id=request_id,
+        )
+    return attempt
+
+
 def visible_agents(user: Any) -> Any:
-    return AgentPolicy.objects.for_user(user).select_related("user")
+    # The campus comes along because the daily budget is measured in its zone.
+    return AgentPolicy.objects.for_user(user).select_related("user", "user__campus")

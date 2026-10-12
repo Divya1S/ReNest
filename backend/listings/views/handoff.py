@@ -24,8 +24,27 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Incorrect PIN entries tolerated per reservation per hour.
+# PIN entries tolerated per reservation per hour.
 _MAX_PIN_ATTEMPTS = 8
+_PIN_ATTEMPT_WINDOW_SECONDS = 3600
+# The states in which a handoff can still happen and so the PIN is still live.
+_PIN_VERIFIABLE = (Reservation.Status.CONFIRMED, Reservation.Status.EXPIRED_UNRESOLVED)
+
+
+def _count_pin_attempt(key: str) -> int:
+    """Record one PIN attempt and return the running total for the window.
+
+    add and incr are each atomic in the cache, so two requests are never
+    handed the same count. The previous get-then-set let parallel requests
+    all read the same value, and a burst of guesses was charged as one attempt.
+    """
+    cache.add(key, 0, timeout=_PIN_ATTEMPT_WINDOW_SECONDS)
+    try:
+        return int(cache.incr(key))
+    except ValueError:
+        # The window expired between add and incr: this attempt opens a new one.
+        cache.set(key, 1, timeout=_PIN_ATTEMPT_WINDOW_SECONDS)
+        return 1
 
 
 def _get_reservation_for_participant(pk: int, user: Any) -> Reservation:
@@ -94,9 +113,13 @@ class ReservationSlotsView(APIView):
                     return Response({"detail": "Pickup slots must be in the future."}, status=400)
                 validated.append(dt.isoformat())
             reservation.pickup_slots = validated
-            # Re-proposing invalidates whatever the claimant confirmed before.
+            # Re-proposing invalidates whatever the claimant confirmed before,
+            # including the "pickup time confirmed" notice the owner got for it.
             reservation.confirmed_slot = None
             reservation.save(update_fields=["pickup_slots", "confirmed_slot", "updated_at"])
+            Notification.objects.filter(
+                dedupe_key__startswith=f"slot_confirmed:{reservation.pk}:"
+            ).delete()
             # Notify claimant. The dedupe key includes the proposal itself, so a
             # genuinely new set of times notifies again while a retry does not.
             proposal_digest = hashlib.sha256("|".join(validated).encode()).hexdigest()[:12]
@@ -124,9 +147,12 @@ class ReservationSlotsView(APIView):
                 return Response({"detail": "Slot not in the proposed list."}, status=400)
             reservation.confirmed_slot = confirmed_dt
             reservation.save(update_fields=["confirmed_slot", "updated_at"])
-            # Notify owner
+            # Notify owner. The slot is part of the key: with only the
+            # reservation id, confirming a different time after the owner
+            # re-proposed was deduplicated away and the owner never heard.
+            slot_digest = hashlib.sha256(confirmed_dt.isoformat().encode()).hexdigest()[:12]
             Notification.objects.get_or_create(
-                dedupe_key=f"slot_confirmed:{reservation.pk}",
+                dedupe_key=f"slot_confirmed:{reservation.pk}:{slot_digest}",
                 defaults=dict(
                     user=reservation.listing.owner,
                     type=Notification.Type.RESERVATION,
@@ -149,6 +175,10 @@ class ReservationVerifyPinView(APIView):
     """
     POST /api/reservations/:id/verify-pin  { "pin": "123456" }
     Owner submits the PIN the claimant tells them. If correct, marks COMPLETED.
+
+    This is the only way a reservation becomes COMPLETED: the status PATCH no
+    longer offers that transition, so the PIN is proof the claimant was there
+    rather than an optional shortcut.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -168,32 +198,38 @@ class ReservationVerifyPinView(APIView):
         reservation = _get_reservation_for_participant(pk, request.user)
         if request.user != reservation.listing.owner:
             return Response({"detail": "Only the owner can verify the PIN."}, status=403)
-        if reservation.status != Reservation.Status.CONFIRMED:
-            return Response({"detail": "PIN verification is only valid for confirmed reservations."}, status=400)
+        if reservation.status not in _PIN_VERIFIABLE:
+            return Response(
+                {"detail": "PIN verification is only valid for confirmed or unresolved handoffs."},
+                status=400,
+            )
         if not reservation.handoff_pin:
             return Response({"detail": "No PIN has been generated for this reservation."}, status=400)
 
         # A 6-digit PIN is brute-forceable in ~1M guesses; cap attempts per
-        # reservation so an owner cannot grind the claimant's code.
+        # reservation so an owner cannot grind the claimant's code. The
+        # attempt is counted before the comparison so concurrent guesses
+        # cannot slip past the cap together.
         attempts_key = f"pin-attempts:{reservation.pk}"
-        attempts = cache.get(attempts_key, 0)
-        if attempts >= _MAX_PIN_ATTEMPTS:
+        if _count_pin_attempt(attempts_key) > _MAX_PIN_ATTEMPTS:
             return Response(
-                {"detail": "Too many incorrect PIN attempts. Try again in an hour."},
+                {"detail": "Too many PIN attempts. Try again in an hour."},
                 status=status.HTTP_429_TOO_MANY_REQUESTS,
             )
 
         submitted = str(request.data.get("pin", "")).strip()
-        if not hmac.compare_digest(submitted, reservation.handoff_pin):
-            cache.set(attempts_key, attempts + 1, timeout=3600)
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII text.
+        if not hmac.compare_digest(submitted.encode(), reservation.handoff_pin.encode()):
             return Response({"detail": "Incorrect PIN."}, status=status.HTTP_400_BAD_REQUEST)
-        cache.delete(attempts_key)
 
-        # One shared transition so the PIN path closes the rescue request,
-        # invalidates dashboards and sends the same emails as a status PATCH.
+        # One shared transition so the PIN path closes the rescue request and
+        # invalidates dashboards. It re-checks the status under a row lock and
+        # answers 409 (ReservationConflict) if the reservation was cancelled
+        # or the listing was claimed by someone else in the meantime.
         from ..services import complete_reservation
 
         reservation = complete_reservation(reservation, notify=False)
+        cache.delete(attempts_key)
         listing = reservation.listing
 
         # Notify claimant
@@ -259,7 +295,7 @@ class ReservationEnRouteView(APIView):
                 user=reservation.listing.owner,
                 type=Notification.Type.RESERVATION,
                 title=f"{claimant_name} is on the way",
-                body=f"Head to {reservation.listing.pickup_zone} — they're coming for {reservation.listing.title}.",
+                body=f"Head to {reservation.listing.pickup_zone}. They're coming for {reservation.listing.title}.",
                 link_path=f"/handoffs/{reservation.pk}",
                 priority=Notification.Priority.HIGH,
             ),

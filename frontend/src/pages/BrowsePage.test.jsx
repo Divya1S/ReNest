@@ -16,7 +16,7 @@ const LAMP = {
   category: "lighting",
   price_type: "low_cost",
   price_amount: "5.00",
-  status: "published",
+  status: "available",
   pickup_zone: "North Hall",
   available_until: new Date(Date.now() + 86400000).toISOString(),
   estimated_retail_value: "25.00",
@@ -112,7 +112,7 @@ describe("BrowsePage", () => {
     });
   });
 
-  test("search input is debounced — no new fetch fires before 350ms", async () => {
+  test("search input is debounced: no new fetch fires before 350ms", async () => {
     vi.useFakeTimers();
     const spy = vi.spyOn(global, "fetch").mockResolvedValue(mockResponse([LAMP]));
     renderBrowsePage();
@@ -124,7 +124,7 @@ describe("BrowsePage", () => {
 
     fireEvent.change(screen.getByRole("searchbox"), { target: { value: "lamp" } });
 
-    // Debounce hasn't fired yet — call count unchanged
+    // Debounce hasn't fired yet, so call count unchanged
     expect(spy.mock.calls.length).toBe(callCountAfterMount);
 
     // Advance past the 350ms debounce window
@@ -133,6 +133,46 @@ describe("BrowsePage", () => {
     // A new fetch should have fired with the search term
     expect(spy.mock.calls.length).toBeGreaterThan(callCountAfterMount);
     expect(spy.mock.calls.at(-1)[0]).toContain("search=lamp");
+  });
+
+  test("building filter is debounced: typing a name sends one request, not one per keystroke", async () => {
+    // Regression: the building field filtered on every keystroke, so typing
+    // "North Hall" fired ten requests, each aborting the one before it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const spy = vi.spyOn(global, "fetch").mockResolvedValue(mockResponse([LAMP]));
+    const router = renderBrowsePage();
+
+    await waitFor(() => expect(screen.getAllByText("Desk Lamp").length).toBeGreaterThan(0));
+    const callsAfterLoad = spy.mock.calls.length;
+
+    const input = screen.getByRole("textbox", { name: /filter by building/i });
+    for (const typed of ["N", "No", "Nor", "Nort", "North", "North ", "North H", "North Ha", "North Hal", "North Hall"]) {
+      fireEvent.change(input, { target: { value: typed } });
+      act(() => vi.advanceTimersByTime(40));
+    }
+
+    // The field itself keeps up with the typing while the request waits.
+    expect(input).toHaveValue("North Hall");
+    expect(spy.mock.calls.length).toBe(callsAfterLoad);
+
+    await act(async () => vi.advanceTimersByTime(400));
+
+    await waitFor(() => expect(spy.mock.calls.length).toBe(callsAfterLoad + 1));
+    expect(spy.mock.calls.at(-1)[0]).toContain("building=North+Hall");
+    expect(router.state.location.search).toContain("building=North+Hall");
+  });
+
+  test("clearing the building filter empties the field at once", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(mockResponse([LAMP]));
+    renderBrowsePage("/browse?building=Maple");
+
+    const input = await screen.findByRole("textbox", { name: /filter by building/i });
+    expect(input).toHaveValue("Maple");
+
+    fireEvent.click(screen.getByRole("button", { name: /clear building filter/i }));
+
+    expect(input).toHaveValue("");
+    expect(screen.queryByRole("button", { name: /clear building filter/i })).not.toBeInTheDocument();
   });
 
   test("Load More button appends page 2 results and hides when no further pages", async () => {

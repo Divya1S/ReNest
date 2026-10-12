@@ -79,22 +79,27 @@ def percentile(values: list[float], pct: float) -> float:
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (rank - lo)
 
 
+def headers(session: requests.Session, base_url: str) -> dict[str, str]:
+    """CSRF headers for a write. Read from the cookie jar on every call because
+    the server rotates the token when the session logs in."""
+    return {"X-CSRFToken": session.cookies.get("csrftoken", ""), "Referer": base_url}
+
+
 def login(base_url: str, email: str, password: str) -> requests.Session:
     session = requests.Session()
-    session.get(f"{base_url}/api/auth/csrf", timeout=10)
-    csrf = session.cookies.get("csrftoken", "")
+    # Login is a CSRF-protected POST like every other write, so the cookie has
+    # to exist first and its value has to travel back in X-CSRFToken.
+    session.get(f"{base_url}/api/auth/csrf", timeout=10).raise_for_status()
+    if not session.cookies.get("csrftoken"):
+        raise SystemExit(f"{base_url}/api/auth/csrf did not set a csrftoken cookie; cannot log in.")
     response = session.post(
         f"{base_url}/api/auth/login",
         json={"email": email, "password": password},
-        headers={"X-CSRFToken": csrf, "Referer": base_url},
+        headers=headers(session, base_url),
         timeout=10,
     )
     response.raise_for_status()
     return session
-
-
-def headers(session: requests.Session, base_url: str) -> dict[str, str]:
-    return {"X-CSRFToken": session.cookies.get("csrftoken", ""), "Referer": base_url}
 
 
 def payment_worker(session: requests.Session, base_url: str, stats: Stats, count: int, seed: int, timeout: float) -> None:

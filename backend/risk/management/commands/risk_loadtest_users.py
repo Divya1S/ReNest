@@ -3,10 +3,11 @@
     python manage.py risk_loadtest_users --count 24 --password 'loadtest-pass-123'
 
 Each user is aged 200 days and given three completed sandbox payments from
-one device, so the load test exercises the normal ALLOW path (evaluation,
-events, audit, sandbox capture) instead of tripping the velocity rules the
-way a single account firing hundreds of payments would. Never run this
-against a production database.
+one device, dated a month back so the device counts as known (the engine
+only trusts a device first seen at least a day ago), so the load test
+exercises the normal ALLOW path (evaluation, events, audit, sandbox capture)
+instead of tripping the velocity rules the way a single account firing
+hundreds of payments would. Never run this against a production database.
 """
 
 from __future__ import annotations
@@ -47,12 +48,17 @@ class Command(BaseCommand):
             user_model.objects.filter(pk=user.pk).update(created_at=timezone.now() - timedelta(days=200))
             user.refresh_from_db()
             existing = PaymentTransaction.objects.filter(user=user, is_simulation=False).count()
+            seeded = []
             for n in range(max(0, 3 - existing)):
-                create_payment(
+                result = create_payment(
                     user=user,
                     data=PaymentInput("mkt_textbooks", Decimal("24.00") + n, "USD", "card", f"load-{i}", merchant_category="books"),
                     request_id=f"loadtest-seed-{i}-{n}",
                     ip_prefix="10.30.0.0",
                 )
+                seeded.append(result.transaction.pk)
+            # History a month old: the device becomes known and the seed rows
+            # stay out of the velocity windows the load test will fill.
+            PaymentTransaction.objects.filter(pk__in=seeded).update(created_at=timezone.now() - timedelta(days=30))
             created += int(was_created)
         self.stdout.write(f"users ready: {options['count']} ({created} new), pattern {options['pattern']}")

@@ -171,4 +171,51 @@ describe("ListingDetailPage", () => {
     expect(screen.getAllByRole("link", { name: /edit/i }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /reserve this item/i })).not.toBeInTheDocument();
   });
+
+  describe("load failures", () => {
+    function failListing(status, detail) {
+      return vi.spyOn(global, "fetch").mockImplementation((url) => {
+        if (String(url).includes("/updates")) return jsonResponse([]);
+        return jsonResponse({ detail }, status);
+      });
+    }
+
+    test("a 404 reads as not found, with no retry", async () => {
+      failListing(404, "Not found.");
+      renderDetail();
+
+      expect(await screen.findByRole("heading", { name: /listing not found/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /return to marketplace/i })).toBeInTheDocument();
+    });
+
+    test("a 500 is a failed load with a working retry, not a missing listing", async () => {
+      // Regression: the page only knew "no data", so a server error or a
+      // timeout told the visitor the listing did not exist.
+      let healthy = false;
+      const spy = vi.spyOn(global, "fetch").mockImplementation((url) => {
+        if (String(url).includes("/updates")) return jsonResponse([]);
+        return healthy ? jsonResponse(LISTING) : jsonResponse({ detail: "Internal server error." }, 500);
+      });
+      renderDetail();
+
+      expect(await screen.findByRole("heading", { name: /could not be loaded/i })).toBeInTheDocument();
+      expect(screen.getByRole("alert")).toHaveTextContent("Internal server error.");
+      expect(screen.queryByText(/listing not found/i)).not.toBeInTheDocument();
+
+      healthy = true;
+      fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+
+      expect(await screen.findByRole("heading", { name: "Mini Fridge" })).toBeInTheDocument();
+      expect(spy.mock.calls.map(([url]) => String(url)).join(" ")).not.toContain("[object");
+    });
+
+    test("a timeout (408) is a failed load too", async () => {
+      failListing(408, "Request timed out.");
+      renderDetail();
+
+      expect(await screen.findByRole("heading", { name: /could not be loaded/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    });
+  });
 });

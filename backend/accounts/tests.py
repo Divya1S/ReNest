@@ -113,7 +113,7 @@ class PasswordResetTests(APITestCase):
 
     def test_token_cannot_be_reused_after_password_change(self):
         uid, token = self._valid_uid_token()
-        # First use — succeeds
+        # First use succeeds
         self.client.post(
             reverse("auth-password-reset-confirm"),
             {
@@ -124,7 +124,7 @@ class PasswordResetTests(APITestCase):
             },
             format="json",
         )
-        # Second use — token is now invalid (password hash changed)
+        # Second use: token is now invalid (password hash changed)
         response = self.client.post(
             reverse("auth-password-reset-confirm"),
             {
@@ -315,7 +315,7 @@ class CampusAutoMatchTests(APITestCase):
         self._register("grad@alumni.usc.edu")
         self.assertEqual(User.objects.get(email="grad@alumni.usc.edu").campus, self.usc)
 
-        # "myusc.edu" contains "usc.edu" — the old icontains matcher confused
+        # "myusc.edu" contains "usc.edu"; the old icontains matcher confused
         # these; exact matching must not.
         self._register("kid@myusc.edu")
         self.assertEqual(User.objects.get(email="kid@myusc.edu").campus, self.lookalike)

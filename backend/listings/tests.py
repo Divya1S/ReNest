@@ -202,9 +202,11 @@ class ListingApiTests(APITestCase):
         )
         self.assertEqual(confirm_response.status_code, status.HTTP_200_OK)
 
-        complete_response = self.client.patch(
-            reverse("reservations-detail", kwargs={"pk": reservation.pk}),
-            {"status": Reservation.Status.COMPLETED},
+        # A handoff is completed only by the owner entering the claimant's PIN.
+        reservation.refresh_from_db()
+        complete_response = self.client.post(
+            reverse("reservation-verify-pin", kwargs={"pk": reservation.pk}),
+            {"pin": reservation.handoff_pin},
             format="json",
         )
         self.assertEqual(complete_response.status_code, status.HTTP_200_OK)
@@ -252,9 +254,9 @@ class ListingApiTests(APITestCase):
             {"status": Reservation.Status.CONFIRMED},
             format="json",
         )
-        self.client.patch(
-            reverse("reservations-detail", kwargs={"pk": reservation_id}),
-            {"status": Reservation.Status.COMPLETED},
+        self.client.post(
+            reverse("reservation-verify-pin", kwargs={"pk": reservation_id}),
+            {"pin": Reservation.objects.get(pk=reservation_id).handoff_pin},
             format="json",
         )
 
@@ -358,9 +360,9 @@ class ListingApiTests(APITestCase):
             {"status": Reservation.Status.CONFIRMED},
             format="json",
         )
-        self.client.patch(
-            reverse("reservations-detail", kwargs={"pk": reservation_id}),
-            {"status": Reservation.Status.COMPLETED},
+        self.client.post(
+            reverse("reservation-verify-pin", kwargs={"pk": reservation_id}),
+            {"pin": Reservation.objects.get(pk=reservation_id).handoff_pin},
             format="json",
         )
 
@@ -1160,7 +1162,7 @@ class TransactionalEmailTests(APITestCase):
         from django.test import override_settings
         from django.core import mail
 
-        # Deadline is 48 h away — outside the 24 ± 4 h window.
+        # Deadline is 48 h away, outside the 24 ± 4 h window.
         self.listing.available_until = timezone.now() + timedelta(hours=48)
         self.listing.save(update_fields=["available_until"])
 
@@ -1455,7 +1457,7 @@ class PublishFlowTests(APITestCase):
 class ReservationStateMachineTests(APITestCase):
     def setUp(self):
         # Throttle counters live in the cache and key on user pk, which SQLite
-        # reuses across tests — clear so earlier tests can't trip the limit here.
+        # reuses across tests; clear so earlier tests can't trip the limit here.
         from django.core.cache import cache
         cache.clear()
         self.owner = User.objects.create_user(
@@ -1523,7 +1525,11 @@ class ReservationStateMachineTests(APITestCase):
         rid = self._make_reservation()
         self.client.force_authenticate(self.owner)
         self.client.patch(reverse("reservations-detail", kwargs={"pk": rid}), {"status": "confirmed"}, format="json")
-        self.client.patch(reverse("reservations-detail", kwargs={"pk": rid}), {"status": "completed"}, format="json")
+        self.client.post(
+            reverse("reservation-verify-pin", kwargs={"pk": rid}),
+            {"pin": Reservation.objects.get(pk=rid).handoff_pin},
+            format="json",
+        )
         self.client.force_authenticate(self.owner)
         self.client.post(
             reverse("reservations-feedback", kwargs={"pk": rid}),
@@ -1742,7 +1748,7 @@ class ListingGalleryTests(APITestCase):
 
 class AiDetectAsyncTests(APITestCase):
     def setUp(self):
-        # LocMemCache survives across tests and SQLite reuses pks — clear so
+        # LocMemCache survives across tests and SQLite reuses pks; clear so
         # a previous test's detect status can't leak into this one.
         from django.core.cache import cache
         cache.clear()
@@ -1960,8 +1966,18 @@ class AiClientTests(APITestCase):
         with self.assertRaises(ValueError):
             fetch_image_bytes("ftp://example.com/x.png")
 
+        # The fetch resolves the host to refuse private addresses; pin the
+        # answer to a public one so this test stays offline.
+        resolver = mock.patch(
+            "listings.net_safety.socket.getaddrinfo",
+            return_value=[(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        resolver.start()
+        self.addCleanup(resolver.stop)
+
         def fake_response(content_type, chunks):
             response = mock.Mock()
+            response.status_code = 200
             response.headers = {"Content-Type": content_type}
             response.iter_content.return_value = iter(chunks)
             response.raise_for_status.return_value = None
@@ -2017,7 +2033,7 @@ class ProductionEmailMediaTests(APITestCase):
         self.assertEqual(mail.outbox, [])
 
     def test_detect_items_accepts_file_objects_not_just_paths(self):
-        """Remote storage (S3/R2) FieldFiles have no .path — detection must
+        """Remote storage (S3/R2) FieldFiles have no .path, so detection must
         read through the file API."""
         import io
         from unittest import mock
@@ -2151,15 +2167,16 @@ class ReservationChatVisibilityTests(APITestCase):
     def test_expired_unresolved_handoffs_can_still_be_completed_or_cancelled(self):
         """The stale-handoff sweep must not leave users with no way out."""
         Reservation.objects.filter(pk=self.reservation.pk).update(
-            status=Reservation.Status.EXPIRED_UNRESOLVED
+            status=Reservation.Status.EXPIRED_UNRESOLVED, handoff_pin="424242"
         )
         self.client.force_login(self.owner)
         row = self._my_reservation(self.client)
-        self.assertIn("completed", row["allowed_actions"])
+        # Completing is no longer a PATCH action: it needs the claimant's PIN.
+        self.assertNotIn("completed", row["allowed_actions"])
         self.assertIn("cancelled", row["allowed_actions"])
 
-        response = self.client.patch(
-            f"/api/reservations/{self.reservation.id}", {"status": "completed"}, format="json"
+        response = self.client.post(
+            f"/api/reservations/{self.reservation.id}/verify-pin", {"pin": "424242"}, format="json"
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.reservation.refresh_from_db()
@@ -2207,7 +2224,7 @@ class ReservationChatVisibilityTests(APITestCase):
 
 
 class WriteOnlyThrottleTests(APITestCase):
-    """Write quotas must never be consumed — or enforced — by reads.
+    """Write quotas must never be consumed (or enforced) by reads.
 
     Regression: ListingCreateThrottle/ReservationCreateThrottle sit on
     combined list+create views, and DRF applies view throttles to every

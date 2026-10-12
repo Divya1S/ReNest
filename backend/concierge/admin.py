@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import ConciergeMessage, ConciergeThread, KnowledgeChunk
+from .models import ConciergeMessage, ConciergeThread, ConciergeTurnOutcome, KnowledgeChunk
 
 
 @admin.register(ConciergeThread)
@@ -19,3 +19,10 @@ class ConciergeMessageAdmin(admin.ModelAdmin):
 class KnowledgeChunkAdmin(admin.ModelAdmin):
     list_display = ("slug", "title", "updated_at")
     search_fields = ("title", "content")
+
+
+@admin.register(ConciergeTurnOutcome)
+class ConciergeTurnOutcomeAdmin(admin.ModelAdmin):
+    list_display = ("day", "outcome", "count")
+    list_filter = ("outcome",)
+    date_hierarchy = "day"

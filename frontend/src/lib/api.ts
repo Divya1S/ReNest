@@ -20,6 +20,83 @@ function getCookie(name: string): string {
 
 let authEventHandlers: AuthEventHandlers = { onSessionExpired: null };
 
+const CSRF_FETCH_TIMEOUT_MS = 10_000;
+let csrfRequest: Promise<void> | null = null;
+
+/**
+ * Ask the server to set the `csrftoken` cookie. Concurrent callers share one
+ * request, so a login submitted while the auth bootstrap is still fetching the
+ * cookie waits for that same response instead of racing it.
+ */
+export function fetchCsrfCookie(): Promise<void> {
+  if (!csrfRequest) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CSRF_FETCH_TIMEOUT_MS);
+    csrfRequest = fetch("/api/auth/csrf", { credentials: "include", signal: controller.signal })
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        clearTimeout(timer);
+        csrfRequest = null;
+      });
+  }
+  return csrfRequest;
+}
+
+/**
+ * The CSRF token for an unsafe request. Login, register and password reset
+ * are reachable before any other request has run, so when the cookie is not
+ * there yet it is fetched first rather than sending an empty header.
+ */
+async function resolveCsrfToken(): Promise<string> {
+  const existing = getCookie("csrftoken");
+  if (existing) return existing;
+  await fetchCsrfCookie();
+  return getCookie("csrftoken");
+}
+
+function collectErrorMessages(value: unknown): string[] {
+  if (value === null || value === undefined) return [];
+  if (typeof value === "string") return value.trim() ? [value] : [];
+  if (typeof value === "number" || typeof value === "boolean") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap(collectErrorMessages);
+  if (typeof value === "object") return Object.values(value).flatMap(collectErrorMessages);
+  return [];
+}
+
+/**
+ * One readable sentence from a DRF error payload. Handles the flat
+ * `{field: ["msg"]}` shape as well as nested serializers and lists of objects
+ * (`{keys: {p256dh: ["msg"]}}`), which a plain `.flat().join()` rendered as
+ * "[object Object]".
+ */
+export function flattenErrorMessage(data: unknown, fallback = "Request failed."): string {
+  const detail = (data as { detail?: unknown } | null)?.detail;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  const messages = collectErrorMessages(data);
+  return messages.length ? messages.join(" ") : fallback;
+}
+
+/** Keys of a DRF error payload that describe the request, not one field. */
+const NON_FIELD_KEYS = new Set(["detail", "non_field_errors", "code", "status_code"]);
+
+/**
+ * Per-field messages from a DRF validation payload: `{title: "Too short."}`.
+ * Nested values are flattened into the top-level field they belong to.
+ */
+export function extractFieldErrors(data: unknown): Record<string, string> {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return {};
+  const result: Record<string, string> = {};
+  for (const [field, value] of Object.entries(data as Record<string, unknown>)) {
+    if (NON_FIELD_KEYS.has(field)) continue;
+    const messages = collectErrorMessages(value);
+    if (messages.length) result[field] = messages.join(" ");
+  }
+  return result;
+}
+
 function isAuthFailure(response: Response, data: Record<string, unknown>): boolean {
   const detail = `${data?.detail || ""}`.toLowerCase();
   if (response.status === 401) return true;
@@ -47,6 +124,11 @@ export class ApiError extends Error {
     this.data = data;
     this.isAuthError = isAuthError;
   }
+
+  /** Server validation messages keyed by field name; empty when there are none. */
+  get fieldErrors(): Record<string, string> {
+    return extractFieldErrors(this.data);
+  }
 }
 
 export function setApiAuthHandlers(handlers: Partial<AuthEventHandlers>): void {
@@ -59,7 +141,7 @@ const UPLOAD_TIMEOUT_MS = 120_000;
 /**
  * Typed fetch wrapper for the ReNest API.
  *
- * Path MUST start with "/" and MUST NOT include "/api/" — the prefix is
+ * Path MUST start with "/" and MUST NOT include "/api/"; the prefix is
  * prepended internally. Example: apiFetch("/listings") → GET /api/listings
  */
 export async function apiFetch<T = unknown>(
@@ -101,7 +183,7 @@ export async function apiFetch<T = unknown>(
   if (body instanceof FormData) {
     config.body = body;
   } else if (typeof body === "string") {
-    // Already-serialised payload — send as-is (never double-stringify).
+    // Already-serialised payload: send as-is (never double-stringify).
     if (!finalHeaders["Content-Type"]) finalHeaders["Content-Type"] = "application/json";
     config.body = body;
   } else if (body !== undefined && body !== null) {
@@ -109,11 +191,11 @@ export async function apiFetch<T = unknown>(
     config.body = JSON.stringify(body);
   }
 
-  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
-    finalHeaders["X-CSRFToken"] = getCookie("csrftoken");
-  }
-
   try {
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      finalHeaders["X-CSRFToken"] = await resolveCsrfToken();
+    }
+
     const response = await fetch(`/api${path}`, config);
     const data: Record<string, unknown> =
       response.status === 204
@@ -121,10 +203,7 @@ export async function apiFetch<T = unknown>(
         : await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      const message =
-        (data?.detail as string) ||
-        Object.values(data ?? {}).flat().join(" ") ||
-        "Request failed.";
+      const message = flattenErrorMessage(data);
       const authError = isAuthFailure(response, data) && !path.startsWith("/auth/");
       if (authError && authEventHandlers.onSessionExpired) {
         authEventHandlers.onSessionExpired({
@@ -162,7 +241,7 @@ export function toLocalDateTimeInput(value: string | null | undefined): string {
  * Every DRF generic list endpoint returns the paginated envelope
  * `{count, next, previous, results}` (global PAGE_SIZE 24); custom APIViews
  * return bare arrays. Consumers that render "all of it" should go through
- * this so a paginated envelope can never reach `.map()` — the exact crash
+ * this so a paginated envelope can never reach `.map()`, the exact crash
  * class that hit the listing-updates panel.
  */
 export function asResults<T = unknown>(data: unknown): T[] {

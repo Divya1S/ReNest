@@ -22,7 +22,7 @@ export default function SaveButton({ listing, onListingChange, className }) {
     const wasSaved = listing.is_saved;
     setPending(true);
 
-    // Optimistic update — flip state and adjust count immediately
+    // Optimistic update: flip state and adjust count immediately
     onListingChange?.({
       ...listing,
       is_saved: !wasSaved,

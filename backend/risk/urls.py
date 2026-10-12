@@ -31,6 +31,11 @@ urlpatterns = [
     path("agents", views.AgentListCreateView.as_view(), name="agents"),
     path("agents/<str:public_id>", views.AgentDetailView.as_view(), name="agent-detail"),
     path("agents/<str:public_id>/transactions", views.AgentTransactionView.as_view(), name="agent-transactions"),
+    path(
+        "agents/<str:public_id>/transactions/<int:attempt_id>/resolve",
+        views.AgentTransactionResolveView.as_view(),
+        name="agent-transaction-resolve",
+    ),
     # Traceability
     path("events", views.EventListView.as_view(), name="events"),
     path("events/dispatch", views.EventDispatchView.as_view(), name="events-dispatch"),

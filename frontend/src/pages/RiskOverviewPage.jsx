@@ -231,7 +231,7 @@ export default function RiskOverviewPage() {
       }
     >
       <PageSection>
-        <StateBlock loading={overview.loading && !data} error={overview.error} onRetry={overview.refetch} skeleton="h-40">
+        <StateBlock loading={overview.loading && !data} error={overview.error} onRetry={overview.retry} skeleton="h-40">
           {data ? (
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               <MetricTile label="Transactions" value={data.totals.transactions} hint={`${data.totals.completed} completed, ${data.totals.failed} failed`} icon={Activity} />
@@ -292,7 +292,7 @@ export default function RiskOverviewPage() {
             </Link>
           }
         >
-          <StateBlock loading={feed.loading && !feed.data} error={feed.error} onRetry={refetchFeed} empty={feed.data && feed.data.results.length === 0} emptyText="No transactions yet." skeleton="h-48">
+          <StateBlock loading={feed.loading && !feed.data} error={feed.error} onRetry={feed.retry} empty={feed.data && feed.data.results.length === 0} emptyText="No transactions yet." skeleton="h-48">
             {feed.data ? <TransactionTable rows={feed.data.results} thresholds={thresholds} caption="Most recent transactions" /> : null}
           </StateBlock>
         </Panel>

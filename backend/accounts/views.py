@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import uuid as _uuid
-from importlib import import_module
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
@@ -15,7 +14,7 @@ from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
-from django.views.decorators.csrf import ensure_csrf_cookie
+from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.request import Request
@@ -24,6 +23,7 @@ from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 
 from .models import Campus, User
+from dormcycle.parsers import StrictJSONParser
 from dormcycle.typed import current_user
 from typing import Any
 
@@ -73,8 +73,32 @@ class CsrfCookieView(APIView):
         return Response({"detail": "CSRF cookie set."})
 
 
-class RegisterView(APIView):
+@method_decorator(csrf_protect, name="dispatch")
+class CsrfProtectedAnonymousView(APIView):
+    """Base for the endpoints an anonymous browser can use to change auth state.
+
+    DRF wraps every view in csrf_exempt and its SessionAuthentication only
+    checks the token for requests that already carry a logged-in session, so
+    an anonymous POST (login, register, password reset) was never checked. A
+    hostile page could then sign a victim's browser into an attacker's account
+    (login CSRF). csrf_protect on dispatch is the pattern the DRF
+    documentation gives for login views; subclasses inherit the wrapped
+    dispatch. A refusal is rendered by settings.CSRF_FAILURE_VIEW.
+
+    JSON only: a cross-site HTML form can post urlencoded or multipart bodies
+    without a CORS preflight, but not application/json.
+    """
+
     permission_classes = [permissions.AllowAny]
+    parser_classes = [StrictJSONParser]
+
+
+class RegisterView(CsrfProtectedAnonymousView):
+    """POST /api/auth/register: create an account and start a session.
+
+    JSON body; the X-CSRFToken header is required (GET /api/auth/csrf sets the cookie).
+    """
+
     throttle_classes = [RegisterRateThrottle]
 
     @extend_schema(
@@ -93,7 +117,7 @@ class RegisterView(APIView):
             verify_url = _send_verification_email(user)
         except Exception:
             # Don't fail registration if email delivery is unavailable, but
-            # leave a trace — a silent drop here strands the user unverified.
+            # leave a trace, because a silent drop here strands the user unverified.
             logger.warning("Verification email failed for %s", user.email, exc_info=True)
         else:
             if settings.DEBUG:
@@ -103,8 +127,12 @@ class RegisterView(APIView):
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
-class LoginView(APIView):
-    permission_classes = [permissions.AllowAny]
+class LoginView(CsrfProtectedAnonymousView):
+    """POST /api/auth/login: start a session with email and password.
+
+    JSON body; the X-CSRFToken header is required (GET /api/auth/csrf sets the cookie).
+    """
+
     throttle_classes = [LoginRateThrottle]
 
     @extend_schema(
@@ -144,6 +172,15 @@ class LogoutView(APIView):
         return Response({"detail": "Logged out."})
 
 
+def _field_error(field: str, message: str) -> Response:
+    """A 400 in the shape serializer errors use everywhere else: {field: [message]}.
+
+    Clients read validation errors as lists; a bare string here made this one
+    endpoint the exception they had to special-case.
+    """
+    return Response({field: [message]}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class MeView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -180,9 +217,9 @@ class MeView(APIView):
         if display_name is not None:
             display_name = str(display_name).strip()
             if not display_name:
-                return Response({"display_name": "Display name cannot be empty."}, status=400)
+                return _field_error("display_name", "Display name cannot be empty.")
             if len(display_name) > 120:
-                return Response({"display_name": "Keep it under 120 characters."}, status=400)
+                return _field_error("display_name", "Keep it under 120 characters.")
             request.user.display_name = display_name
             update_fields.append("display_name")
 
@@ -190,14 +227,14 @@ class MeView(APIView):
         if campus_name is not None:
             campus_name = str(campus_name).strip()
             if len(campus_name) > 120:
-                return Response({"campus_name": "Keep it under 120 characters."}, status=400)
+                return _field_error("campus_name", "Keep it under 120 characters.")
             request.user.campus_name = campus_name
             update_fields.append("campus_name")
 
         show_on_leaderboard = request.data.get("show_on_leaderboard")
         if show_on_leaderboard is not None:
             if not isinstance(show_on_leaderboard, bool):
-                return Response({"show_on_leaderboard": "Must be true or false."}, status=400)
+                return _field_error("show_on_leaderboard", "Must be true or false.")
             request.user.show_on_leaderboard = show_on_leaderboard
             update_fields.append("show_on_leaderboard")
 
@@ -206,9 +243,9 @@ class MeView(APIView):
             try:
                 step = int(step)
             except (TypeError, ValueError):
-                return Response({"onboarding_step": "Must be an integer 0–3."}, status=400)
+                return _field_error("onboarding_step", "Must be an integer from 0 to 3.")
             if not 0 <= step <= 3:
-                return Response({"onboarding_step": "Must be between 0 and 3."}, status=400)
+                return _field_error("onboarding_step", "Must be between 0 and 3.")
             # Only allow advancing, not rolling back
             if step > request.user.onboarding_step:
                 request.user.onboarding_step = step
@@ -223,8 +260,13 @@ class PasswordResetRateThrottle(AnonRateThrottle):
     scope = "password_reset"
 
 
-class PasswordResetRequestView(APIView):
-    permission_classes = [permissions.AllowAny]
+class PasswordResetRequestView(CsrfProtectedAnonymousView):
+    """POST /api/auth/password-reset: email a reset link if the address has an account.
+
+    The response is the same either way, so it does not reveal who is registered.
+    JSON body; the X-CSRFToken header is required (GET /api/auth/csrf sets the cookie).
+    """
+
     throttle_classes = [PasswordResetRateThrottle]
 
     @extend_schema(
@@ -267,8 +309,11 @@ class PasswordResetRequestView(APIView):
         )
 
 
-class PasswordResetConfirmView(APIView):
-    permission_classes = [permissions.AllowAny]
+class PasswordResetConfirmView(CsrfProtectedAnonymousView):
+    """POST /api/auth/password-reset/confirm: set a new password with the emailed uid and token.
+
+    JSON body; the X-CSRFToken header is required (GET /api/auth/csrf sets the cookie).
+    """
 
     @extend_schema(
         operation_id="auth_password_reset_confirm",
@@ -423,9 +468,15 @@ class AccountDeleteView(APIView):
     DELETE /api/auth/account
     Body: { "password": "..." }
 
-    Anonymises PII, hard-deletes sessions and push subscriptions,
-    soft-deletes the user's listings, then deactivates the account.
+    Anonymises PII, hard-deletes push subscriptions and the other personal
+    records, soft-deletes the user's listings, then deactivates the account.
     GDPR Art. 17 right-to-erasure.
+
+    Sessions: only the session making this request is deleted. Django does not
+    index sessions by user, so the rows of sessions on other devices stay in
+    the table until they expire. They stop authenticating immediately all the
+    same, because the account is now inactive and its password unusable; what
+    remains in such a row is the numeric id of an anonymised account.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -506,7 +557,8 @@ class AccountDeleteView(APIView):
         user.set_unusable_password()
         user.save(update_fields=["password"])
 
-        # 5. End the session on this device.
+        # 5. End the session on this device. Sessions elsewhere are already
+        #    dead: step 4 made the account inactive (see the class docstring).
         request.session.flush()
         logout(request)
 
@@ -595,7 +647,7 @@ class DataExportView(APIView):
         return Response(payload)
 
 
-# ---------- Phase 17 — Impact Card ----------
+# ---------- Phase 17: Impact Card ----------
 
 _CATEGORY_WEIGHTS_LB = {
     "storage": 3.5,
@@ -608,11 +660,42 @@ _CATEGORY_WEIGHTS_LB = {
 }
 
 
+# Fonts known to cover every character the card draws, in order of preference.
+# Linux hosts (Render, the Docker image) have no Helvetica and often no system
+# fonts at all, so the list is only an upgrade path: the renderer falls back
+# to the scalable font bundled with Pillow.
+_CARD_FONT_CANDIDATES = (
+    "/System/Library/Fonts/Helvetica.ttc",  # macOS
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Debian, Ubuntu
+    "/usr/share/fonts/dejavu/DejaVuSans.ttf",  # Fedora, Alpine
+)
+
+
+def _load_card_fonts(sizes: tuple[int, ...]) -> tuple[list[Any], bool]:
+    """Fonts for the impact card at the given pixel sizes.
+
+    Returns the fonts and whether they are a full Unicode face. Pillow's
+    bundled font scales to any size but only covers basic Latin, so callers
+    must keep to ASCII text when the flag is False (a missing glyph renders
+    as an empty box).
+    """
+    from PIL import ImageFont
+
+    for path in _CARD_FONT_CANDIDATES:
+        try:
+            return [ImageFont.truetype(path, size) for size in sizes], True
+        except OSError:
+            continue
+    # load_default() without a size is a fixed 10px face, which made the whole
+    # card unreadable wherever Helvetica was missing; ask for real sizes.
+    return [ImageFont.load_default(size=size) for size in sizes], False
+
+
 class ImpactCardView(APIView):
     """
     GET /api/auth/impact-card.png
-    Renders a 1200×630 shareable impact summary card for the authenticated user.
-    Uses Pillow — no extra font needed (uses default PIL font as fallback).
+    Renders a 1200x630 shareable impact summary card for the authenticated user.
+    Drawn with Pillow; needs no font installed on the host (see _load_card_fonts).
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -656,7 +739,7 @@ class ImpactCardView(APIView):
 
         response = HttpResponse(img_bytes, content_type="image/png")
         response["Cache-Control"] = "private, max-age=3600"
-        response["Content-Disposition"] = 'inline; filename="dormcycle-impact.png"'
+        response["Content-Disposition"] = 'inline; filename="renest-impact.png"'
         return response
 
     @staticmethod
@@ -676,16 +759,7 @@ class ImpactCardView(APIView):
         # Teal accent bar left edge
         draw.rectangle([(0, 0), (8, H)], fill=TEAL)
 
-        # Try to load a better font; fall back gracefully
-        try:
-            from PIL import ImageFont
-            font_lg: Any = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 72)
-            font_md: Any = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 36)
-            font_sm: Any = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 28)
-            font_xs: Any = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 22)
-        except Exception:
-            from PIL import ImageFont
-            font_lg = font_md = font_sm = font_xs = ImageFont.load_default()
+        (font_lg, font_md, font_sm, font_xs), full_unicode = _load_card_fonts((72, 36, 28, 22))
 
         # Header
         draw.text((60, 60), "ReNest", font=font_md, fill=TEAL)
@@ -700,7 +774,7 @@ class ImpactCardView(APIView):
         stats = [
             (str(item_count), "items rescued"),
             (f"${total_value:,.0f}", "retail value saved"),
-            (f"{co2_kg} kg", "CO₂ diverted"),
+            (f"{co2_kg} kg", "CO₂ diverted" if full_unicode else "CO2 diverted"),
         ]
         col_w = (W - 120) // 3
         for i, (val, label) in enumerate(stats):
@@ -709,7 +783,7 @@ class ImpactCardView(APIView):
             draw.text((x, 380), label, font=font_sm, fill=MUTED)
 
         # Footer
-        draw.text((60, H - 60), "renest.app  —  reduce move-out waste", font=font_xs, fill=MUTED)
+        draw.text((60, H - 60), "renest.app  |  reduce move-out waste", font=font_xs, fill=MUTED)
 
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
@@ -721,7 +795,7 @@ class CampusOnboardRateThrottle(AnonRateThrottle):
 
 
 class CampusPublicStatsView(APIView):
-    """GET /api/campus/:slug/stats — public campus profile, no auth required."""
+    """GET /api/auth/campus/<slug>/stats: public campus profile, no auth required."""
 
     permission_classes = [permissions.AllowAny]
 
@@ -772,7 +846,7 @@ class CampusPublicStatsView(APIView):
 
 
 class CampusOnboardingRequestView(APIView):
-    """POST /api/campus/onboard — self-service campus registration (pending approval)."""
+    """POST /api/auth/campus/onboard: self-service campus registration (pending approval)."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [CampusOnboardRateThrottle]
@@ -793,7 +867,7 @@ class CampusOnboardingRequestView(APIView):
             onboarding_status=Campus.OnboardingStatus.PENDING,
         )
 
-        admin_email = getattr(settings, "PLATFORM_ADMIN_EMAIL", settings.DEFAULT_FROM_EMAIL)
+        admin_email = settings.PLATFORM_ADMIN_EMAIL
         try:
             send_mail(
                 subject=f"[ReNest] New campus onboarding request: {campus.name}",
@@ -813,7 +887,7 @@ class CampusOnboardingRequestView(APIView):
                     f"Hi {campus.contact_name},\n\n"
                     f"We received your request to add {campus.name} to ReNest. "
                     f"We'll review it within 2 business days and reach out to {campus.contact_email}.\n\n"
-                    f"— The ReNest team"
+                    f"The ReNest team"
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[campus.contact_email],
@@ -829,8 +903,8 @@ class CampusOnboardingRequestView(APIView):
 
 
 class SuperAdminCampusListView(APIView):
-    """GET /api/admin/campuses — all campuses with metrics (staff only).
-       PATCH /api/admin/campuses/:id — approve or reject a pending campus.
+    """GET /api/auth/admin/campuses: all campuses with metrics (staff only).
+       PATCH /api/auth/admin/campuses/<id>: approve or reject a pending campus.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -865,21 +939,26 @@ class SuperAdminCampusListView(APIView):
             campus.active = True
         else:
             campus.onboarding_status = Campus.OnboardingStatus.REJECTED
+            # A rejected campus must stop claiming new sign-ups by email domain.
+            campus.active = False
 
         campus.save(update_fields=["onboarding_status", "active"])
+
+        # Spelled out per action: f"{action}d" produced "rejectd".
+        outcome = "approved" if action == "approve" else "rejected"
 
         if campus.contact_email:
             verb = "approved" if action == "approve" else "not approved at this time"
             send_mail(
-                subject=f"Your ReNest campus request has been {action}d",
+                subject=f"Your ReNest campus request has been {outcome}",
                 message=(
                     f"Hi {campus.contact_name},\n\n"
                     f"Your request for {campus.name} has been {verb}.\n\n"
-                    f"— The ReNest team"
+                    f"The ReNest team"
                 ),
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[campus.contact_email],
                 fail_silently=True,
             )
 
-        return Response({"detail": f"Campus {action}d.", "onboarding_status": campus.onboarding_status})
+        return Response({"detail": f"Campus {outcome}.", "onboarding_status": campus.onboarding_status})

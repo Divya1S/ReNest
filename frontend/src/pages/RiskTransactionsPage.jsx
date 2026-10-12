@@ -122,7 +122,7 @@ export default function RiskTransactionsPage() {
 
       <PageSection className="mt-6">
         <Panel>
-          <StateBlock loading={list.loading && !list.data} error={list.error} onRetry={list.refetch} empty={list.data && list.data.results.length === 0} emptyText="No transactions match these filters." skeleton="h-64">
+          <StateBlock loading={list.loading && !list.data} error={list.error} onRetry={list.retry} empty={list.data && list.data.results.length === 0} emptyText="No transactions match these filters." skeleton="h-64">
             {list.data ? <TransactionTable rows={list.data.results} thresholds={thresholds} caption="Matching transactions" /> : null}
           </StateBlock>
           {pages > 1 ? (

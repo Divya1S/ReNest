@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test.js";
 
 import { MOCK_USER, mockAuth, mockNotifications } from "./helpers/mock-api.js";
 
@@ -22,7 +22,7 @@ const OVERVIEW = {
   evaluation_latency: { count: 18, mean_ms: 0.02, p50_ms: 0.02, p95_ms: 0.03, p99_ms: 0.04, max_ms: 0.05 },
   series: [{ bucket: "2026-09-09T14:00", allow: 14, review: 2, block: 2 }],
   policy: { sensitivity: 50, review_threshold: 40, block_threshold: 70 },
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
 };
 
 const TXN = {
@@ -39,7 +39,7 @@ const TXN = {
   risk_score: 71,
   risk_band: "high",
   confidence: "0.79",
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   evaluation_ms: "0.024",
   is_simulation: false,
   ground_truth_fraud: null,
@@ -62,7 +62,7 @@ const TXN_DETAIL = {
     score: 71,
     decision: "block",
     confidence: "0.790",
-    model_version: "risk-rules-v1",
+    model_version: "risk-rules-v2",
     sensitivity: 50,
     thresholds: { sensitivity: 50, review: 40, block: 70 },
     evaluation_ms: "0.024",
@@ -80,7 +80,7 @@ const TXN_DETAIL = {
     { event_id: "evt_e2e_2", sequence: 2, event_type: "payment.blocked", schema_version: 1, entity_type: "payment", entity_id: TXN_ID, payload: {}, request_id: "e2e-req", occurred_at: TXN.created_at, status: "processed", attempts: 1, processed_handlers: ["audit", "notify_customer"], last_error: "", next_attempt_at: null, processed_at: TXN.created_at },
   ],
   audit: [
-    { id: 1, actor_label: "user:1", action: "payment.evaluated", target_type: "payment", target_id: TXN_ID, reason: TXN.summary, decision: "block", model_version: "risk-rules-v1", request_id: "e2e-req", metadata: {}, created_at: TXN.created_at },
+    { id: 1, actor_label: "user:1", action: "payment.evaluated", target_type: "payment", target_id: TXN_ID, reason: TXN.summary, decision: "block", model_version: "risk-rules-v2", request_id: "e2e-req", metadata: {}, created_at: TXN.created_at },
   ],
 };
 
@@ -91,7 +91,7 @@ const RUN = {
   sensitivity: 50,
   seed: 3,
   transaction_count: 1000,
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   duration_ms: "210.000",
   created_at: new Date().toISOString(),
   metrics: {
@@ -106,7 +106,7 @@ const RUN = {
     top_factors_legitimate: [{ code: "new_device", count: 60 }],
     latency: { count: 1000, mean_ms: 0.006, p50_ms: 0.005, p95_ms: 0.009, p99_ms: 0.012, max_ms: 0.03 },
     thresholds: { sensitivity: 50, review: 40, block: 70 },
-    model_version: "risk-rules-v1",
+    model_version: "risk-rules-v2",
     sweep: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((s) => ({ sensitivity: s, review_threshold: 60 - 0.4 * s, block_threshold: 90 - 0.4 * s, blocked: 100 + s, reviewed: 60, detection_rate: Math.min(1, 0.6 + s / 250), friction_rate: s / 400 })),
     seed: 3,
     scenario: "card_testing",
@@ -116,9 +116,9 @@ const RUN = {
 
 async function mockRisk(page) {
   await page.route("**/api/risk/overview**", (route) => route.fulfill({ json: OVERVIEW }));
-  await page.route("**/api/risk/policy", (route) => route.fulfill({ json: { name: "default", sensitivity: 50, review_threshold: 40, block_threshold: 70, updated_at: null, updated_by: null, model_version: "risk-rules-v1", curve: [] } }));
+  await page.route("**/api/risk/policy", (route) => route.fulfill({ json: { name: "default", sensitivity: 50, review_threshold: 40, block_threshold: 70, updated_at: null, updated_by: null, model_version: "risk-rules-v2", curve: [] } }));
   await page.route("**/api/risk/feed**", (route) => route.fulfill({ json: { results: [TXN], generated_at: new Date().toISOString() } }));
-  await page.route("**/api/risk/scenarios", (route) => route.fulfill({ json: { scenarios: [{ key: "card_testing", title: "Card testing", description: "Bursts of tiny charges.", fraud_share: 0.3 }], default_count: 1000, min_count: 50, max_count: 2000, model_version: "risk-rules-v1", current_sensitivity: 50, note: "" } }));
+  await page.route("**/api/risk/scenarios", (route) => route.fulfill({ json: { scenarios: [{ key: "card_testing", title: "Card testing", description: "Bursts of tiny charges.", fraud_share: 0.3 }], default_count: 1000, min_count: 50, max_count: 2000, model_version: "risk-rules-v2", current_sensitivity: 50, note: "" } }));
   await page.route("**/api/risk/simulations**", (route) => {
     if (route.request().method() === "POST") return route.fulfill({ status: 201, json: RUN });
     return route.fulfill({ json: { count: 0, next: null, previous: null, results: [] } });
@@ -151,5 +151,59 @@ test.describe("Risk Intelligence", () => {
     await expect(page.getByText("Exceptionally large amount for this marketplace").first()).toBeVisible();
     await expect(page.getByText("Audit trail")).toBeVisible();
     await expect(page.getByText("service:risk-engine").or(page.getByText("user:1"))).toBeVisible();
+  });
+
+  test("agent sandbox: an attempt held for review is approved from the list", async ({ page }) => {
+    const AGENT_ID = "agent_01E2ETESTCCCCCCCCCCCCCCCC";
+    let agent = {
+      public_id: AGENT_ID,
+      name: "Dorm restock agent",
+      daily_limit: "150.00",
+      transaction_limit: "60.00",
+      requires_approval_above: "40.00",
+      allowed_categories: ["supplies"],
+      blocked_merchants: [],
+      currency: "USD",
+      active: true,
+      spent_today: "18.50",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const held = { id: 21, amount: "45.00", currency: "USD", category: "supplies", merchant_id: "mkt_supplies", description: "Bulk paper", decision: "review", reasons: [], risk_score: 22, counts_toward_spend: true, created_at: new Date().toISOString() };
+    let attempts = [held, { ...held, id: 20, amount: "12.00", description: "Pens", decision: "allow" }];
+
+    await mockAuth(page, MOCK_USER);
+    await mockNotifications(page);
+    await page.route("**/api/risk/agents?*", (route) =>
+      route.fulfill({ json: { count: 1, next: null, previous: null, results: [agent] } }),
+    );
+    await page.route(`**/api/risk/agents/${AGENT_ID}/transactions?*`, (route) =>
+      route.fulfill({ json: { count: attempts.length, next: null, previous: null, results: attempts } }),
+    );
+    await page.route(`**/api/risk/agents/${AGENT_ID}/transactions/21/resolve`, (route) => {
+      const body = route.request().postDataJSON();
+      const updated = { ...held, decision: body.approve ? "allow" : "block" };
+      attempts = attempts.map((item) => (item.id === 21 ? updated : item));
+      agent = { ...agent, spent_today: "63.50" };
+      return route.fulfill({ json: updated });
+    });
+
+    await page.goto("/risk/agents");
+    await expect(page.getByRole("heading", { name: "Agent Payment Sandbox" })).toBeVisible();
+    await expect(page.getByRole("meter", { name: /daily budget used/i })).toHaveAttribute("aria-valuenow", "18.5");
+    // Only the held attempt is actionable.
+    await expect(page.getByRole("button", { name: /^Approve / })).toHaveCount(1);
+
+    await page.getByLabel(/review note for \$45\.00 at mkt_supplies/i).fill("Checked with the RA");
+    const resolve = page.waitForRequest(`**/api/risk/agents/${AGENT_ID}/transactions/21/resolve`);
+    await page.getByRole("button", { name: "Approve $45.00 at mkt_supplies" }).click();
+
+    const request = await resolve;
+    expect(request.method()).toBe("POST");
+    expect(request.postDataJSON()).toEqual({ approve: true, note: "Checked with the RA" });
+    await expect(page.getByRole("button", { name: /^Approve / })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Reject / })).toHaveCount(0);
+    // The agent's budget was re-read after the approval.
+    await expect(page.getByRole("meter", { name: /daily budget used/i })).toHaveAttribute("aria-valuenow", "63.5");
   });
 });

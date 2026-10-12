@@ -8,17 +8,31 @@ import { apiFetch } from "../../lib/api";
 const STREAM_IDLE_TIMEOUT_MS = 75_000;
 
 export const ERROR_BUBBLE =
-  "I couldn't get a reply just now — your message wasn't lost on our side, so give it another try in a moment.";
+  "I couldn't get a reply just now. Your message wasn't lost on our side, so give it another try in a moment.";
 
 function getCookie(name) {
   const cookie = document.cookie.split("; ").find((part) => part.startsWith(`${name}=`));
   return cookie ? decodeURIComponent(cookie.split("=")[1]) : "";
 }
 
+/** The API stores a thumbs rating as 1, -1 or null. Anything else is "none". */
+function normalizeRating(value) {
+  return value === 1 || value === -1 ? value : null;
+}
+
+/**
+ * History rows as the UI holds them. `rating` is what restores a reply's
+ * thumbs state after a reload; without it every reload showed both thumbs
+ * unpressed and invited rating the same reply again.
+ */
+function fromHistory(rows) {
+  return (rows || []).map((row) => ({ ...row, rating: normalizeRating(row.rating) }));
+}
+
 /**
  * Shared conversation state for the Nest Concierge.
  *
- * Both surfaces — the floating widget and the full /assistant page — drive the
+ * Both surfaces (the floating widget and the full /assistant page) drive the
  * same backend thread (/api/concierge/*) through this hook, so a conversation
  * started in one continues seamlessly in the other.
  *
@@ -49,10 +63,10 @@ export function useConciergeChat(active) {
     try {
       const data = await apiFetch("/concierge/history/");
       setEnabled(data.enabled !== false);
-      setMessages(data.messages || []);
+      setMessages(fromHistory(data.messages));
       setHasMore(Boolean(data.has_more));
     } catch {
-      // History is a nicety — start an empty conversation instead of failing.
+      // History is a nicety, so start an empty conversation instead of failing.
       setMessages([]);
     } finally {
       setLoaded(true);
@@ -72,8 +86,10 @@ export function useConciergeChat(active) {
         content: data.reply,
         used_tools: data.used_tools,
         meta: data.meta,
-        rating: null,
-        error: Boolean(data.degraded),
+        rating: normalizeRating(data.rating),
+        // A degraded turn answered from the help guide is still a real
+        // answer: only a degraded turn with nothing to say reads as an error.
+        error: Boolean(data.degraded) && data.meta?.fallback !== "knowledge_base",
       },
     ]);
   }, []);
@@ -162,7 +178,7 @@ export function useConciergeChat(active) {
           // But only fall back when the turn never started server-side,
           // otherwise the same message is answered (and stored) twice.
           if (streamError?.turnStarted) throw streamError;
-          // Agentic turns can take a while — longer leash than the 15s default.
+          // Agentic turns can take a while: longer leash than the 15s default.
           const data = await apiFetch("/concierge/chat/", {
             method: "POST",
             body: { message: text },
@@ -186,12 +202,14 @@ export function useConciergeChat(active) {
   );
 
   const sendFeedback = useCallback(async (messageId, rating) => {
+    const next = rating === "up" ? 1 : rating === "down" ? -1 : null;
+    let previous = null;
     setMessages((prev) =>
-      prev.map((message) =>
-        message.id === messageId
-          ? { ...message, rating: rating === "up" ? 1 : rating === "down" ? -1 : null }
-          : message,
-      ),
+      prev.map((message) => {
+        if (message.id !== messageId) return message;
+        previous = normalizeRating(message.rating);
+        return { ...message, rating: next };
+      }),
     );
     try {
       await apiFetch(`/concierge/messages/${messageId}/feedback/`, {
@@ -199,7 +217,15 @@ export function useConciergeChat(active) {
         body: { rating },
       });
     } catch {
-      // Optimistic UI stands; feedback is best-effort telemetry.
+      // The thumbs now reflect what the server has stored (they are restored
+      // from it on the next load), so a rating that was not saved must not
+      // stay pressed. Put back what was there, unless it changed again since.
+      if (!mounted.current) return;
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === messageId && message.rating === next ? { ...message, rating: previous } : message,
+        ),
+      );
     }
   }, []);
 
@@ -208,7 +234,7 @@ export function useConciergeChat(active) {
     if (!oldest) return;
     try {
       const data = await apiFetch(`/concierge/history/?before=${oldest.id}`);
-      setMessages((prev) => [...(data.messages || []), ...prev]);
+      setMessages((prev) => [...fromHistory(data.messages), ...prev]);
       setHasMore(Boolean(data.has_more));
     } catch {
       // Scrollback is a nicety; the button simply remains for a retry.

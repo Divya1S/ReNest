@@ -120,7 +120,7 @@ export default function HubManagerPage() {
               Pickup instructions
             </label>
             <p className="mb-3 text-xs text-[color:var(--text-muted)]">
-              Shown to students on the hub listing — explain access hours, entry codes, or drop-off rules.
+              Shown to students on the hub listing. Explain access hours, entry codes, or drop-off rules.
             </p>
             <textarea
               id="hub-pickup-instructions"

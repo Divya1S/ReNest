@@ -59,8 +59,15 @@ def record(
     model_version: str = "",
     request_id: str = "",
     metadata: dict[str, Any] | None = None,
+    dedupe_key: str | None = None,
 ) -> AuditLog:
-    entry = AuditLog.objects.create(
+    """Append an audit row.
+
+    With `dedupe_key`, the row is written at most once for that key however
+    many callers race to write it (the column is unique); the row that
+    already exists is returned to the others.
+    """
+    fields: dict[str, Any] = dict(
         actor=actor if (actor is not None and getattr(actor, "is_authenticated", False)) else None,
         actor_label=actor_label or actor_label_for(actor),
         action=action,
@@ -72,6 +79,14 @@ def record(
         request_id=request_id or "",
         metadata=redact(metadata or {}),
     )
+    if dedupe_key is None:
+        entry = AuditLog.objects.create(**fields)
+    else:
+        # get_or_create inserts inside a savepoint and, when the unique key
+        # rejects the insert, reads the winner's row instead of failing.
+        entry, created = AuditLog.objects.get_or_create(dedupe_key=dedupe_key, defaults=fields)
+        if not created:
+            return entry
     logger.info(
         "audit",
         extra={

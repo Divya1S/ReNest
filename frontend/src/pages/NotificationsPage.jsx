@@ -31,7 +31,7 @@ export default function NotificationsPage() {
     data,
     loading,
     error,
-    refetch,
+    retry,
     setData,
   } = useApi("/notifications", { initialData: { results: [], unread_count: 0 } });
   const [workingId, setWorkingId] = React.useState("");
@@ -122,7 +122,7 @@ export default function NotificationsPage() {
         <p className="label-title">Alerts</p>
         <h2 className="mt-3 text-[24px] font-bold tracking-[-0.02em]">Notification center failed to load</h2>
         <p className="mt-3 text-[color:var(--text-muted)]">{error}</p>
-        <button type="button" onClick={refetch} className="primary-button mt-6">
+        <button type="button" onClick={retry} className="primary-button mt-6">
           Try Again
         </button>
       </div>

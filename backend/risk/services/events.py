@@ -5,7 +5,10 @@ Emission
     transaction, so an event exists if and only if the state change that
     produced it was committed. Nothing is published to an external broker;
     the table *is* the log. Dispatch is scheduled with transaction.on_commit,
-    so a rolled-back payment never fans out.
+    so a rolled-back payment never fans out. The post-commit hook cannot
+    raise: by the time it runs the state change is durable, so a dispatch
+    problem is logged and counted and the event simply waits for the next
+    pass; it never turns a committed payment into a failed request.
 
 Dispatch
     `dispatch_pending()` walks PENDING/FAILED events in sequence order and
@@ -27,7 +30,11 @@ Guarantees and assumptions
       (status=processing, next_attempt_at=lease expiry); only rows the UPDATE
       touched are processed. A dispatcher that dies mid-batch leaves rows
       whose lease expires, after which they are claimable again; handler
-      idempotency makes that replay harmless.
+      idempotency makes that replay harmless. The token is also a fencing
+      token: the lease is renewed just before an event's handlers run, and
+      the write that records the outcome is conditional on still holding
+      the token, so a dispatcher that outlived its lease cannot overwrite
+      what the dispatcher that took over recorded.
     * A request dispatches only the events it emitted. The global backlog
       (retries, dead-letter candidates) is the tick's and the worker's job,
       so one broken handler never taxes every customer's checkout.
@@ -37,8 +44,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from functools import partial
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
 from django.db import transaction
@@ -110,10 +116,13 @@ def emit(
     payload: dict[str, Any] | None = None,
     request_id: str = "",
     dispatch_after_commit: bool = True,
+    occurred_at: datetime | None = None,
 ) -> PaymentEvent:
+    """Append an event. `occurred_at` is for callers that record something as
+    of an earlier instant (seeded history); live callers leave it unset."""
     if event_type not in EVENT_TYPES:
         raise ValueError(f"Unknown event type: {event_type}")
-    event = PaymentEvent.objects.create(
+    fields: dict[str, Any] = dict(
         event_type=event_type,
         schema_version=SCHEMA_VERSION,
         entity_type=entity_type,
@@ -121,7 +130,12 @@ def emit(
         payload=payload or {},
         request_id=request_id or "",
     )
-    metrics.increment("events_emitted_total")
+    if occurred_at is not None:
+        fields["occurred_at"] = occurred_at
+    event = PaymentEvent.objects.create(**fields)
+    # Counted when the row is durable, not when it is written: a rolled-back
+    # payment emitted nothing.
+    metrics.increment_on_commit("events_emitted_total")
     logger.info(
         "event emitted",
         extra={"event_type": event_type, "event_id": event.event_id, "entity": f"{entity_type}:{entity_id}"},
@@ -129,12 +143,30 @@ def emit(
     if dispatch_after_commit:
         # Only this event: callbacks run in registration order after the
         # outermost commit, which preserves per-entity sequence order.
-        transaction.on_commit(partial(_dispatch_one, event.pk))
+        transaction.on_commit(_dispatch_hook(event.pk), robust=True)
     return event
 
 
-def _dispatch_one(pk: int) -> None:
-    dispatch_events([pk])
+def _dispatch_hook(pk: int) -> Callable[[], None]:
+    """The post-commit dispatch of one event, as a callable that never raises.
+
+    The hook runs after the caller's transaction has committed. Anything it
+    raised would propagate out of the caller's atomic block and look like a
+    failed operation although the payment exists, which is how a retry used
+    to create a second payment. So the hook contains its own failures: the
+    event stays pending (or claimed with a lease that expires) and the tick
+    or the worker delivers it. robust=True is a second line of defence, not
+    the mechanism: the hook must be safe wherever it is called from.
+    """
+
+    def dispatch_after_commit() -> None:
+        try:
+            dispatch_events([pk])
+        except Exception:  # noqa: BLE001 - must not reach the committed caller
+            metrics.increment("event_dispatch_errors_total")
+            logger.exception("post-commit dispatch failed; the event waits for the next pass", extra={"event_pk": pk})
+
+    return dispatch_after_commit
 
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -169,9 +201,31 @@ def _claim(pks: Iterable[int] | None, limit: int) -> list[PaymentEvent]:
     return list(PaymentEvent.objects.filter(claim_token=token).order_by("sequence"))
 
 
-def process_event(event: PaymentEvent) -> bool:
-    """Run every not-yet-completed handler for one event. Returns True when
-    all handlers succeeded."""
+OUTCOME_PROCESSED = "processed"
+OUTCOME_FAILED = "failed"
+OUTCOME_LOST = "lost"
+
+
+def _renew_claim(event: PaymentEvent) -> bool:
+    """Extend the lease right before the handlers run; False when the claim is gone.
+
+    A batch is claimed with one lease for all of its rows, so by the time a
+    slow batch reaches its last events their lease may have run out and
+    another dispatcher may own them. Renewing per event keeps a live
+    dispatcher's claim alive and stops it from running handlers for an
+    event it no longer owns.
+    """
+    lease = timezone.now() + timedelta(seconds=CLAIM_LEASE_SECONDS)
+    held = PaymentEvent.objects.filter(
+        pk=event.pk, claim_token=event.claim_token, status=EventStatus.PROCESSING
+    ).update(next_attempt_at=lease)
+    if held:
+        event.next_attempt_at = lease
+    return bool(held)
+
+
+def _process(event: PaymentEvent) -> str:
+    """Run the outstanding handlers and record the outcome, if still the owner."""
     done = set(event.processed_handlers or [])
     errors: list[str] = []
     for name, handler in handlers_for(event.event_type):
@@ -190,42 +244,66 @@ def process_event(event: PaymentEvent) -> bool:
             logger.exception("handler %s failed for %s", name, event.event_id)
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
 
-    event.processed_handlers = sorted(done)
-    event.attempts += 1
-    event.claim_token = ""
+    attempts = event.attempts + 1
+    changes: dict[str, Any] = {"processed_handlers": sorted(done), "attempts": attempts, "claim_token": ""}
+    dead = False
     if errors:
-        event.last_error = "; ".join(errors)[:2000]
-        if event.attempts >= MAX_ATTEMPTS:
-            event.status = EventStatus.DEAD
-            event.next_attempt_at = None
+        changes["last_error"] = "; ".join(errors)[:2000]
+        if attempts >= MAX_ATTEMPTS:
+            dead = True
+            changes.update(status=EventStatus.DEAD, next_attempt_at=None)
+        else:
+            backoff = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
+            changes.update(status=EventStatus.FAILED, next_attempt_at=timezone.now() + timedelta(seconds=backoff))
+    else:
+        changes.update(status=EventStatus.PROCESSED, processed_at=timezone.now(), last_error="", next_attempt_at=None)
+
+    # Fenced write: only the dispatcher whose token is still on the row may
+    # record an outcome. One that outlived its lease finds a different token
+    # (or none, if the new owner already finished) and changes nothing, so
+    # the state and the attempt count belong to exactly one dispatcher. Its
+    # handlers did run, which at-least-once delivery already allows for.
+    if not PaymentEvent.objects.filter(pk=event.pk, claim_token=event.claim_token).update(**changes):
+        metrics.increment("event_claims_lost_total")
+        logger.warning("claim lost before the outcome was recorded", extra={"event_id": event.event_id})
+        return OUTCOME_LOST
+    for field, value in changes.items():
+        setattr(event, field, value)
+
+    if errors:
+        if dead:
             metrics.increment("events_dead_lettered_total")
             logger.error("event dead-lettered", extra={"event_id": event.event_id, "error": event.last_error})
-        else:
-            event.status = EventStatus.FAILED
-            backoff = BACKOFF_SECONDS[min(event.attempts - 1, len(BACKOFF_SECONDS) - 1)]
-            event.next_attempt_at = timezone.now() + timedelta(seconds=backoff)
-        event.save(update_fields=["processed_handlers", "attempts", "last_error", "status", "next_attempt_at", "claim_token"])
-        return False
-
-    event.status = EventStatus.PROCESSED
-    event.processed_at = timezone.now()
-    event.last_error = ""
-    event.next_attempt_at = None
-    event.save(update_fields=["processed_handlers", "attempts", "last_error", "status", "next_attempt_at", "processed_at", "claim_token"])
+        return OUTCOME_FAILED
     metrics.increment("events_processed_total")
-    return True
+    return OUTCOME_PROCESSED
+
+
+def process_event(event: PaymentEvent) -> bool:
+    """Run every not-yet-completed handler for one event. Returns True when
+    all handlers succeeded and this caller recorded the result."""
+    return _process(event) == OUTCOME_PROCESSED
 
 
 def _run(events: list[PaymentEvent]) -> dict[str, int]:
-    processed = failed = 0
+    processed = failed = skipped = 0
     with metrics.Timer() as timer:
         for event in events:
-            if process_event(event):
+            if not _renew_claim(event):
+                # Another dispatcher owns it now; running the handlers again
+                # would only duplicate work whose result we could not record.
+                metrics.increment("event_claims_lost_total")
+                skipped += 1
+                continue
+            outcome = _process(event)
+            if outcome == OUTCOME_PROCESSED:
                 processed += 1
-            else:
+            elif outcome == OUTCOME_FAILED:
                 failed += 1
+            else:
+                skipped += 1
     metrics.observe("event_dispatch_ms", timer.ms)
-    return {"processed": processed, "failed": failed}
+    return {"processed": processed, "failed": failed, "skipped": skipped}
 
 
 def dispatch_events(pks: Iterable[int]) -> dict[str, int]:
@@ -240,13 +318,12 @@ def dispatch_pending(limit: int = 100) -> dict[str, int]:
 
 def replay_dead(event_id: str) -> PaymentEvent:
     """Operator action: give a dead-lettered event another MAX_ATTEMPTS."""
-    event = PaymentEvent.objects.get(event_id=event_id)
-    event.status = EventStatus.PENDING
-    event.attempts = 0
-    event.next_attempt_at = None
-    event.claim_token = ""
-    event.save(update_fields=["status", "attempts", "next_attempt_at", "claim_token"])
-    return event
+    # Conditional on the row still being dead, so two operators replaying the
+    # same event cannot reset one that a dispatcher has already picked up.
+    PaymentEvent.objects.filter(event_id=event_id, status=EventStatus.DEAD).update(
+        status=EventStatus.PENDING, attempts=0, next_attempt_at=None, claim_token=""
+    )
+    return PaymentEvent.objects.get(event_id=event_id)
 
 
 # ── Built-in handlers ────────────────────────────────────────────────────────
@@ -275,7 +352,10 @@ def _audit_outcome(event: PaymentEvent) -> None:
     from ..models import AuditLog
     from .audit import SERVICE_ACTOR, record
 
-    # One outcome row per (event type, entity); the target index makes this cheap.
+    # One outcome row per (event type, entity). The lookup is the cheap path
+    # (and covers rows written before the dedupe key existed); it cannot be
+    # the guarantee, because two dispatchers can both pass it before either
+    # inserts. The unique dedupe key is what makes the second insert a no-op.
     if AuditLog.objects.filter(target_type=event.entity_type, target_id=event.entity_id, action=event.event_type).exists():
         return
     record(
@@ -288,6 +368,7 @@ def _audit_outcome(event: PaymentEvent) -> None:
         model_version=str(event.payload.get("model_version", "")),
         request_id=event.request_id,
         metadata={"event_id": event.event_id, "risk_score": event.payload.get("risk_score")},
+        dedupe_key=f"{event.event_type}:{event.entity_type}:{event.entity_id}",
     )
 
 

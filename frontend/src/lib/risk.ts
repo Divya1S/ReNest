@@ -257,6 +257,26 @@ export interface AgentAttempt {
   created_at: string;
 }
 
+/**
+ * Body of POST /risk/agents/:public_id/transactions/:attempt_id/resolve.
+ * Only an attempt whose decision is "review" can be resolved (anything else
+ * answers 409); the response is the updated AgentAttempt.
+ */
+export interface AgentAttemptResolution {
+  approve: boolean;
+  note: string;
+}
+
+/** API path (as apiFetch expects it) that resolves a held agent attempt. */
+export function agentAttemptResolvePath(agentPublicId: string, attemptId: number | string): string {
+  return `/risk/agents/${encodeURIComponent(agentPublicId)}/transactions/${encodeURIComponent(String(attemptId))}/resolve`;
+}
+
+/** True when a human still has to approve or reject this attempt. */
+export function needsResolution(attempt: Pick<AgentAttempt, "decision">): boolean {
+  return attempt.decision === "review";
+}
+
 export interface AgentVerdict {
   attempt: AgentAttempt;
   decision: Decision;

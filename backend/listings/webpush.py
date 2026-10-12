@@ -2,9 +2,9 @@
 Web Push notification helpers.
 
 VAPID keys are read from environment variables:
-  VAPID_PRIVATE_KEY  — base64url-encoded private key (generate once with gen_vapid_keys())
-  VAPID_PUBLIC_KEY   — base64url-encoded public key  (served to the frontend)
-  VAPID_CLAIMS_SUB   — mailto: or https: subscriber identifier
+  VAPID_PRIVATE_KEY  - base64url-encoded private key (generate once with gen_vapid_keys())
+  VAPID_PUBLIC_KEY   - base64url-encoded public key  (served to the frontend)
+  VAPID_CLAIMS_SUB   - mailto: or https: subscriber identifier
 
 Generate a key pair (run once, store results in .env):
   python manage.py shell -c "from listings.webpush import gen_vapid_keys; gen_vapid_keys()"
@@ -53,13 +53,13 @@ def send_push(subscription: PushSubscription, *, title: str, body: str, url: str
     Expired subscriptions (410 Gone) are deleted automatically.
     """
     if not _VAPID_PRIVATE_KEY or not _VAPID_PUBLIC_KEY:
-        logger.debug("VAPID keys not configured — Web Push skipped")
+        logger.debug("VAPID keys not configured, Web Push skipped")
         return False
 
     try:
         from pywebpush import webpush, WebPushException
     except ImportError:
-        logger.warning("pywebpush not installed — Web Push skipped")
+        logger.warning("pywebpush not installed, Web Push skipped")
         return False
 
     payload = json.dumps({
@@ -103,8 +103,8 @@ def send_push_to_user(user: Any, *, title: str, body: str, url: str = "/dashboar
 
     Respects Phase 26 preferences:
     - If channel = off or email → skips push entirely.
-    - If current time is within the user's quiet window → queues in Redis sorted set
-      (key: dormcycle:quiet_queue, score = epoch of quiet_end) instead of sending.
+    - If current time is within the user's quiet window → holds the message in
+      the user's quiet queue (see `_enqueue_quiet`) instead of sending.
 
     Returns number of push messages actually sent (0 if queued or suppressed).
     """
@@ -171,11 +171,46 @@ def _is_quiet_hours(user: Any, notification_type: str) -> bool:
     return now_local >= start or now_local < end
 
 
+# After its due time an item waits for the next flush run. If no flush has
+# happened this long after the last item fell due, the scheduler is down and
+# the notifications are stale anyway, so the entry is allowed to expire.
+_QUIET_QUEUE_GRACE_SECONDS = 6 * 3600
+
+
+def _quiet_queue_key(user_id: Any) -> str:
+    return f"quiet_queue:{user_id}"
+
+
+def _store_quiet_queue(user_id: Any, items: list[dict[str, Any]], now_epoch: float) -> None:
+    """Write the queue back with a TTL that covers its latest due item.
+
+    The entry used to be rewritten with a flat one-hour timeout on flush, so
+    an item due later than that expired from the cache and was never sent.
+    """
+    from django.core.cache import cache
+
+    key = _quiet_queue_key(user_id)
+    if not items:
+        cache.delete(key)
+        return
+    latest_due = max(float(item["score"]) for item in items)
+    ttl = int(max(latest_due - now_epoch, 0)) + _QUIET_QUEUE_GRACE_SECONDS
+    cache.set(key, items, timeout=ttl)
+
+
 def _enqueue_quiet(user: Any, *, title: str, body: str, url: str, notification_type: str) -> None:
-    """Push notification payload onto the Redis quiet_queue sorted set."""
+    """Hold a push until the user's quiet window ends.
+
+    The queue is one Django-cache entry per user, "quiet_queue:{user_id}",
+    holding a list of {"score": due epoch, "payload": JSON string}. It is not
+    a Redis sorted set: it works on any cache backend, at the price of a
+    read-modify-write that is not atomic (two pushes queued in the same
+    instant can lose one) and of living only as long as the cache does (the
+    local-memory fallback forgets it on restart). `flush_quiet_queue_for_user`
+    sends the items that have fallen due.
+    """
     import datetime
     import json as _json
-    import time
 
     from django.core.cache import cache
     from django.utils import timezone
@@ -187,7 +222,8 @@ def _enqueue_quiet(user: Any, *, title: str, body: str, url: str, notification_t
     except Exception:
         local_tz = timezone.get_current_timezone()
 
-    now_local = timezone.now().astimezone(local_tz)
+    now = timezone.now()
+    now_local = now.astimezone(local_tz)
     pref = None
     try:
         from .models import NotificationPreference
@@ -212,44 +248,47 @@ def _enqueue_quiet(user: Any, *, title: str, body: str, url: str, notification_t
         "notification_type": notification_type,
     })
 
-    # Use Django cache as a simple list; store as "quiet_queue:{user_id}" JSON list
-    key = f"quiet_queue:{user.pk}"
-    existing = cache.get(key) or []
+    existing = cache.get(_quiet_queue_key(user.pk)) or []
     existing.append({"score": fire_epoch, "payload": payload})
-    ttl = int(fire_epoch - time.time()) + 3600
-    cache.set(key, existing, timeout=max(ttl, 3600))
+    _store_quiet_queue(user.pk, existing, now.timestamp())
 
 
 def flush_quiet_queue_for_user(user: Any) -> int:
     """Dispatch any queued notifications whose fire time has passed. Returns count sent."""
     import json as _json
-    import time
 
     from django.core.cache import cache
+    from django.utils import timezone
 
-    key = f"quiet_queue:{user.pk}"
-    items = cache.get(key) or []
-    now_epoch = time.time()
+    items = cache.get(_quiet_queue_key(user.pk)) or []
+    if not items:
+        return 0
+    now_epoch = timezone.now().timestamp()
     remaining = []
     sent = 0
 
     for item in items:
-        if item["score"] <= now_epoch:
-            try:
-                data = _json.loads(item["payload"])
-                send_push_to_user(
-                    user,
-                    title=data["title"],
-                    body=data["body"],
-                    url=data.get("url", "/dashboard"),
-                    # No notification_type to avoid re-queuing
-                )
-                sent += 1
-            except Exception:
-                pass
-        else:
+        if item["score"] > now_epoch:
             remaining.append(item)
+            continue
+        try:
+            data = _json.loads(item["payload"])
+            # The user may have switched this type off while it was queued.
+            queued_type = data.get("notification_type")
+            if queued_type and _get_push_channel(user, queued_type) in ("off", "email"):
+                continue
+            send_push_to_user(
+                user,
+                title=data["title"],
+                body=data["body"],
+                url=data.get("url", "/dashboard"),
+                # No notification_type to avoid re-queuing
+            )
+            sent += 1
+        except Exception:
+            # A due item is dropped rather than retried forever, but not silently.
+            logger.warning("Queued push for user %s could not be sent", user.pk, exc_info=True)
 
-    if remaining != items:
-        cache.set(key, remaining, timeout=3600)
+    if len(remaining) != len(items):
+        _store_quiet_queue(user.pk, remaining, now_epoch)
     return sent

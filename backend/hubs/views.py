@@ -55,13 +55,16 @@ class PreviewDonationHubListView(generics.ListAPIView):
 
 
 class HubManagerUpdateView(APIView):
-    """PATCH open_instructions / capacity / active for hubs where the user is a manager."""
+    """PATCH open_instructions / capacity / active for hubs the user manages (staff: any hub)."""
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get_hub(self, pk: int, user: "User") -> DonationHub:
         hub = get_object_or_404(DonationHub, pk=pk, is_demo=False)
-        if not hub.hub_managers.filter(user=user).exists():
+        # Staff pass, matching listings.views.logistics.is_hub_manager, which
+        # already lets staff run any hub's storage holds and collections. The
+        # two checks must agree on who may operate a hub.
+        if not (user.is_staff or hub.hub_managers.filter(user=user).exists()):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You are not a manager of this hub.")
         return hub

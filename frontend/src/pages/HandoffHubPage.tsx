@@ -26,7 +26,7 @@ import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { apiFetch } from "../lib/api";
 import { formatDateTime, formatLabel } from "../lib/formatters";
-import type { ChatMessage, ReservationDetail } from "../types";
+import type { ChatMessage, ReservationAction, ReservationDetail } from "../types";
 
 const FEEDBACK_TAGS = [
   "responsive",
@@ -44,11 +44,9 @@ function localDateTimeMin(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-const ACTION_LABELS: Record<string, string> = {
-  confirmed: "Approve request",
-  completed: "Mark handed off",
-  cancelled: "Cancel reservation",
-};
+// Pickup coordination is time-sensitive: the chat and the reservation itself
+// are both re-read on this interval while the tab is visible.
+const REFRESH_INTERVAL_MS = 15_000;
 
 function ReservationChat({ reservationId }: { reservationId: string | undefined }) {
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
@@ -78,10 +76,10 @@ function ReservationChat({ reservationId }: { reservationId: string | undefined 
     }
 
     loadMessages(true);
-    // Pickup coordination is time-sensitive — poll while the tab is visible
+    // Poll while the tab is visible.
     const timer = setInterval(() => {
       if (!document.hidden) loadMessages();
-    }, 15_000);
+    }, REFRESH_INTERVAL_MS);
 
     return () => {
       active = false;
@@ -90,7 +88,7 @@ function ReservationChat({ reservationId }: { reservationId: string | undefined 
   }, [reservationId]);
 
   useEffect(() => {
-    // block:"nearest" scrolls only the chat pane — never the page itself,
+    // block:"nearest" scrolls only the chat pane, never the page itself,
     // which would yank the viewport down to the chat on load.
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [messages]);
@@ -222,7 +220,14 @@ function StageSteps({ current }: { current: 1 | 2 | 3 }) {
 export default function HandoffHubPage() {
   usePageTitle("Handoff Hub");
   const { reservationId } = useParams();
-  const { data: serverReservation, loading, error, refetch } = useApi<ReservationDetail>(`/reservations/${reservationId}`);
+  const {
+    data: serverReservation,
+    loading,
+    error,
+    errorStatus,
+    refetch,
+    retry,
+  } = useApi<ReservationDetail>(`/reservations/${reservationId}`);
   const [optimisticReservation, setOptimisticReservation] = React.useState<ReservationDetail | null>(null);
   const reservation = optimisticReservation ?? serverReservation;
   const [savingStatus, setSavingStatus] = React.useState("");
@@ -231,6 +236,7 @@ export default function HandoffHubPage() {
   // trust strike. Confirm before doing it.
   const [pendingCancel, setPendingCancel] = React.useState(false);
   const [pinInput, setPinInput] = React.useState("");
+  const [pinError, setPinError] = React.useState("");
   const [verifyingPin, setVerifyingPin] = React.useState(false);
   const [sendingEnRoute, setSendingEnRoute] = React.useState(false);
   const [proposingSlots, setProposingSlots] = React.useState(false);
@@ -248,22 +254,53 @@ export default function HandoffHubPage() {
     }
   }, [serverReservation, optimisticReservation]);
 
-  async function handleAction(nextStatus: string) {
+  // The other party changes this reservation too (approves it, picks a slot,
+  // verifies the PIN, cancels). Only the chat used to poll, so their change
+  // showed up here after a manual reload. Refresh on the chat's cadence while
+  // the tab is visible, and at once when the tab comes back to the front.
+  const terminal = serverReservation?.status === "cancelled";
+  React.useEffect(() => {
+    if (terminal) return undefined;
+    const refresh = () => {
+      if (!document.hidden) refetch().catch(() => undefined);
+    };
+    const timer = setInterval(refresh, REFRESH_INTERVAL_MS);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refetch, terminal]);
+
+  // Re-read after a change that has already been saved. It never throws: a
+  // failed re-read must not be reported as a failed action (the periodic
+  // refresh above picks the new state up).
+  const refreshQuietly = () => refetch().catch(() => null);
+
+  // Approve or cancel. Completion is not a status a client can set: it happens
+  // only through verifyPin below.
+  async function handleAction(nextStatus: ReservationAction) {
     if (!reservation) return;
-    const previous = reservation;
-    setOptimisticReservation({ ...reservation, status: nextStatus as ReservationDetail["status"] });
+    setOptimisticReservation({ ...reservation, status: nextStatus });
     setSavingStatus(nextStatus);
     try {
-      const updated = await apiFetch<ReservationDetail>(`/reservations/${reservation.id}`, {
-        method: "PATCH",
-        body: { status: nextStatus },
-      });
+      let updated: ReservationDetail;
+      try {
+        updated = await apiFetch<ReservationDetail>(`/reservations/${reservation.id}`, {
+          method: "PATCH",
+          body: { status: nextStatus },
+        });
+      } catch (requestError) {
+        setOptimisticReservation(null);
+        toast.error((requestError as Error).message);
+        return;
+      }
+      // The change is saved. Show the server's answer now; a failed re-read
+      // afterwards is not a failed action, and the periodic refresh retries it.
       setOptimisticReservation(updated);
-      await refetch();
       toast.success(`Handoff ${nextStatus.replaceAll("_", " ")}.`);
-    } catch (requestError) {
-      setOptimisticReservation(previous);
-      toast.error((requestError as Error).message);
+      const fresh = await refreshQuietly();
+      if (fresh) setOptimisticReservation(null);
     } finally {
       setSavingStatus("");
     }
@@ -275,13 +312,23 @@ export default function HandoffHubPage() {
     const pin = (value ?? pinInput).trim();
     if (pin.length !== 6 || !reservation || verifyingPin) return;
     setVerifyingPin(true);
+    setPinError("");
     try {
-      await apiFetch(`/reservations/${reservation.id}/verify-pin`, { method: "POST", body: { pin } });
+      try {
+        await apiFetch(`/reservations/${reservation.id}/verify-pin`, { method: "POST", body: { pin } });
+      } catch (err) {
+        const message = (err as Error).message || "Incorrect PIN.";
+        setPinError(message);
+        toast.error(message);
+        return;
+      }
       setPinInput("");
-      await refetch();
-      toast.success("PIN verified — handoff complete!");
-    } catch (err) {
-      toast.error((err as Error).message || "Incorrect PIN.");
+      // Verified: the handoff is complete on the server whatever happens to
+      // the re-read below, so never report this as a PIN failure.
+      setOptimisticReservation({ ...reservation, status: "completed", allowed_actions: [] });
+      toast.success("PIN verified. Handoff complete!");
+      const fresh = await refreshQuietly();
+      if (fresh) setOptimisticReservation(null);
     } finally {
       setVerifyingPin(false);
     }
@@ -292,7 +339,7 @@ export default function HandoffHubPage() {
     setSendingEnRoute(true);
     try {
       await apiFetch(`/reservations/${reservation.id}/en-route`, { method: "POST" });
-      toast.success("Owner notified — they know you're on the way.");
+      toast.success("Owner notified. They know you're on the way.");
     } catch (err) {
       toast.error((err as Error).message || "Could not send notification.");
     } finally {
@@ -313,8 +360,8 @@ export default function HandoffHubPage() {
         method: "PATCH",
         body: { slots: filled.map((value) => new Date(value).toISOString()) },
       });
-      await refetch();
       toast.success("Pickup times sent.");
+      await refreshQuietly();
     } catch (err) {
       toast.error((err as Error).message || "Failed to send times.");
     } finally {
@@ -326,8 +373,8 @@ export default function HandoffHubPage() {
     if (!reservation) return;
     try {
       await apiFetch(`/reservations/${reservation.id}/slots`, { method: "PATCH", body: { confirm_slot: slot } });
-      await refetch();
       toast.success("Pickup time confirmed!");
+      await refreshQuietly();
     } catch (err) {
       toast.error((err as Error).message || "Failed to confirm time.");
     }
@@ -369,8 +416,8 @@ export default function HandoffHubPage() {
         },
       });
       setFeedbackNote("");
-      await refetch();
       toast.success("Feedback saved.");
+      await refreshQuietly();
     } catch (requestError) {
       toast.error((requestError as Error).message);
     } finally {
@@ -390,15 +437,37 @@ export default function HandoffHubPage() {
     );
   }
 
-  if (error || !reservation) {
+  // "Not found" only when the server said so. A 500, a timeout or a dropped
+  // connection is a failed load: say that and offer a retry instead of telling
+  // someone mid-pickup that their handoff does not exist.
+  if (errorStatus === 404) {
     return (
-      <div className="flex flex-col items-center justify-center py-20">
+      <div className="flex flex-col items-center justify-center py-20 text-center">
         <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-red-100 text-red-500 dark:bg-red-900/20 dark:text-red-400">
-          <AlertCircle size={40} />
+          <AlertCircle size={40} aria-hidden="true" />
         </div>
         <h2 className="text-[24px] font-bold tracking-[-0.02em] text-[color:var(--color-ink)] dark:text-white">Handoff not found</h2>
-        <p className="mt-4 text-[color:var(--text-muted)]">{error || "This reservation may have been cancelled or does not exist."}</p>
-        <button onClick={() => window.history.back()} className="primary-button mt-8">Go Back</button>
+        <p className="mt-4 text-[color:var(--text-muted)]">This reservation does not exist, or you are not part of it.</p>
+        <button type="button" onClick={() => window.history.back()} className="primary-button mt-8">Go Back</button>
+      </div>
+    );
+  }
+
+  // A failed background refresh keeps showing the reservation we already have.
+  if (!reservation) {
+    return (
+      <div role="alert" className="paper-panel mx-auto flex max-w-xl flex-col items-center p-10 text-center">
+        <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-amber-50 text-amber-500 dark:bg-amber-900/20">
+          <AlertCircle size={40} aria-hidden="true" />
+        </div>
+        <h2 className="text-[24px] font-bold tracking-[-0.02em] text-[color:var(--color-ink)] dark:text-white">This handoff could not be loaded</h2>
+        <p className="mt-4 text-[color:var(--text-muted)]">
+          {error || "Something interrupted the request."} Your reservation is not affected.
+        </p>
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          <button type="button" onClick={retry} className="primary-button">Try Again</button>
+          <button type="button" onClick={() => window.history.back()} className="secondary-button">Go Back</button>
+        </div>
       </div>
     );
   }
@@ -410,6 +479,10 @@ export default function HandoffHubPage() {
     : reservation.status === "confirmed" ? (reservation.confirmed_slot ? 3 : 2)
     : null;
   const canCancel = reservation.allowed_actions.includes("cancelled");
+  const isOverdue = reservation.status === "expired_unresolved";
+  // The PIN exchange is the only way to complete a handoff, so it has to be
+  // reachable in both states a pickup can still happen in.
+  const pinStage = reservation.status === "confirmed" || isOverdue;
 
   return (
     <div className="space-y-6">
@@ -454,7 +527,7 @@ export default function HandoffHubPage() {
       </PageSection>
 
       <PageSection className="grid items-start gap-6 lg:grid-cols-[1fr_0.85fr]" delay={0.04}>
-        {/* Chat is the heart of coordination — it leads. */}
+        {/* Chat is the heart of coordination, so it leads. */}
         <ReservationChat reservationId={reservationId} />
 
         <div className="space-y-6">
@@ -506,7 +579,7 @@ export default function HandoffHubPage() {
                   slots.length === 0 ? (
                     <form onSubmit={handleProposeSlots}>
                       <p className="text-sm leading-6 text-[color:var(--text-muted)]">
-                        Offer a pickup time — {reservation.counterparty_name} confirms with one tap.
+                        Offer a pickup time and {reservation.counterparty_name} confirms with one tap.
                       </p>
                       <div className="mt-3 space-y-2">
                         {slotInputs.map((val, i) => (
@@ -539,7 +612,7 @@ export default function HandoffHubPage() {
                     </form>
                   ) : (
                     <p className="text-sm leading-6 text-[color:var(--text-muted)]">
-                      Times sent — waiting for {reservation.counterparty_name} to pick one.
+                      Times sent. Waiting for {reservation.counterparty_name} to pick one.
                     </p>
                   )
                 ) : slots.length > 0 ? (
@@ -560,13 +633,13 @@ export default function HandoffHubPage() {
                   </div>
                 ) : (
                   <p className="text-sm leading-6 text-[color:var(--text-muted)]">
-                    {reservation.counterparty_name} is choosing pickup times — or just agree on one in the chat.
+                    {reservation.counterparty_name} is choosing pickup times, or just agree on one in the chat.
                   </p>
                 )}
               </div>
             )}
 
-            {/* Stage: scheduled — show the agreed time */}
+            {/* Stage: scheduled, show the agreed time */}
             {reservation.status === "confirmed" && reservation.confirmed_slot && (
               <div className="mt-4 flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-900/20 px-4 py-3">
                 <CheckCheck size={16} className="shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
@@ -584,8 +657,18 @@ export default function HandoffHubPage() {
               </div>
             )}
 
-            {/* At pickup: PIN — claimant shows it, owner enters it. */}
-            {reservation.status === "confirmed" && (
+            {/* Overdue: the 48 hour sweep flagged this handoff. It is still
+                completed the same way (the PIN) or released by cancelling. */}
+            {isOverdue && (
+              <p className="mt-4 text-sm leading-6 text-[color:var(--color-urgent)]">
+                {isOwner
+                  ? `This handoff passed 48 hours without completion. If ${reservation.counterparty_name} has picked the item up, enter their PIN below to complete it. Otherwise cancel to put the listing back on the board.`
+                  : `This handoff passed 48 hours without completion. If you have picked the item up, show ${reservation.counterparty_name} your PIN so they can complete it. Otherwise cancel to release the listing.`}
+              </p>
+            )}
+
+            {/* At pickup: PIN. The claimant shows it, the owner enters it. */}
+            {pinStage && (
               <div className="mt-5 border-t border-[color:var(--color-line)] pt-4">
                 <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--text-muted)]">
                   <KeyRound size={12} aria-hidden="true" />
@@ -593,26 +676,37 @@ export default function HandoffHubPage() {
                 </p>
                 {isOwner ? (
                   <div className="mt-2.5">
-                    <p className="text-sm leading-6 text-[color:var(--text-muted)]">
-                      Enter the 6-digit PIN from {reservation.counterparty_name}&apos;s screen — it completes the handoff instantly.
+                    <p id="pickup-pin-help" className="text-sm leading-6 text-[color:var(--text-muted)]">
+                      Enter the 6-digit PIN from {reservation.counterparty_name}&apos;s screen. It completes the handoff instantly.
                     </p>
                     <form onSubmit={(e) => { e.preventDefault(); verifyPin(); }} className="mt-3 flex items-center gap-3">
                       <input
                         type="text"
                         inputMode="numeric"
+                        autoComplete="one-time-code"
                         maxLength={6}
                         aria-label="Pickup PIN"
+                        aria-describedby={pinError ? "pickup-pin-help pickup-pin-error" : "pickup-pin-help"}
+                        aria-invalid={pinError ? true : undefined}
                         value={pinInput}
                         onChange={(e) => {
                           const next = e.target.value.replace(/\D/g, "").slice(0, 6);
                           setPinInput(next);
+                          if (pinError) setPinError("");
                           if (next.length === 6) verifyPin(next);
                         }}
                         placeholder="······"
                         className="w-36 rounded-[10px] border border-[color:var(--color-line-strong)] bg-[color:var(--color-surface)] px-3 py-2.5 text-center font-mono text-[20px] font-semibold tracking-[0.35em] text-[color:var(--color-ink)] dark:text-white placeholder:tracking-[0.35em] focus:outline-none focus:border-[color:var(--color-tag)] focus:ring-2 focus:ring-[color:var(--color-tag)]/10"
                       />
-                      {verifyingPin && <span className="text-sm text-[color:var(--text-muted)]">Checking…</span>}
+                      <span role="status" className="text-sm text-[color:var(--text-muted)]">
+                        {verifyingPin ? "Checking…" : ""}
+                      </span>
                     </form>
+                    {pinError && (
+                      <p id="pickup-pin-error" role="alert" className="mt-2 text-sm font-semibold text-[color:var(--color-urgent)]">
+                        {pinError}
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div className="mt-2.5">
@@ -635,23 +729,25 @@ export default function HandoffHubPage() {
                       <p className="text-sm text-[color:var(--text-muted)]">Your PIN will appear here.</p>
                     )}
                     <p className="mt-1.5 text-[12px] leading-5 text-[color:var(--text-muted)]">
-                      Show this to {reservation.counterparty_name} at pickup — they enter it to complete the handoff.
+                      Show this to {reservation.counterparty_name} at pickup. They enter it to complete the handoff.
                     </p>
-                    <button
-                      type="button"
-                      onClick={handleEnRoute}
-                      disabled={sendingEnRoute}
-                      className="mt-3 inline-flex items-center gap-2 rounded-full bg-[color:var(--color-teal)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-60 transition-opacity"
-                    >
-                      <Navigation size={13} aria-hidden="true" />
-                      {sendingEnRoute ? "Notifying…" : "I'm on my way"}
-                    </button>
+                    {reservation.status === "confirmed" && (
+                      <button
+                        type="button"
+                        onClick={handleEnRoute}
+                        disabled={sendingEnRoute}
+                        className="mt-3 inline-flex items-center gap-2 rounded-full bg-[color:var(--color-teal)] px-4 py-2 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-60 transition-opacity"
+                      >
+                        <Navigation size={13} aria-hidden="true" />
+                        {sendingEnRoute ? "Notifying…" : "I'm on my way"}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* Stage: done / stalled / cancelled */}
+            {/* Stage: done / cancelled */}
             {reservation.status === "completed" && (
               <p className="mt-4 flex items-center gap-2 text-sm font-semibold text-emerald-700 dark:text-emerald-400">
                 <CheckCheck size={16} aria-hidden="true" />
@@ -661,29 +757,9 @@ export default function HandoffHubPage() {
             {reservation.status === "cancelled" && (
               <p className="mt-4 text-sm text-[color:var(--text-muted)]">This reservation was cancelled.</p>
             )}
-            {reservation.status === "expired_unresolved" && (
-              <div className="mt-4">
-                <p className="text-sm leading-6 text-[color:var(--color-urgent)]">
-                  This handoff passed 48 hours without completion. Mark it complete or cancel to unblock the listing.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {reservation.allowed_actions.map((action) => (
-                    <button
-                      key={action}
-                      type="button"
-                      onClick={() => (action === "cancelled" ? setPendingCancel(true) : handleAction(action))}
-                      disabled={savingStatus === action}
-                      className="primary-button"
-                    >
-                      {savingStatus === action ? "Working…" : ACTION_LABELS[action] ?? formatLabel(action)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
-            {/* Quiet escape hatch — never a primary button. */}
-            {canCancel && reservation.status === "confirmed" && (
+            {/* Quiet escape hatch, never a primary button. */}
+            {canCancel && pinStage && (
               <button
                 type="button"
                 onClick={() => setPendingCancel(true)}
@@ -695,7 +771,7 @@ export default function HandoffHubPage() {
             )}
           </section>
 
-          {/* Feedback — only exists once the handoff is done. */}
+          {/* Feedback only exists once the handoff is done. */}
           {reservation.status === "completed" && (
             <section className="soft-panel p-6">
               <div className="flex items-center justify-between gap-3">

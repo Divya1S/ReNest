@@ -1,12 +1,13 @@
 """Generative UI: the model composes interfaces, the server supplies the truth.
 
-The model gets three presentation tools. Calling one doesn't inject model text
-into the UI — it appends a typed block to this turn's collector, and **every
-prop is hydrated server-side from the ORM at call time**. For listing cards
-the model contributes only IDs it saw in earlier tool results; titles, prices,
-zones, and thumbnails come from the database, and IDs that don't correspond to
-a live listing are silently dropped. A hallucinated listing is structurally
-impossible to render.
+The model gets a handful of presentation tools. Calling one doesn't inject
+model text into the UI. It appends a typed block to this turn's collector, and
+**every prop is hydrated server-side from the ORM at call time**. For listing
+cards the model contributes only IDs it saw in earlier tool results; titles,
+prices, zones, and thumbnails come from the database, and IDs that don't
+correspond to a listing this user may see are silently dropped. A hallucinated
+listing is structurally impossible to render, and so is a card for a listing
+the marketplace itself would hide from this user.
 
 The widget maps block.type → React component via a registry
 (frontend/src/components/concierge/generativeUi.jsx); unknown types render
@@ -18,17 +19,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from django.utils import timezone
-
-from listings.models import Listing
-
-from .tools import _get_move_out_progress
+from .tools import _get_move_out_progress, visible_listings
 
 MAX_CARDS = 4
 MAX_SUGGESTIONS = 3
+# A label-only chip sends its label as the user's next message when tapped, so
+# the label is model text that re-enters the conversation with user authority.
+# Keep it to chip size: long enough for a short question, too short to carry a
+# paragraph of instructions.
+MAX_SUGGESTION_LABEL_CHARS = 60
 
 # Paths a suggestion chip may deep-link to. Anything else renders as a plain
-# "send this text" chip — the model can never construct an arbitrary link.
+# "send this text" chip, so the model can never construct an arbitrary link.
 _SAFE_PATH_RE = re.compile(
     r"^/(browse|scan|dashboard|saved|saved-searches|requests|hubs|impact|leaderboard"
     r"|trust|assistant|settings|my-listings|my-reservations)(\?[A-Za-z0-9=&%_+.\-]*)?$"
@@ -46,7 +48,8 @@ UI_TOOL_DECLARATIONS: list[dict[str, Any]] = [
         "description": (
             "Render interactive listing cards in the chat for listings you found with "
             "search_listings. Pass the ids of the most relevant listings (max 4). Use this "
-            "whenever you mention specific listings — cards beat text descriptions."
+            "whenever you mention specific listings; cards beat text descriptions. Only ids "
+            "returned by search_listings render, any other id is dropped."
         ),
         "parameters": {
             "type": "object",
@@ -64,7 +67,8 @@ UI_TOOL_DECLARATIONS: list[dict[str, Any]] = [
         "name": "show_move_out_progress",
         "description": (
             "Render the user's live move-out progress (scan sessions, task completion, draft "
-            "triage) as a visual panel. Use when discussing their move-out status."
+            "triage) as a visual panel. Use when discussing their move-out status. Nothing "
+            "renders for a user with no scan sessions; answer in text in that case."
         ),
         "parameters": {"type": "object", "properties": {}},
     },
@@ -75,7 +79,7 @@ UI_TOOL_DECLARATIONS: list[dict[str, Any]] = [
             "turn. Each entry is either a question the user might ask next (label only) or a "
             "shortcut into the app (label + path). Valid paths: /browse, /listings/<id>, "
             "/scan, /dashboard, /saved, /requests, /hubs, /settings, /my-listings. "
-            "Labels under 8 words."
+            "Labels under 8 words (longer labels are cut at 60 characters)."
         ),
         "parameters": {
             "type": "object",
@@ -100,7 +104,7 @@ UI_TOOL_DECLARATIONS: list[dict[str, Any]] = [
         "description": (
             "When the user wants to be alerted about future items ('let me know when a mini "
             "fridge shows up'), render a saved-search proposal card. The card only PROPOSES the "
-            "alert — the user confirms with a tap, and nothing exists until they do. Never tell "
+            "alert: the user confirms with a tap, and nothing exists until they do. Never tell "
             "the user the alert is already active."
         ),
         "parameters": {
@@ -135,15 +139,15 @@ class UiCollector:
 def handle_ui_tool(user: Any, name: str, args: dict[str, Any], collector: UiCollector) -> dict[str, Any]:
     """Execute one UI tool: hydrate + validate + collect. Returns the tool result."""
     if name == "show_listing_cards":
-        cards = _hydrate_listing_cards(args.get("listing_ids") or [])
+        cards = _hydrate_listing_cards(user, args.get("listing_ids") or [])
         if not cards:
-            return {"ok": False, "error": "None of those listing ids are live. Only use ids from search_listings."}
+            return {"ok": False, "error": "None of those listing ids are live listings this user can see."}
         collector.add("listing_cards", {"listings": cards})
         return {"ok": True, "rendered": len(cards)}
     if name == "show_move_out_progress":
         progress = _get_move_out_progress(user, {})
         if not progress["scan_sessions"]:
-            return {"ok": False, "error": "User has no scan sessions to display; answer in text instead."}
+            return {"ok": False, "error": "User has no scan sessions to display."}
         collector.add("move_out_progress", progress)
         return {"ok": True, "rendered": len(progress["scan_sessions"])}
     if name == "suggest_followups":
@@ -156,7 +160,9 @@ def handle_ui_tool(user: Any, name: str, args: dict[str, Any], collector: UiColl
                 entry = {"label": entry}
             if not isinstance(entry, dict):
                 continue
-            label = str(entry.get("label") or "").strip()
+            # Collapse whitespace first so a label cannot smuggle line breaks
+            # into the next user message, then cut to chip size.
+            label = " ".join(str(entry.get("label") or "").split())[:MAX_SUGGESTION_LABEL_CHARS].rstrip()
             if not label:
                 continue
             cleaned.append({"label": label, "path": _safe_path(entry.get("path"))})
@@ -181,12 +187,12 @@ def handle_ui_tool(user: Any, name: str, args: dict[str, Any], collector: UiColl
         )
         return {
             "ok": True,
-            "note": "Proposal card shown. The alert does NOT exist yet — the user must tap Create.",
+            "note": "Proposal card shown. The alert does NOT exist yet; the user must tap Create.",
         }
     return {"ok": False, "error": f"Unknown UI tool: {name}"}
 
 
-def _hydrate_listing_cards(listing_ids: Any) -> list[dict[str, Any]]:
+def _hydrate_listing_cards(user: Any, listing_ids: Any) -> list[dict[str, Any]]:
     # The model may hand back a bare int or a string instead of a list.
     if not isinstance(listing_ids, list):
         listing_ids = [listing_ids] if listing_ids is not None else []
@@ -196,15 +202,9 @@ def _hydrate_listing_cards(listing_ids: Any) -> list[dict[str, Any]]:
             ids.append(int(value))
         except (TypeError, ValueError):
             continue
-    listings = (
-        Listing.objects.filter(
-            id__in=ids,
-            status=Listing.Status.AVAILABLE,
-            available_until__gte=timezone.now(),
-        )
-        .exclude(moderation_status=Listing.ModerationStatus.FLAGGED)
-    )
-    by_id = {listing.id: listing for listing in listings}
+    # Same visibility rules as search_listings: an id the model saw earlier in
+    # the conversation (or invented) renders only if browse would show it now.
+    by_id = {listing.id: listing for listing in visible_listings(user).filter(id__in=ids)}
     cards = []
     for listing_id in ids:            # preserve the model's relevance ordering
         listing = by_id.get(listing_id)

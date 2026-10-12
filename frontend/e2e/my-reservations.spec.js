@@ -1,11 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test.js";
 
 import { MOCK_USER, mockAuth, mockNotifications } from "./helpers/mock-api.js";
 
 // ---------------------------------------------------------------------------
 // My Reservations against the REAL backend contract: the reservations list is
 // a DRF paginated envelope, not a bare array. This page once crashed on
-// exactly that (`.map is not a function`) — this spec pins the fix.
+// exactly that (`.map is not a function`); this spec pins the fix.
 // ---------------------------------------------------------------------------
 
 const RESERVATION = {

@@ -32,7 +32,7 @@ class PaymentCreateTests(APITestCase):
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["request_id"], "trace-42")
         self.assertTrue(body["processor_reference"].startswith("sbx_"))
-        self.assertEqual(body["model_version"], "risk-rules-v1")
+        self.assertEqual(body["model_version"], "risk-rules-v2")
         self.assertIn("evaluation", body)
         self.assertIn("factors", body["evaluation"])
         self.assertEqual([e["event_type"] for e in body["events"]], ["payment.created", "payment.risk_evaluated", "payment.approved", "payment.completed"])
@@ -193,8 +193,11 @@ class ReadModelTests(APITestCase):
         cache.clear()
         self.user = make_user()
         self.client.force_authenticate(self.user)
-        self.client.post(URL, payment_payload(), format="json")
-        self.client.post(URL, payment_payload(amount="15.00"), format="json")
+        # Run the post-commit hooks as a real commit would: counters are only
+        # incremented once the payment is durable.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.client.post(URL, payment_payload(), format="json")
+            self.client.post(URL, payment_payload(amount="15.00"), format="json")
 
     def test_overview_counts_real_rows(self):
         body = self.client.get("/api/risk/overview?hours=24").json()
@@ -234,7 +237,7 @@ class ReadModelTests(APITestCase):
     def test_rules_catalogue_comes_from_the_engine(self):
         body = self.client.get("/api/risk/rules").json()
         self.assertIn("amount_vs_history", [r["code"] for r in body["rules"]])
-        self.assertEqual(body["model_version"], "risk-rules-v1")
+        self.assertEqual(body["model_version"], "risk-rules-v2")
 
     def test_health_and_metrics(self):
         health = self.client.get("/api/risk/health")

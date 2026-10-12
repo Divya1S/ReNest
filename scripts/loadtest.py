@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ReNest load test — the "move-out weekend" burst check.
+"""ReNest load test: the "move-out weekend" burst check.
 
 Hammers the read-heavy anonymous paths (browse, search, impact, hubs, health)
 with a weighted scenario mix and reports RPS + latency percentiles per
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 import requests
 
-# (path, weight) — weights approximate real browse-heavy traffic.
+# (path, weight); weights approximate real browse-heavy traffic.
 SCENARIOS: list[tuple[str, int]] = [
     ("/api/listings?page=1", 35),
     ("/api/listings?search=lamp", 15),
@@ -106,7 +106,7 @@ def main() -> int:
     total = sum(len(v) for v in stats.latencies.values())
     total_errors = sum(stats.errors.values())
     if not total:
-        print("No requests completed — is the server up?")
+        print("No requests completed. Is the server up?")
         return 1
 
     print(f"{'endpoint':<46}{'reqs':>7}{'err':>6}{'p50':>9}{'p95':>9}{'p99':>9}")

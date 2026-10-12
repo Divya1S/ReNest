@@ -1,11 +1,11 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test.js";
 
 import { MOCK_USER, mockAuth, mockNotifications } from "./helpers/mock-api.js";
 
 // ---------------------------------------------------------------------------
 // Nest Concierge: widget + full-page assistant against a mocked API.
 // The streaming endpoint is mocked as unavailable so the client exercises its
-// JSON fallback — the contract path.
+// JSON fallback, the contract path.
 // ---------------------------------------------------------------------------
 
 const HISTORY_EMPTY = { enabled: true, has_more: false, messages: [] };
@@ -88,15 +88,19 @@ test.describe("Nest Concierge", () => {
         json: {
           enabled: true,
           has_more: false,
+          // History rows carry the stored thumbs rating: 1, -1 or null.
           messages: [
-            { id: 1, role: "user", content: "any lamps?", used_tools: [], meta: {} },
+            { id: 1, role: "user", content: "any lamps?", used_tools: [], meta: {}, rating: null },
             {
               id: 2,
               role: "assistant",
               content: "Found a Clip-on lamp in Maple Hall lobby.",
               used_tools: [],
               meta: {},
+              rating: 1,
             },
+            { id: 3, role: "user", content: "and a fridge?", used_tools: [], meta: {}, rating: null },
+            { id: 4, role: "assistant", content: "No fridges right now.", used_tools: [], meta: {}, rating: -1 },
           ],
         },
       }),
@@ -105,6 +109,11 @@ test.describe("Nest Concierge", () => {
     await page.goto("/assistant");
     await expect(page.getByRole("heading", { name: /your move-out assistant/i })).toBeVisible();
     await expect(page.getByText("Found a Clip-on lamp in Maple Hall lobby.")).toBeVisible();
+    // A reload shows what was already rated, not two blank thumbs.
+    await expect(page.getByRole("button", { name: "Helpful", exact: true }).nth(0)).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("button", { name: "Not helpful" }).nth(0)).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { name: "Helpful", exact: true }).nth(1)).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByRole("button", { name: "Not helpful" }).nth(1)).toHaveAttribute("aria-pressed", "true");
     // One surface at a time: no floating launcher on the assistant page.
     await expect(page.getByRole("button", { name: /open nest concierge/i })).toHaveCount(0);
   });

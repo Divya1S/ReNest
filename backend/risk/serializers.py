@@ -24,6 +24,7 @@ from .models import (
     SimulationRun,
     SimulationScenario,
 )
+from .services import privacy
 from .services.audit import redact
 from .services.processor import SANDBOX_BEHAVIORS
 from .services.simulation import DEFAULT_COUNT, MAX_COUNT, MIN_COUNT
@@ -140,6 +141,9 @@ class PaymentSummarySerializer(serializers.ModelSerializer):
 
 
 class PaymentEventSerializer(serializers.ModelSerializer):
+    """Pass `context={"request": request}`: without it the reader is treated as
+    a customer and staff-only detail is withheld (see services.privacy)."""
+
     class Meta:
         model = PaymentEvent
         fields = (
@@ -148,14 +152,23 @@ class PaymentEventSerializer(serializers.ModelSerializer):
             "last_error", "next_attempt_at", "processed_at",
         )
 
+    def to_representation(self, instance: PaymentEvent) -> dict[str, Any]:
+        return privacy.event_row_for(privacy.viewer_from(self.context), dict(super().to_representation(instance)))
+
 
 class AuditLogSerializer(serializers.ModelSerializer):
+    """Pass `context={"request": request}`: without it the reader is treated as
+    a customer and staff identity and notes are withheld (see services.privacy)."""
+
     class Meta:
         model = AuditLog
         fields = (
             "id", "actor_label", "action", "target_type", "target_id", "reason", "decision",
             "model_version", "request_id", "metadata", "created_at",
         )
+
+    def to_representation(self, instance: AuditLog) -> dict[str, Any]:
+        return privacy.audit_row_for(privacy.viewer_from(self.context), dict(super().to_representation(instance)))
 
 
 class PaymentDetailSerializer(PaymentSummarySerializer):
@@ -177,24 +190,16 @@ class PaymentDetailSerializer(PaymentSummarySerializer):
 
     def get_events(self, obj: PaymentTransaction) -> Any:
         events = PaymentEvent.objects.filter(entity_type="payment", entity_id=obj.public_id).order_by("sequence")
-        return PaymentEventSerializer(events, many=True).data
+        return PaymentEventSerializer(events, many=True, context=self.context).data
 
     def _is_staff(self) -> bool:
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        return bool(user is not None and getattr(user, "is_staff", False))
+        return privacy.is_staff(privacy.viewer_from(self.context))
 
     def get_audit(self, obj: PaymentTransaction) -> Any:
+        # The row serializer applies the customer redaction itself, so this
+        # endpoint and GET /api/risk/audit cannot drift apart.
         entries = AuditLog.objects.filter(target_type="payment", target_id=obj.public_id).order_by("created_at", "id")
-        rows = AuditLogSerializer(entries, many=True).data
-        if self._is_staff():
-            return rows
-        # Customers see that a review happened, never the reviewer's notes.
-        for row in rows:
-            if row["action"] == "payment.manual_review":
-                row["reason"] = f"Manual review: {row['metadata'].get('outcome', 'resolved')}"
-                row["metadata"] = {}
-        return rows
+        return AuditLogSerializer(entries, many=True, context=self.context).data
 
     def get_metadata(self, obj: PaymentTransaction) -> dict[str, Any]:
         data = dict(obj.metadata) if isinstance(obj.metadata, dict) else {}
@@ -332,6 +337,11 @@ class AgentTransactionCreateSerializer(serializers.Serializer):
     description = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
 
 
+class AgentTransactionResolveSerializer(serializers.Serializer):
+    approve = serializers.BooleanField()
+    note = serializers.CharField(max_length=500, required=False, allow_blank=True, default="")
+
+
 class AgentTransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = AgentTransaction
@@ -344,6 +354,7 @@ class AgentTransactionSerializer(serializers.ModelSerializer):
 __all__ = [
     "AgentPolicySerializer",
     "AgentTransactionCreateSerializer",
+    "AgentTransactionResolveSerializer",
     "AgentTransactionSerializer",
     "AuditLogSerializer",
     "Decision",

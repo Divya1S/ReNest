@@ -14,7 +14,7 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useEffectEvent, useId, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -22,6 +22,7 @@ import DraftStatusNotice from "../components/DraftStatusNotice";
 import HotspotStage from "../components/HotspotStage";
 import PublishReadinessPill from "../components/PublishReadinessPill";
 import UnsavedChangesDialog from "../components/UnsavedChangesDialog";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
 import { apiFetch, toLocalDateTimeInput } from "../lib/api";
@@ -77,9 +78,81 @@ function imageBadgeStyle(items) {
   return "bg-rose-400 text-white";
 }
 
+const SHORTCUTS = [
+  ["S", "Triage → Sell"],
+  ["D", "Triage → Donate"],
+  ["K", "Triage → Keep"],
+  ["T", "Triage → Toss"],
+  ["]", "Next draft"],
+  ["[", "Previous draft"],
+  ["⌘ / Ctrl + Enter", "Save draft"],
+  ["?", "Toggle this panel"],
+];
+
+/** Modal list of the studio's keyboard shortcuts. */
+function ShortcutsDialog({ open, onClose }) {
+  const titleId = useId();
+  const panelRef = useRef(null);
+  const closeRef = useRef(null);
+  useDialogFocus({ open, panelRef, initialFocusRef: closeRef, onClose });
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 px-4 backdrop-blur-sm"
+          onClick={onClose}
+        >
+          <motion.div
+            ref={panelRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={titleId}
+            initial={{ scale: 0.92, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.92, opacity: 0 }}
+            className="relative w-full max-w-sm bg-[color:var(--color-surface)] dark:bg-[#1c1c1e] rounded-[24px] p-8 shadow-2xl border border-black/8 dark:border-white/8"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              ref={closeRef}
+              type="button"
+              onClick={onClose}
+              aria-label="Close keyboard shortcuts"
+              className="absolute right-4 top-4 rounded-full p-2 text-[color:var(--text-muted)] hover:bg-[color:var(--color-surface-2)] transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--color-tag)]"
+            >
+              <X size={16} aria-hidden="true" />
+            </button>
+            <div className="flex items-center gap-3 mb-6">
+              <Keyboard size={20} className="text-[color:var(--color-tag)]" aria-hidden="true" />
+              <h2 id={titleId} className="text-xl font-bold text-[color:var(--color-ink)] dark:text-white">Keyboard Shortcuts</h2>
+            </div>
+            <dl className="space-y-3 text-sm">
+              {SHORTCUTS.map(([key, label]) => (
+                <div key={key} className="flex items-center justify-between gap-4">
+                  <dt className="text-[color:var(--text-muted)]">{label}</dt>
+                  <dd>
+                    <kbd className="rounded-lg border border-black/10 dark:border-white/10 bg-[color:var(--color-surface-2)] px-2.5 py-1 font-mono text-xs font-bold text-[color:var(--color-ink)] dark:text-white">
+                      {key}
+                    </kbd>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 export default function ScanStudioPage() {
   usePageTitle("Scan Studio");
   const { sessionId } = useParams();
+  const fieldId = useId();
   // Bumped whenever the studio switches scans, so an in-flight AI-detect poll
   // for the previous session stops instead of applying its result here.
   const pollTokenRef = useRef(0);
@@ -113,6 +186,16 @@ export default function ScanStudioPage() {
     const draft = data.items.find((item) => item.id === resolvedDraftId);
     setDraftForm(buildDraftFormFromItem(draft));
     setSessionMeta(buildSessionMetaFromSession(data));
+    return data;
+  }
+
+  // Reload the session after a change that does not concern the inspector
+  // (a box was moved or resized). Unlike loadSession this leaves the selection
+  // and the inspector form alone, so unsaved edits survive it.
+  async function refreshSession() {
+    const data = await apiFetch(`/scan-sessions/${sessionId}`);
+    setSession(data);
+    return data;
   }
 
   useEffect(() => {
@@ -169,49 +252,64 @@ export default function ScanStudioPage() {
     applyDraftSelection(nextDraftId, nextImageId);
   }, [applyDraftSelection, draftInspectorDirty, savingDraft, selectedDraftId]);
 
-  useEffect(() => {
-    function handler(e) {
-      const tag = e.target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      const key = e.key.toLowerCase();
-      // Single-letter shortcuts must not fire for Cmd/Ctrl/Alt combinations:
-      // Cmd+S, Ctrl+D, Cmd+K and Ctrl+T are universal browser shortcuts and
-      // used to silently re-triage the open draft. Cmd/Ctrl+Enter (save) is
-      // the one combination this handler owns.
-      const withModifier = e.metaKey || e.ctrlKey || e.altKey;
-      if (withModifier && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
-      if (TRIAGE_KEYS[key] && activeDraft) {
-        e.preventDefault();
-        setDraftForm((cur) => ({ ...cur, triage_status: TRIAGE_KEYS[key] }));
-        toast.info(`Triage → ${TRIAGE_KEYS[key]}`, { duration: 1200 });
-        return;
-      }
-      // "[" / "]" cycle drafts — Tab is left alone so keyboard users can
-      // still reach every control on the page.
-      if ((key === "[" || key === "]") && session?.items.length > 1) {
-        e.preventDefault();
-        const items = session.items;
-        const idx = items.findIndex((i) => i.id === selectedDraftId);
-        const next = key === "["
-          ? items[(idx - 1 + items.length) % items.length]
-          : items[(idx + 1) % items.length];
-        requestDraftSelection(next.id, next.source_image);
-        return;
-      }
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && activeDraft) {
-        e.preventDefault();
-        saveDraftNow();
-        return;
-      }
+  // An Effect Event, not a handler captured by the effect below: it always
+  // sees the latest render. The previous version closed over the render that
+  // registered the listener, so after an edit it still believed the inspector
+  // was clean and "[" / "]" switched drafts without the unsaved-changes prompt.
+  const handleShortcutKey = useEffectEvent((e) => {
+    const tag = e.target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const key = e.key.toLowerCase();
+    // While a dialog is open the page behind it is not the target. Only the
+    // shortcuts panel's own toggle stays live.
+    if (showShortcuts) {
       if (e.key === "?") {
         e.preventDefault();
-        setShowShortcuts((v) => !v);
+        setShowShortcuts(false);
       }
+      return;
     }
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDraft, selectedDraftId, session]);
+    if (pendingDraftSelection || confirmDeleteDraft || unsavedGuard.isBlocked) return;
+    // Single-letter shortcuts must not fire for Cmd/Ctrl/Alt combinations:
+    // Cmd+S, Ctrl+D, Cmd+K and Ctrl+T are universal browser shortcuts and
+    // used to silently re-triage the open draft. Cmd/Ctrl+Enter (save) is
+    // the one combination this handler owns.
+    const withModifier = e.metaKey || e.ctrlKey || e.altKey;
+    if (withModifier && !(e.key === "Enter" && (e.metaKey || e.ctrlKey))) return;
+    if (TRIAGE_KEYS[key] && activeDraft) {
+      e.preventDefault();
+      setDraftForm((cur) => ({ ...cur, triage_status: TRIAGE_KEYS[key] }));
+      toast.info(`Triage → ${TRIAGE_KEYS[key]}`, { duration: 1200 });
+      return;
+    }
+    // "[" / "]" cycle drafts. Tab is left alone so keyboard users can
+    // still reach every control on the page.
+    if ((key === "[" || key === "]") && session?.items.length > 1) {
+      e.preventDefault();
+      const items = session.items;
+      const idx = items.findIndex((i) => i.id === selectedDraftId);
+      const next = key === "["
+        ? items[(idx - 1 + items.length) % items.length]
+        : items[(idx + 1) % items.length];
+      requestDraftSelection(next.id, next.source_image);
+      return;
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && activeDraft) {
+      e.preventDefault();
+      saveDraftNow();
+      return;
+    }
+    if (e.key === "?") {
+      e.preventDefault();
+      setShowShortcuts(true);
+    }
+  });
+
+  useEffect(() => {
+    const listener = (event) => handleShortcutKey(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
 
   async function handleUpload(event) {
     const files = Array.from(event.target.files || []);
@@ -271,23 +369,36 @@ export default function ScanStudioPage() {
         method: "POST",
         body: { source_image: activeImage.id, hotspot_box: hotspotBox },
       });
-      await loadSession(response.id, activeImage.id);
+      if (draftInspectorDirty && !savingDraft) {
+        // Jumping straight to the new draft would overwrite the inspector and
+        // silently drop the edits in it. Show the new box, then ask.
+        await refreshSession();
+        setPendingDraftSelection({ draftId: response.id, imageId: activeImage.id });
+      } else {
+        await loadSession(response.id, activeImage.id);
+      }
     } catch (err) {
       toast.error(err.message);
     }
   }
 
+  // Resolves once the session holding the new geometry is in state: the stage
+  // keeps its drag preview until then. Selection is the stage's job (it calls
+  // onSelectHotspot), which routes through the unsaved-changes prompt.
   async function handleUpdateHotspot(hotspotId, newBox) {
     try {
       await apiFetch(`/scan-items/${hotspotId}`, { method: "PATCH", body: { hotspot_box: newBox } });
-      await loadSession(hotspotId, activeImage?.id);
+      await refreshSession();
     } catch (err) {
       toast.error(err.message);
     }
   }
 
+  // Resolves to the reloaded session on success and to null when the save
+  // failed, so callers can decide what to do next from fresh data instead of
+  // from the render they were created in.
   async function saveDraftNow() {
-    if (!activeDraft) return;
+    if (!activeDraft) return null;
     const form = draftFormRef.current;
     setSavingDraft(true);
     try {
@@ -300,9 +411,10 @@ export default function ScanStudioPage() {
         },
       });
       toast.success("Draft saved.");
-      await loadSession(activeDraft.id, activeImage?.id);
+      return await loadSession(activeDraft.id, activeImage?.id);
     } catch (err) {
       toast.error(err.message);
+      return null;
     } finally {
       setSavingDraft(false);
     }
@@ -314,11 +426,19 @@ export default function ScanStudioPage() {
   }
 
   async function handleConfirmAndNext() {
-    await saveDraftNow();
-    const items = session?.items || [];
-    const idx = items.findIndex((i) => i.id === selectedDraftId);
-    const next = items[idx + 1] || null;
-    if (next) requestDraftSelection(next.id, next.source_image);
+    const currentId = selectedDraftId;
+    const saved = await saveDraftNow();
+    // A failed save keeps the draft (and its edits) on screen.
+    if (!saved) return;
+    const idx = saved.items.findIndex((i) => i.id === currentId);
+    const next = saved.items[idx + 1] || null;
+    if (!next) return;
+    // Select straight from the saved session. Going through
+    // requestDraftSelection here used this render's "dirty" flag, which is
+    // stale by now, and asked to discard changes that had just been saved.
+    setSelectedDraftId(next.id);
+    setSelectedImageId(next.source_image ?? selectedImageId);
+    setDraftForm(buildDraftFormFromItem(next));
   }
 
   async function handleDeleteDraft() {
@@ -359,7 +479,7 @@ export default function ScanStudioPage() {
               : "Your session expired. Sign in and try again.",
           };
         }
-        // transient network blip — keep polling until the deadline
+        // transient network blip, keep polling until the deadline
       }
     }
     return { status: "error", detail: "AI detection timed out. Try again." };
@@ -375,7 +495,7 @@ export default function ScanStudioPage() {
         body: { image_id: imageId },
       });
       if (result.status === "processing") {
-        toast.info("AI is scanning the photo — hotspots will appear here shortly.");
+        toast.info("AI is scanning the photo. Hotspots will appear here shortly.");
         result = await pollAiDetectStatus(imageId);
       }
       if (result.status === "cancelled") {
@@ -383,7 +503,7 @@ export default function ScanStudioPage() {
       }
       if (result.status === "done") {
         setSession(result.session);
-        toast.success(`AI detected ${result.created_count} item${result.created_count !== 1 ? "s" : ""} — review each hotspot.`);
+        toast.success(`AI detected ${result.created_count} item${result.created_count !== 1 ? "s" : ""}. Review each hotspot.`);
       } else {
         toast.error(result.detail || "AI detection failed.");
       }
@@ -424,7 +544,7 @@ export default function ScanStudioPage() {
       triage_status: cur.triage_status === "review" ? "sell" : cur.triage_status,
       notes: s.default_notes || cur.notes,
     }));
-    toast.success("AI suggestion applied — save to confirm.");
+    toast.success("AI suggestion applied. Save to confirm.");
   }
 
   async function handleSaveSessionMeta(e) {
@@ -496,57 +616,7 @@ export default function ScanStudioPage() {
         onCancel={() => setConfirmDeleteDraft(false)}
       />
 
-      {/* Keyboard shortcuts overlay */}
-      <AnimatePresence>
-        {showShortcuts && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 backdrop-blur-sm"
-            onClick={() => setShowShortcuts(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.92, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.92, opacity: 0 }}
-              className="relative w-full max-w-sm bg-[color:var(--color-surface)] dark:bg-[#1c1c1e] rounded-[24px] p-8 shadow-2xl border border-black/8 dark:border-white/8"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <button
-                type="button"
-                onClick={() => setShowShortcuts(false)}
-                className="absolute right-4 top-4 rounded-full p-2 text-[color:var(--text-muted)] hover:bg-[color:var(--color-surface-2)] transition-colors"
-              >
-                <X size={16} />
-              </button>
-              <div className="flex items-center gap-3 mb-6">
-                <Keyboard size={20} className="text-[color:var(--color-tag)]" />
-                <h3 className="text-xl font-bold text-[color:var(--color-ink)] dark:text-white">Keyboard Shortcuts</h3>
-              </div>
-              <div className="space-y-3 text-sm">
-                {[
-                  ["S", "Triage → Sell"],
-                  ["D", "Triage → Donate"],
-                  ["K", "Triage → Keep"],
-                  ["T", "Triage → Toss"],
-                  ["]", "Next draft"],
-                  ["[", "Previous draft"],
-                  ["⌘ + Enter", "Save draft"],
-                  ["?", "Toggle this panel"],
-                ].map(([key, label]) => (
-                  <div key={key} className="flex items-center justify-between gap-4">
-                    <span className="text-[color:var(--text-muted)]">{label}</span>
-                    <kbd className="rounded-lg border border-black/10 dark:border-white/10 bg-[color:var(--color-surface-2)] px-2.5 py-1 font-mono text-xs font-bold text-[color:var(--color-ink)] dark:text-white">
-                      {key}
-                    </kbd>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <ShortcutsDialog open={showShortcuts} onClose={() => setShowShortcuts(false)} />
 
       {/* Page header */}
       <div className="mx-auto max-w-[1400px] px-4 md:px-8 pt-6 pb-3">
@@ -606,7 +676,7 @@ export default function ScanStudioPage() {
               onUpdateHotspot={handleUpdateHotspot}
             />
 
-            {/* AI Detect — glassmorphism top-left */}
+            {/* AI Detect, glassmorphism top-left */}
             <button
               type="button"
               disabled={!activeImage || aiDetecting}
@@ -620,14 +690,16 @@ export default function ScanStudioPage() {
 
             {/* Bottom-right controls */}
             <div className="absolute bottom-4 right-4 z-20 flex items-center gap-2">
+              {/* sr-only, not hidden: display:none takes the input out of the tab
+                  order and leaves no keyboard path to the file picker. */}
               <label
-                className="flex items-center gap-1.5 px-3 py-2 rounded-full text-white text-[12px] font-semibold cursor-pointer disabled:opacity-50 transition-opacity hover:opacity-80"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-full text-white text-[12px] font-semibold cursor-pointer transition-opacity hover:opacity-80 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-white"
                 style={{ background: "rgba(255,255,255,0.18)", backdropFilter: "saturate(180%) blur(12px)" }}
               >
-                <Upload size={13} />
+                <Upload size={13} aria-hidden="true" />
                 {uploading ? "Uploading…" : "Add Photo"}
                 <input
-                  className="hidden"
+                  className="sr-only"
                   type="file"
                   accept="image/*"
                   multiple
@@ -657,20 +729,22 @@ export default function ScanStudioPage() {
                   key={image.id}
                   type="button"
                   onClick={() => setSelectedImageId(image.id)}
+                  aria-pressed={isActive}
+                  aria-label={`Room photo ${image.position}, ${imageItems.length} tagged item${imageItems.length !== 1 ? "s" : ""}`}
                   className={cn(
                     "relative w-24 shrink-0 rounded-[12px] overflow-hidden border-2 transition-all",
                     isActive ? "border-[color:var(--color-tag)] shadow-[0_0_0_2px_rgba(106,0,47,0.2)]" : "border-transparent opacity-70 hover:opacity-100",
                   )}
                   style={{ aspectRatio: "1" }}
                 >
-                  {image.url ? (
-                    <img src={image.url} alt={`View ${image.position}`} className="w-full h-full object-cover" />
+                  {image.image_url ? (
+                    <img src={image.image_url} alt="" className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full bg-[color:var(--color-surface-2)] flex items-center justify-center">
                       <Camera size={20} className="text-[color:var(--text-muted)]" />
                     </div>
                   )}
-                  <span className={cn(
+                  <span aria-hidden="true" className={cn(
                     "absolute top-1.5 right-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-black",
                     isActive ? "bg-[color:var(--color-tag)] text-white" : badgeStyle,
                   )}>
@@ -683,14 +757,14 @@ export default function ScanStudioPage() {
             {/* Add view */}
             {session.images.length < 4 && (
               <label
-                className="w-24 shrink-0 rounded-[12px] border-2 border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-[color:var(--color-tag)] transition-colors"
+                className="w-24 shrink-0 rounded-[12px] border-2 border-dashed border-black/15 dark:border-white/15 flex flex-col items-center justify-center gap-1 cursor-pointer hover:border-[color:var(--color-tag)] transition-colors focus-within:border-[color:var(--color-tag)] focus-within:ring-2 focus-within:ring-[color:var(--color-tag)]/30"
                 style={{ aspectRatio: "1" }}
               >
-                <Upload size={16} className="text-[color:var(--text-muted)]" />
+                <Upload size={16} className="text-[color:var(--text-muted)]" aria-hidden="true" />
                 <span className="text-[11px] font-medium text-[color:var(--text-muted)]">Add View</span>
                 <input
                   type="file"
-                  className="hidden"
+                  className="sr-only"
                   accept="image/*"
                   multiple
                   onChange={handleUpload}
@@ -703,24 +777,37 @@ export default function ScanStudioPage() {
           {/* Scan settings (compact bar) */}
           <form
             onSubmit={handleSaveSessionMeta}
-            className="flex flex-wrap items-center gap-3 p-4 bg-[color:var(--color-surface)] dark:bg-[#1c1c1e] rounded-[16px] border border-black/8 dark:border-white/8"
+            aria-label="Scan settings"
+            className="flex flex-wrap items-end gap-3 p-4 bg-[color:var(--color-surface)] dark:bg-[#1c1c1e] rounded-[16px] border border-black/8 dark:border-white/8"
           >
-            <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[color:var(--text-muted)] shrink-0">Scan settings</p>
-            {sessionMetaDirty && (
-              <span className="text-[11px] font-semibold text-[color:var(--color-urgent)]">· unsaved changes</span>
-            )}
-            <input
-              className="field flex-1 min-w-[140px] !py-2 !text-[13px]"
-              value={sessionMeta.pickup_zone}
-              onChange={(e) => setSessionMeta((cur) => ({ ...cur, pickup_zone: e.target.value }))}
-              placeholder="Pickup zone (e.g. Lobby East)"
-            />
-            <input
-              className="field flex-1 min-w-[160px] !py-2 !text-[13px]"
-              type="datetime-local"
-              value={sessionMeta.move_out_deadline}
-              onChange={(e) => setSessionMeta((cur) => ({ ...cur, move_out_deadline: e.target.value }))}
-            />
+            <div className="flex w-full items-center gap-2">
+              <p className="text-[12px] font-semibold uppercase tracking-[0.08em] text-[color:var(--text-muted)] shrink-0">Scan settings</p>
+              {sessionMetaDirty && (
+                <span className="text-[11px] font-semibold text-[color:var(--color-urgent)]">· unsaved changes</span>
+              )}
+            </div>
+            {/* Real labels: a placeholder disappears on the first keystroke and
+                the deadline picker had no name at all. */}
+            <div className="flex-1 min-w-[140px]">
+              <label htmlFor={`${fieldId}-pickup-zone`} className="field-label !mb-1">Pickup zone</label>
+              <input
+                id={`${fieldId}-pickup-zone`}
+                className="field !py-2 !text-[13px]"
+                value={sessionMeta.pickup_zone}
+                onChange={(e) => setSessionMeta((cur) => ({ ...cur, pickup_zone: e.target.value }))}
+                placeholder="e.g. Lobby East"
+              />
+            </div>
+            <div className="flex-1 min-w-[160px]">
+              <label htmlFor={`${fieldId}-deadline`} className="field-label !mb-1">Move-out deadline</label>
+              <input
+                id={`${fieldId}-deadline`}
+                className="field !py-2 !text-[13px]"
+                type="datetime-local"
+                value={sessionMeta.move_out_deadline}
+                onChange={(e) => setSessionMeta((cur) => ({ ...cur, move_out_deadline: e.target.value }))}
+              />
+            </div>
             <button
               type="submit"
               disabled={savingSession || !sessionMetaDirty}
@@ -742,6 +829,7 @@ export default function ScanStudioPage() {
           {/* Hint text */}
           <p className="text-[12px] text-[color:var(--text-muted)] px-1">
             Drag to draw a hotspot around any item · click to select · corner handles to resize.
+            No mouse? Use Add box, then the arrow keys to move it and Shift plus arrows to resize.
             Press <kbd className="rounded border border-black/10 dark:border-white/10 bg-[color:var(--color-surface-2)] px-1.5 py-0.5 font-mono text-[10px]">?</kbd> for shortcuts.
           </p>
         </div>
@@ -870,17 +958,24 @@ export default function ScanStudioPage() {
                 )}
 
                 {/* Title */}
-                <input
-                  className="field !text-[15px]"
-                  value={draftForm.title}
-                  onChange={(e) => setDraftForm((cur) => ({ ...cur, title: e.target.value }))}
-                  placeholder="Item title"
-                  required
-                />
+                <div>
+                  <label htmlFor={`${fieldId}-title`} className="field-label">Item title</label>
+                  <input
+                    id={`${fieldId}-title`}
+                    className="field !text-[15px]"
+                    value={draftForm.title}
+                    onChange={(e) => setDraftForm((cur) => ({ ...cur, title: e.target.value }))}
+                    placeholder="e.g. Desk lamp"
+                    required
+                  />
+                </div>
 
                 {/* Category + Condition */}
                 <div className="grid grid-cols-2 gap-3">
+                  <div>
+                  <label htmlFor={`${fieldId}-category`} className="field-label">Category</label>
                   <select
+                    id={`${fieldId}-category`}
                     className="field !text-[13px]"
                     value={draftForm.category}
                     onChange={(e) => setDraftForm((cur) => ({ ...cur, category: e.target.value }))}
@@ -893,7 +988,11 @@ export default function ScanStudioPage() {
                     <option value="decor">Decor</option>
                     <option value="other">Other</option>
                   </select>
+                  </div>
+                  <div>
+                  <label htmlFor={`${fieldId}-condition`} className="field-label">Condition</label>
                   <select
+                    id={`${fieldId}-condition`}
                     className="field !text-[13px]"
                     value={draftForm.condition}
                     onChange={(e) => setDraftForm((cur) => ({ ...cur, condition: e.target.value }))}
@@ -902,11 +1001,15 @@ export default function ScanStudioPage() {
                     <option value="good">Good</option>
                     <option value="fair">Fair</option>
                   </select>
+                  </div>
                 </div>
 
                 {/* Price */}
                 <div className="grid grid-cols-2 gap-3">
+                  <div>
+                  <label htmlFor={`${fieldId}-price-type`} className="field-label">Pricing</label>
                   <select
+                    id={`${fieldId}-price-type`}
                     className="field !text-[13px]"
                     value={draftForm.price_type}
                     onChange={(e) => setDraftForm((cur) => ({ ...cur, price_type: e.target.value }))}
@@ -914,7 +1017,11 @@ export default function ScanStudioPage() {
                     <option value="free">Free</option>
                     <option value="low_cost">Low cost</option>
                   </select>
+                  </div>
+                  <div>
+                  <label htmlFor={`${fieldId}-price`} className="field-label">Price ($)</label>
                   <input
+                    id={`${fieldId}-price`}
                     className="field !text-[13px]"
                     type="number"
                     step="0.01"
@@ -922,24 +1029,29 @@ export default function ScanStudioPage() {
                     value={draftForm.price_amount}
                     onChange={(e) => setDraftForm((cur) => ({ ...cur, price_amount: e.target.value }))}
                     disabled={draftForm.price_type !== "low_cost"}
-                    placeholder="Price"
+                    placeholder="0.00"
                   />
+                  </div>
                 </div>
 
                 {/* Retail value */}
-                <input
-                  className="field !text-[13px]"
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={draftForm.estimated_retail_value}
-                  onChange={(e) => setDraftForm((cur) => ({ ...cur, estimated_retail_value: e.target.value }))}
-                  placeholder="Estimated retail value ($)"
-                />
+                <div>
+                  <label htmlFor={`${fieldId}-retail`} className="field-label">Estimated retail value ($)</label>
+                  <input
+                    id={`${fieldId}-retail`}
+                    className="field !text-[13px]"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={draftForm.estimated_retail_value}
+                    onChange={(e) => setDraftForm((cur) => ({ ...cur, estimated_retail_value: e.target.value }))}
+                    placeholder="0.00"
+                  />
+                </div>
 
                 {/* Triage 2×2 grid */}
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2">Triage Decision</p>
+                <div role="group" aria-labelledby={`${fieldId}-triage`}>
+                  <p id={`${fieldId}-triage`} className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)] mb-2">Triage Decision</p>
                   <div className="grid grid-cols-2 gap-2">
                     {TRIAGE_ORDER.map((status) => {
                       const hotkey = Object.entries(TRIAGE_KEYS).find(([, v]) => v === status)?.[0];
@@ -947,6 +1059,7 @@ export default function ScanStudioPage() {
                         <button
                           key={status}
                           type="button"
+                          aria-pressed={draftForm.triage_status === status}
                           onClick={() => setDraftForm((cur) => ({ ...cur, triage_status: status }))}
                           className={cn(
                             "py-3 rounded-[14px] text-[13px] font-semibold capitalize transition-all border",
@@ -967,6 +1080,7 @@ export default function ScanStudioPage() {
                       <button
                         key={status}
                         type="button"
+                        aria-pressed={draftForm.triage_status === status}
                         onClick={() => setDraftForm((cur) => ({ ...cur, triage_status: status }))}
                         className={cn(
                           "py-2.5 rounded-[12px] text-[12px] font-semibold capitalize transition-all border",
@@ -982,12 +1096,16 @@ export default function ScanStudioPage() {
                 </div>
 
                 {/* Notes */}
-                <textarea
-                  className="field min-h-[90px] !text-[13px]"
-                  value={draftForm.notes}
-                  onChange={(e) => setDraftForm((cur) => ({ ...cur, notes: e.target.value }))}
-                  placeholder="Notes for the next student — condition, what's included, etc."
-                />
+                <div>
+                  <label htmlFor={`${fieldId}-notes`} className="field-label">Notes</label>
+                  <textarea
+                    id={`${fieldId}-notes`}
+                    className="field min-h-[90px] !text-[13px]"
+                    value={draftForm.notes}
+                    onChange={(e) => setDraftForm((cur) => ({ ...cur, notes: e.target.value }))}
+                    placeholder="Notes for the next student: condition, what's included, etc."
+                  />
+                </div>
 
                 {/* Linked listing */}
                 {activeDraft.linked_listing_detail && (
@@ -1002,7 +1120,7 @@ export default function ScanStudioPage() {
                 )}
               </div>
 
-              {/* Confirm & Next — primary CTA */}
+              {/* Confirm & Next, primary CTA */}
               <button
                 type="button"
                 onClick={handleConfirmAndNext}

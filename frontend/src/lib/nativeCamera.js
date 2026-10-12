@@ -39,7 +39,7 @@ export async function pickImage(source = "camera") {
     });
   }
 
-  // Web fallback — programmatically click a hidden file input
+  // Web fallback: programmatically click a hidden file input
   return new Promise((resolve, reject) => {
     const input = document.createElement("input");
     input.type = "file";
@@ -56,7 +56,7 @@ export async function pickImage(source = "camera") {
 }
 
 /**
- * Open photo library for multi-select (web only — native shows one at a time).
+ * Open photo library for multi-select (web only; native shows one at a time).
  * @returns {Promise<File[]>}
  */
 export async function pickMultipleImages() {

@@ -49,7 +49,7 @@ const featureCards = [
 const faqs = [
   {
     question: "How does the room scan work?",
-    answer: "Snap a few photos of your dorm room. Our studio lets you tag rescue-worthy items with simple hotspots — much faster than listing items one by one.",
+    answer: "Snap a few photos of your dorm room. Our studio lets you tag rescue-worthy items with simple hotspots, much faster than listing items one by one.",
   },
   {
     question: "Is there a fee for students?",
@@ -156,7 +156,7 @@ export default function LandingPage() {
           transition={{ duration: 0.6, delay: 0.15 }}
           className="w-full max-w-4xl"
         >
-          {/* Deliberately light in both themes — framed like a product still */}
+          {/* Deliberately light in both themes, framed like a product still */}
           <div className="relative w-full aspect-[16/9] bg-white rounded-[20px] border border-black/10 dark:border-white/10 shadow-sm overflow-hidden">
             <img
               src="/images/hero-room-vignette.png"
@@ -205,7 +205,7 @@ export default function LandingPage() {
                 Real stuff rescued. Real waste avoided.
               </h2>
               <p className="mt-2 text-sm text-[color:var(--text-muted)]">
-                Counted live from actual rescues on this platform — no vanity numbers.
+                Counted live from actual rescues on this platform, no vanity numbers.
               </p>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-center">
@@ -389,7 +389,7 @@ export default function LandingPage() {
               Ready to rescue your room?
             </h2>
             <p className="text-[1rem] leading-relaxed mb-8" style={{ color: "rgba(255,255,255,0.7)" }}>
-              Make your campus move-out faster, cheaper, and more sustainable — starting with your own room.
+              Make your campus move-out faster, cheaper, and more sustainable, starting with your own room.
             </p>
             <div className="flex flex-col sm:flex-row justify-center gap-3">
               <Link

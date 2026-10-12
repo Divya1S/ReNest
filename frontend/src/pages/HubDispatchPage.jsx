@@ -67,7 +67,7 @@ function RouteStop({ stop, index }) {
               <Package size={11} />
               <span className="truncate">{item.listing_title}</span>
               {item.pickup_zone && (
-                <span className="flex-shrink-0 text-[var(--color-text-subtle)]">— {item.pickup_zone}</span>
+                <span className="flex-shrink-0 text-[var(--color-text-subtle)]">· {item.pickup_zone}</span>
               )}
             </li>
           ))}
@@ -152,7 +152,7 @@ export default function HubDispatchPage() {
     data: eventsData,
     loading: loadingEvents,
     error: eventsError,
-    refetch: refetchEvents,
+    retry: retryEvents,
     setData: setEventsData,
   } = useApi(eventsPath);
   const events = eventsData ?? [];
@@ -264,7 +264,8 @@ export default function HubDispatchPage() {
             <div className="rounded-xl border border-dashed border-[var(--color-border)] p-8 text-center">
               <p className="text-sm text-[var(--color-text-muted)] mb-3">{eventsError}</p>
               <button
-                onClick={() => refetchEvents()}
+                type="button"
+                onClick={retryEvents}
                 className="inline-flex items-center gap-1.5 text-xs text-[var(--color-primary)] hover:opacity-80"
               >
                 <RefreshCw size={13} /> Retry

@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from risk.models import IdempotencyKey, IdempotencyStatus, PaymentTransaction
 from risk.services import idempotency
 
-from .support import make_user, payment_payload
+from .support import fingerprint, make_user, payment_payload
 
 URL = "/api/risk/payments"
 
@@ -45,7 +45,9 @@ class IdempotencyTests(APITestCase):
         self.assertEqual(PaymentTransaction.objects.count(), 1)
 
     def test_concurrent_duplicate_gets_409_while_original_runs(self):
-        record = idempotency.acquire(user=self.user, scope=idempotency.SCOPE_PAYMENTS, key="in-flight", payload=payment_payload())
+        # The key is compared on the validated request, so the in-flight
+        # owner is set up with the same fingerprint the API will compute.
+        record = idempotency.acquire(user=self.user, scope=idempotency.SCOPE_PAYMENTS, key="in-flight", payload=fingerprint())
         assert isinstance(record, IdempotencyKey)
         response = self.post("in-flight")
         self.assertEqual(response.status_code, 409)

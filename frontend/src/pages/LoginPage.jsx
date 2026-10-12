@@ -66,7 +66,7 @@ export default function LoginPage() {
               <p className="text-[17px] font-semibold text-white">Coordinate pickups</p>
             </div>
             <p className="mt-4 text-base leading-relaxed text-white/70">
-              Message buyers, confirm pickup times, and track handoffs through a single streamlined flow — no back-and-forth needed.
+              Message buyers, confirm pickup times, and track handoffs through a single streamlined flow. No back-and-forth needed.
             </p>
           </div>
         </div>

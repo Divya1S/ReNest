@@ -37,9 +37,12 @@ export interface CampusTheme {
 
 // ─── Listings ────────────────────────────────────────────────────────────────
 
-export type ListingStatus = "available" | "reserved" | "donated" | "cancelled" | "expired" | "on_hold";
+// These unions mirror the backend TextChoices exactly (listings/models.py:
+// Listing.Status, Listing.Condition, Listing.PriceType). Do not add a value
+// here that the API cannot return.
+export type ListingStatus = "available" | "reserved" | "picked_up" | "expired" | "donated";
 export type PriceType = "free" | "low_cost";
-export type ListingCondition = "new" | "like_new" | "good" | "fair" | "poor";
+export type ListingCondition = "new" | "good" | "fair";
 
 export interface OwnerSummary {
   id: number;
@@ -113,12 +116,20 @@ export interface PaginatedListings {
 
 // ─── Reservations ────────────────────────────────────────────────────────────
 
+// Mirrors Reservation.Status on the backend.
 export type ReservationStatus =
   | "requested"
   | "confirmed"
-  | "completed"
   | "cancelled"
+  | "completed"
   | "expired_unresolved";
+
+/**
+ * Status transitions a participant may request with PATCH /reservations/:id.
+ * Completion is deliberately absent: a handoff completes only when the owner
+ * enters the claimant's PIN (POST /reservations/:id/verify-pin).
+ */
+export type ReservationAction = "confirmed" | "cancelled";
 
 export interface Reservation {
   id: number;
@@ -269,15 +280,19 @@ interface DashboardStats {
   incoming_pickup_actions: number;
   tasks_due_today: number;
   ready_to_publish_now: number;
-  scan_savings_total: number;
+  /** Decimal serialised as a string, e.g. "48.50". */
+  scan_savings_total: string | number;
 }
 
+/** One row of action_queues.incoming_pickup_actions (DashboardView). */
 interface PickupAction {
   reservation_id: number;
+  listing_id: number;
   listing_title: string;
   claimant_name: string;
-  pickup_zone?: string;
-  status: string;
+  pickup_time_window?: string | null;
+  status: ReservationStatus;
+  updated_at: string;
 }
 
 interface HandoffWaitingFeedback {
@@ -376,7 +391,7 @@ export interface FeedbackEntry {
 
 export interface ReservationDetail {
   id: number;
-  status: ReservationStatus | "expired_unresolved";
+  status: ReservationStatus;
   listing_detail: { id: number; title: string };
   counterparty_name: string;
   pickup_time_window?: string | null;
@@ -386,13 +401,13 @@ export interface ReservationDetail {
   time_pressure: "urgent" | "soon" | "normal";
   next_step?: string;
   relationship: "owner" | "claimant";
-  allowed_actions: string[];
+  allowed_actions: ReservationAction[];
   handoff_checklist: string[];
   confirmed_slot?: string | null;
   pickup_slots?: string[];
-  handoff_pin_display?: string;
+  handoff_pin_display?: string | null;
   can_leave_feedback?: boolean;
-  feedback_summary?: { average_rating: number; count: number };
-  my_feedback?: { rating: number; note?: string };
+  feedback_summary?: { average_rating: number | null; count: number };
+  my_feedback?: { rating: number; note?: string } | null;
   feedback_entries?: FeedbackEntry[];
 }

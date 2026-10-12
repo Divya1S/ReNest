@@ -17,6 +17,8 @@ from rest_framework.views import APIView
 from dormcycle.typed import current_user
 from typing import Any
 
+from .helpers import parse_int
+
 logger = logging.getLogger(__name__)
 
 # --- Tier pricing (Stripe price IDs set via env) ---
@@ -113,9 +115,14 @@ class CampusSubscribeView(APIView):
                 metadata={"campus_id": str(campus.pk), "tier": tier},
             )
             return Response({"checkout_url": session.url})
-        except Exception as exc:
+        except Exception:
+            # Stripe messages can name account ids, price ids and key
+            # fragments; they belong in the log, not in the response.
             logger.exception("Stripe Checkout Session creation failed for campus %s", campus.pk)
-            return Response({"detail": str(exc)}, status=502)
+            return Response(
+                {"detail": "The payment provider could not start checkout. Try again shortly."},
+                status=502,
+            )
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -170,7 +177,10 @@ class StripeWebhookView(APIView):
 
         try:
             campus = Campus.objects.get(pk=int(campus_id))
-        except Campus.DoesNotExist:
+        except (Campus.DoesNotExist, TypeError, ValueError):
+            # Unusable metadata will not improve on redelivery; acknowledging
+            # the event stops Stripe from retrying it for days.
+            logger.warning("Stripe session %s carries an unusable campus_id", session.get("id", ""))
             return
 
         session_id = session.get("id", "")
@@ -206,7 +216,7 @@ class ListingBoostView(APIView):
     """
     POST /api/listings/:id/boost  { "amount_cents": 100|200|300|400|500 }
     Owner creates a Stripe Payment Intent for a $1–$5 boost.
-    Returns { client_secret, boost_hours } — frontend completes payment via Stripe.js.
+    Returns { client_secret, boost_hours }; the frontend completes payment via Stripe.js.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -229,7 +239,7 @@ class ListingBoostView(APIView):
         from ..models import Listing
         listing = get_object_or_404(Listing, pk=pk, owner=request.user)
 
-        amount_cents = int(request.data.get("amount_cents", 0))
+        amount_cents = parse_int(request.data.get("amount_cents"), field="amount_cents", default=0)
         if amount_cents not in (100, 200, 300, 400, 500):
             return Response({"detail": "amount_cents must be 100, 200, 300, 400, or 500."}, status=400)
 
@@ -255,9 +265,12 @@ class ListingBoostView(APIView):
             # Each $1 = 24h boost
             boost_hours = (amount_cents // 100) * 24
             return Response({"client_secret": intent.client_secret, "boost_hours": boost_hours})
-        except Exception as exc:
+        except Exception:
             logger.exception("Stripe PaymentIntent creation failed for listing %s", pk)
-            return Response({"detail": str(exc)}, status=502)
+            return Response(
+                {"detail": "The payment provider could not start this payment. Try again shortly."},
+                status=502,
+            )
 
 
 class ListingBoostConfirmView(APIView):
@@ -305,15 +318,21 @@ class ListingBoostConfirmView(APIView):
         # another day of boosted placement onto a single $1 payment.
         try:
             with transaction.atomic():
+                # Read boosted_until under a row lock. Taken from the copy
+                # loaded before the transaction, two different payments
+                # confirmed together both extended the same starting value
+                # and one paid boost was lost.
+                locked = Listing.objects.select_for_update().get(pk=listing.pk)
                 ListingBoostPayment.objects.create(
-                    listing=listing,
+                    listing=locked,
                     payment_intent_id=pi_id,
                     amount_cents=intent.amount,
                 )
-                current_boost = listing.boosted_until
+                current_boost = locked.boosted_until
                 base = current_boost if (current_boost and current_boost > now) else now
                 new_boosted_until = base + timedelta(hours=boost_hours)
-                Listing.objects.filter(pk=pk).update(boosted_until=new_boosted_until)
+                locked.boosted_until = new_boosted_until
+                locked.save(update_fields=["boosted_until", "updated_at"])
         except IntegrityError:
             return Response({"detail": "This payment has already been redeemed."}, status=409)
 
@@ -321,7 +340,7 @@ class ListingBoostConfirmView(APIView):
 
 
 class OrganizationListView(APIView):
-    """GET /api/organizations — returns verified organizations for the tip jar selector."""
+    """GET /api/organizations: returns verified organizations for the tip jar selector."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -336,17 +355,19 @@ class OrganizationListView(APIView):
 
 
 class DonationIntentCreateView(APIView):
-    """POST /api/listings/:id/donate-intent — log a tip allocation to an organization."""
+    """POST /api/listings/:id/donate-intent: log a tip allocation to an organization."""
 
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request: Request, pk: int) -> Response:
         from ..models import DonationIntent, Listing, Organization
         listing = get_object_or_404(Listing, pk=pk, owner=request.user)
-        org_id = request.data.get("organization_id")
-        percentage = int(request.data.get("percentage", 10))
-        if not (1 <= percentage <= 100):
-            return Response({"detail": "percentage must be 1–100."}, status=400)
+        org_id = parse_int(request.data.get("organization_id"), field="organization_id", minimum=1)
+        if org_id is None:
+            return Response({"organization_id": "This field is required."}, status=400)
+        percentage = parse_int(
+            request.data.get("percentage"), field="percentage", default=10, minimum=1, maximum=100
+        ) or 10
         org = get_object_or_404(Organization, pk=org_id, verified=True)
         di, _ = DonationIntent.objects.get_or_create(
             listing=listing,

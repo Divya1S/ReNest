@@ -30,7 +30,7 @@ export default function AnnouncementBanner() {
     try {
       sessionStorage.setItem("dismissed_announcements", JSON.stringify(next));
     } catch {
-      // sessionStorage unavailable (private mode) — dismissal just won't persist
+      // sessionStorage unavailable (private mode): dismissal just won't persist
     }
   }
 

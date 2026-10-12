@@ -54,7 +54,7 @@ class MetricsTests(APITestCase):
         self.assertEqual(sum(m["risk_bands"].values()), 300)
         self.assertEqual(m["latency"]["count"], 300)
         self.assertIsNotNone(m["latency"]["p95_ms"])
-        self.assertEqual(m["model_version"], "risk-rules-v1")
+        self.assertEqual(m["model_version"], "risk-rules-v2")
         self.assertGreater(float(run.duration_ms), 0)
         # Cross-check one number against the persisted rows.
         stored_blocked = PaymentTransaction.objects.filter(simulation_run=run, decision="block").count()

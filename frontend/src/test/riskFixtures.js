@@ -31,7 +31,7 @@ export const OVERVIEW = {
   evaluation_latency: { count: 42, mean_ms: 0.02, p50_ms: 0.018, p95_ms: 0.04, p99_ms: 0.06, max_ms: 0.09 },
   series: [{ bucket: "2026-09-09T13:00", allow: 20, review: 2, block: 1 }, { bucket: "2026-09-09T14:00", allow: 15, review: 2, block: 2 }],
   policy: { sensitivity: 50, review_threshold: 40, block_threshold: 70 },
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
 };
 
 export const POLICY = {
@@ -41,7 +41,7 @@ export const POLICY = {
   block_threshold: 70,
   updated_at: null,
   updated_by: null,
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   curve: [],
 };
 
@@ -59,7 +59,7 @@ export const TXN = {
   risk_score: 74,
   risk_band: "high",
   confidence: "0.83",
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   evaluation_ms: "0.031",
   is_simulation: false,
   ground_truth_fraud: null,
@@ -82,7 +82,7 @@ export const TXN_DETAIL = {
     score: 74,
     decision: "block",
     confidence: "0.830",
-    model_version: "risk-rules-v1",
+    model_version: "risk-rules-v2",
     sensitivity: 50,
     thresholds: { sensitivity: 50, review: 40, block: 70 },
     evaluation_ms: "0.031",
@@ -102,8 +102,8 @@ export const TXN_DETAIL = {
     { event_id: "evt_3", sequence: 3, event_type: "payment.blocked", schema_version: 1, entity_type: "payment", entity_id: TXN.public_id, payload: {}, request_id: "req-123", occurred_at: "2026-09-09T13:58:00Z", status: "processed", attempts: 1, processed_handlers: ["audit", "notify_customer"], last_error: "", next_attempt_at: null, processed_at: "2026-09-09T13:58:00Z" },
   ],
   audit: [
-    { id: 1, actor_label: "user:1", action: "payment.evaluated", target_type: "payment", target_id: TXN.public_id, reason: "Blocked because of new device (score 74).", decision: "block", model_version: "risk-rules-v1", request_id: "req-123", metadata: {}, created_at: "2026-09-09T13:58:00Z" },
-    { id: 2, actor_label: "service:risk-engine", action: "payment.blocked", target_type: "payment", target_id: TXN.public_id, reason: "Blocked because of new device (score 74).", decision: "block", model_version: "risk-rules-v1", request_id: "req-123", metadata: {}, created_at: "2026-09-09T13:58:01Z" },
+    { id: 1, actor_label: "user:1", action: "payment.evaluated", target_type: "payment", target_id: TXN.public_id, reason: "Blocked because of new device (score 74).", decision: "block", model_version: "risk-rules-v2", request_id: "req-123", metadata: {}, created_at: "2026-09-09T13:58:00Z" },
+    { id: 2, actor_label: "service:risk-engine", action: "payment.blocked", target_type: "payment", target_id: TXN.public_id, reason: "Blocked because of new device (score 74).", decision: "block", model_version: "risk-rules-v2", request_id: "req-123", metadata: {}, created_at: "2026-09-09T13:58:01Z" },
   ],
 };
 
@@ -115,7 +115,7 @@ export const SCENARIOS = {
   default_count: 1000,
   min_count: 50,
   max_count: 2000,
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   current_sensitivity: 50,
   note: "Synthetic.",
 };
@@ -127,7 +127,7 @@ export const SIM_RUN = {
   sensitivity: 50,
   seed: 7,
   transaction_count: 1000,
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   duration_ms: "180.500",
   created_at: "2026-09-09T14:00:00Z",
   metrics: {
@@ -142,7 +142,7 @@ export const SIM_RUN = {
     top_factors_legitimate: [{ code: "new_device", count: 70 }],
     latency: { count: 1000, mean_ms: 0.006, p50_ms: 0.005, p95_ms: 0.009, p99_ms: 0.012, max_ms: 0.03 },
     thresholds: { sensitivity: 50, review: 40, block: 70 },
-    model_version: "risk-rules-v1",
+    model_version: "risk-rules-v2",
     sweep: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((s) => ({ sensitivity: s, review_threshold: 60 - 0.4 * s, block_threshold: 90 - 0.4 * s, blocked: s * 2, reviewed: 100, detection_rate: Math.min(1, 0.5 + s / 200), friction_rate: s / 500 })),
     seed: 7,
     scenario: "account_takeover",
@@ -197,7 +197,7 @@ export const INVESTIGATION = {
 export const HEALTH = {
   status: "ok",
   generated_at: "2026-09-09T14:00:00Z",
-  model_version: "risk-rules-v1",
+  model_version: "risk-rules-v2",
   processor: "sandbox",
   investigator_mode: "deterministic",
   investigator_setting: "deterministic",

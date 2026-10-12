@@ -1,10 +1,10 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/test.js";
 
 import { mockAuth, mockNotifications, makeListing } from "./helpers/mock-api.js";
 
 /**
  * The header must stay pinned while the page scrolls, and the browse
- * search bar must sit flush beneath it — no see-through seam.
+ * search bar must sit flush beneath it, with no see-through seam.
  *
  * Regression: an unlayered `.nav-shell { position: relative }` once beat
  * Tailwind's layered `sticky` utility, and a wrapper div gave the header a

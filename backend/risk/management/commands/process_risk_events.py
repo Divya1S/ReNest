@@ -34,7 +34,7 @@ class Command(BaseCommand):
             purged = purge_expired()
             reconciled = reconcile_uncaptured()
             self.stdout.write(
-                f"processed={summary['processed']} failed={summary['failed']} purged_keys={purged} "
+                f"processed={summary['processed']} failed={summary['failed']} skipped={summary['skipped']} purged_keys={purged} "
                 f"reconciled={reconciled['completed']}+{reconciled['failed']}"
             )
             if interval <= 0:

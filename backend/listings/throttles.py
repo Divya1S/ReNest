@@ -11,7 +11,7 @@ class WriteOnlyUserRateThrottle(UserRateThrottle):
 
     DRF applies view-level throttles to every HTTP method, so on a combined
     list+create view a quota meant for POST (e.g. 20 listing creations/hour)
-    would otherwise be drained by plain browsing GETs — locking users out of
+    would otherwise be drained by plain browsing GETs, locking users out of
     reading the marketplace for the rest of the window.
     """
 
@@ -35,3 +35,40 @@ class ReservationCreateThrottle(WriteOnlyUserRateThrottle):
 
 class PushSubscribeThrottle(WriteOnlyUserRateThrottle):
     scope = "push_subscribe"
+
+
+class AiAssistThrottle(UserRateThrottle):
+    """Per-user budget for endpoints that call the language model.
+
+    Two differences from the throttles above. It counts every HTTP method:
+    rescue-suggestions makes a model call inside a GET, which a write-only
+    throttle would never see. And `rate` is set here on the class, so the
+    limit does not depend on a DEFAULT_THROTTLE_RATES entry being added to
+    settings; DRF only looks the scope up there when `rate` is missing.
+
+    Each endpoint gets its own scope (and so its own counter) so that typing
+    in the search box cannot use up the budget for describing a listing.
+    """
+
+    scope = "ai_assist"
+    rate = "30/hour"
+
+
+class ParseSearchThrottle(AiAssistThrottle):
+    scope = "ai_parse_search"
+    rate = "60/hour"
+
+
+class GenerateDescriptionThrottle(AiAssistThrottle):
+    scope = "ai_generate_description"
+    rate = "30/hour"
+
+
+class VisionAutofillThrottle(AiAssistThrottle):
+    scope = "ai_vision_autofill"
+    rate = "20/hour"
+
+
+class RescueSuggestionsThrottle(AiAssistThrottle):
+    scope = "ai_rescue_suggestions"
+    rate = "20/hour"

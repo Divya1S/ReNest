@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { apiFetch } from "../../lib/api";
 
 /**
- * Generative UI registry — the client half of server-driven UI.
+ * Generative UI registry: the client half of server-driven UI.
  *
  * The concierge backend emits typed blocks ({type, props}) whose props are
  * hydrated from the database at tool-call time; this module maps block types
@@ -13,7 +13,7 @@ import { apiFetch } from "../../lib/api";
  * ship new blocks before (or without) the frontend catching up.
  *
  * "suggestions" blocks are deliberately absent from the registry: they render
- * as tappable quick-reply chips at the composer, not inside the transcript —
+ * as tappable quick-reply chips at the composer, not inside the transcript;
  * see extractSuggestions().
  */
 
@@ -102,7 +102,7 @@ function MoveOutProgress({ scan_sessions: sessions }) {
 }
 
 /**
- * The concierge's first "write" flow — deliberately user-confirmed. The model
+ * The concierge's first "write" flow, deliberately user-confirmed. The model
  * only *proposes*; nothing exists until the user taps Create, and the tap goes
  * through the exact same /saved-searches endpoint the settings page uses.
  */
@@ -141,7 +141,7 @@ function SavedSearchProposal({ keyword, category, price_type: priceType, label }
       </p>
       {state === "done" ? (
         <p className="mt-2 text-sm font-semibold text-[color:var(--color-teal)]">
-          Alert on — manage it in{" "}
+          Alert on. Manage it in{" "}
           <Link to="/saved-searches" className="underline">
             Saved searches
           </Link>

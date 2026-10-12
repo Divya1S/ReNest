@@ -7,7 +7,7 @@ import { GenerativeBlocks, extractSuggestions } from "./generativeUi";
 /**
  * The conversation surface shared by the floating widget and the /assistant
  * page: message list, generative-UI blocks, follow-up chips, and composer.
- * All state lives in useConciergeChat — this component only renders it.
+ * All state lives in useConciergeChat; this component only renders it.
  */
 
 const TOOL_LABELS = {
@@ -43,6 +43,9 @@ const SUGGESTIONS = [
 
 function bubbleCaption(message) {
   const meta = message.meta || {};
+  if (meta.fallback === "knowledge_base") {
+    return { icon: false, text: "From the help guide while the assistant is unavailable" };
+  }
   if (meta.cached) {
     return { icon: true, text: "Instant answer" };
   }

@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Count, Prefetch, Q, QuerySet, Sum
 from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
@@ -23,15 +24,23 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..ai_client import (
+    AiNotConfigured,
     ai_available,
     fetch_image_bytes,
+    generate_json,
     generate_text,
     generate_vision_json,
     trim_to_sentence,
 )
 from ..models import Listing, ListingReport, ListingUpdate, ListingViewEvent, SavedListing
 from ..permissions import IsEmailVerified, IsListingOwnerOrReadOnly
-from ..throttles import ListingCreateThrottle
+from ..throttles import (
+    GenerateDescriptionThrottle,
+    ListingCreateThrottle,
+    ParseSearchThrottle,
+    RescueSuggestionsThrottle,
+    VisionAutofillThrottle,
+)
 
 from ..serializers import (
     ListingReportSerializer,
@@ -46,14 +55,37 @@ logger = logging.getLogger(__name__)
 from rest_framework.exceptions import ValidationError
 
 from .helpers import (
+    LISTING_SERIALIZER_RELATIONS,
     annotate_listing_queryset,
-    _exclude_deadline_passed,
+    browse_listing_queryset,
     _expire_for_user,
+    owner_campus_name,
     parse_int,
     parse_int_list,
     run_listing_created_hooks,
     user_can_post_update,
 )
+
+# Full-text search runs in the "english" configuration because that is what
+# the GIN index from migration 0013 is built with. PostgreSQL only uses an
+# expression index when the query repeats the indexed expression exactly, so
+# the document below must stay in step with that migration: same config, same
+# columns, same order.
+_FTS_CONFIG = "english"
+
+
+def _fts_document() -> SearchVector:
+    """The indexed search document: title, description and pickup zone."""
+    return SearchVector("title", "description", "pickup_zone", config=_FTS_CONFIG)
+
+
+def _fts_rank_vector() -> Any:
+    """Weighted vector used only to order rows the index already matched."""
+    return (
+        SearchVector("title", weight="A", config=_FTS_CONFIG)
+        + SearchVector("description", weight="B", config=_FTS_CONFIG)
+        + SearchVector("pickup_zone", weight="C", config=_FTS_CONFIG)
+    )
 
 
 class ListingListCreateView(generics.ListCreateAPIView):
@@ -65,52 +97,45 @@ class ListingListCreateView(generics.ListCreateAPIView):
     throttle_classes = [ListingCreateThrottle]
 
     def get_queryset(self) -> QuerySet[Listing]:
-        queryset = (
-            Listing.objects.select_related("owner", "source_scan_session")
-            .exclude(is_demo=True)
-        )
         user = current_user(self.request)
         is_authed = user.is_authenticated
+        params = self.request.query_params
+
+        mine = is_authed and params.get("mine") == "1"
+        if mine:
+            # The owner's own shelf: every status, flagged and expired included.
+            _expire_for_user(user)
+            queryset = Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(
+                owner=user, is_demo=False
+            )
+        else:
+            # Public browse is the shared marketplace queryset, so what it
+            # shows cannot drift from search, the map or the concierge.
+            # Two things are specific to this endpoint: staff also see
+            # flagged listings, and ?campus=slug replaces the viewer's own
+            # campus scope for guests (public campus pages), staff and
+            # campus managers.
+            campus_override = params.get("campus")
+            may_override = not is_authed or user.is_staff or user.is_campus_manager
+            queryset = browse_listing_queryset(
+                user if is_authed else None,
+                include_flagged=bool(is_authed and user.is_staff),
+                campus_slug=campus_override if may_override else None,
+            )
         queryset = annotate_listing_queryset(queryset, user if is_authed else None)
 
-        mine = is_authed and self.request.query_params.get("mine") == "1"
-        if mine:
-            _expire_for_user(user)
-            queryset = queryset.filter(owner=user)
-        else:
-            queryset = _exclude_deadline_passed(queryset)
-            # Hide flagged listings from public browse (staff can see them)
-            if not (is_authed and user.is_staff):
-                queryset = queryset.exclude(moderation_status=Listing.ModerationStatus.FLAGGED)
-            if is_authed:
-                # Hide listings from users the current user has blocked (and vice versa)
-                from ..models import BlockedUser
-                blocked_ids = BlockedUser.objects.filter(blocker=user).values_list("blocked_id", flat=True)
-                blocking_ids = BlockedUser.objects.filter(blocked=user).values_list("blocker_id", flat=True)
-                queryset = queryset.exclude(owner_id__in=blocked_ids).exclude(owner_id__in=blocking_ids)
-            # Phase 18 — suppress owners with poor completion rates (< 30% with >= 5 reservations)
-            from django.contrib.auth import get_user_model as _gum
-            poor_owners = _gum().objects.filter(
-                completion_rate__lt=0.3, completion_rate__isnull=False
-            ).values_list("id", flat=True)
-            queryset = queryset.exclude(owner_id__in=poor_owners)
-            # Scope to the user's campus unless admin overrides with ?campus=slug.
-            # Guests may scope explicitly via ?campus=slug (public campus pages).
-            campus_override = self.request.query_params.get("campus")
-            if campus_override and (not is_authed or user.is_staff or user.is_campus_manager):
-                queryset = queryset.filter(owner__campus__slug=campus_override)
-            elif is_authed and getattr(user, "campus_id", None):
-                queryset = queryset.filter(owner__campus=user.campus)
-
-        category = self.request.query_params.get("category")
+        category = params.get("category")
         if category:
             queryset = queryset.filter(category=category)
 
-        price_type = self.request.query_params.get("price_type")
+        price_type = params.get("price_type")
         if price_type:
             queryset = queryset.filter(price_type=price_type)
 
-        status_param = self.request.query_params.get("status")
+        # Public browse is already limited to live listings by the shared
+        # queryset; the status filter narrows within that (or, with mine=1,
+        # within everything the owner has).
+        status_param = params.get("status")
         if status_param == "active":
             queryset = queryset.filter(
                 status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED]
@@ -119,31 +144,30 @@ class ListingListCreateView(generics.ListCreateAPIView):
             if status_param not in Listing.Status.values:
                 raise ValidationError({"status": "Unknown listing status."})
             queryset = queryset.filter(status=status_param)
-        elif not mine:
-            # Public browse shows the live marketplace. Without this, expired,
-            # picked-up and donated rows are returned, and because the default
-            # ordering is by deadline ascending, they sort to the very top.
-            queryset = queryset.filter(
-                status__in=[Listing.Status.AVAILABLE, Listing.Status.RESERVED]
-            )
 
-        scan_session_id = self.request.query_params.get("source_scan_session")
+        scan_session_id = params.get("source_scan_session")
         if scan_session_id:
             queryset = queryset.filter(
                 source_scan_session_id=parse_int(scan_session_id, field="source_scan_session", minimum=1)
             )
 
-        building = self.request.query_params.get("building")
+        building = params.get("building")
         if building:
             queryset = queryset.filter(building__iexact=building)
 
-        search = self.request.query_params.get("search")
-        use_fts = search and connection.vendor == "postgresql"
+        sort = params.get("sort", "deadline")
+        search = (params.get("search") or "").strip()
+        use_fts = bool(search) and connection.vendor == "postgresql"
         if search:
             if use_fts:
-                vector = SearchVector("title", weight="A") + SearchVector("description", weight="B") + SearchVector("pickup_zone", weight="C")
-                query = SearchQuery(search, search_type="websearch")
-                queryset = queryset.annotate(rank=SearchRank(vector, query)).filter(rank__gt=0)
+                query = SearchQuery(search, config=_FTS_CONFIG, search_type="websearch")
+                # Match with @@ on the indexed expression. The old filter
+                # (rank > 0 over unconfigured, weighted vectors) could not
+                # use the index and built a tsvector for every row. alias()
+                # keeps the document out of SELECT and GROUP BY.
+                queryset = queryset.alias(_fts_document=_fts_document()).filter(_fts_document=query)
+                if sort == "relevance":
+                    queryset = queryset.annotate(rank=SearchRank(_fts_rank_vector(), query))
             else:
                 queryset = queryset.filter(
                     Q(title__icontains=search)
@@ -162,9 +186,8 @@ class ListingListCreateView(generics.ListCreateAPIView):
             )
         )
 
-        sort = self.request.query_params.get("sort", "deadline")
         if sort == "relevance" and use_fts:
-            return queryset.order_by("-is_boosted", "-rank", "available_until")  # type: ignore[misc]  # rank annotated above
+            return queryset.order_by("-is_boosted", "-rank", "available_until")  # rank annotated above
         if sort == "newest":
             return queryset.order_by("-is_boosted", "-created_at")
         if sort == "price_low":
@@ -173,7 +196,7 @@ class ListingListCreateView(generics.ListCreateAPIView):
             return queryset.order_by("-is_boosted", "-price_amount", "available_until")
         # Default: deadline first, then completeness.
         # Personalised: if user has category_affinity, preferred categories bubble up.
-        # Done as a single annotated ORDER BY so pagination stays in SQL —
+        # Done as a single annotated ORDER BY so pagination stays in SQL;
         # never materialise the whole queryset in Python.
         affinity: dict = getattr(user, "category_affinity", {}) or {}
         if affinity and not mine:
@@ -184,8 +207,8 @@ class ListingListCreateView(generics.ListCreateAPIView):
                     output_field=BooleanField(),
                 )
             )
-            return queryset.order_by("-is_preferred", "-is_boosted", "available_until", "-completeness_score_ann", "-created_at")  # type: ignore[misc]  # annotated in helper
-        return queryset.order_by("-is_boosted", "available_until", "-completeness_score_ann", "-created_at")  # type: ignore[misc]  # annotated in helper
+            return queryset.order_by("-is_preferred", "-is_boosted", "available_until", "-completeness_score_ann", "-created_at")  # annotated in helper
+        return queryset.order_by("-is_boosted", "available_until", "-completeness_score_ann", "-created_at")  # annotated in helper
 
     def perform_create(self, serializer: Any) -> None:
         listing = serializer.save(owner=self.request.user)
@@ -199,7 +222,7 @@ class ListingDetailView(generics.RetrieveUpdateDestroyAPIView):
     parser_classes = [MultiPartParser, FormParser, StrictJSONParser]
 
     def get_queryset(self) -> QuerySet[Listing]:
-        qs = Listing.objects.select_related("owner", "source_scan_session").exclude(is_demo=True)
+        qs = Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).exclude(is_demo=True)
         user = current_user(self.request)
         # A flagged listing stays reachable for its owner (so they can see the
         # moderation notice) and for staff, but not by direct link for anyone else.
@@ -218,29 +241,90 @@ class ListingDetailView(generics.RetrieveUpdateDestroyAPIView):
             request.session.create()
             session_key = request.session.session_key
         ListingViewEvent.objects.get_or_create(listing=instance, session_key=session_key)
-        # Log authenticated interaction for personalised re-ranking
         if request.user.is_authenticated:
-            from ..models import ListingInteractionEvent
-            ListingInteractionEvent.objects.create(
-                user=current_user(request), listing=instance, action=ListingInteractionEvent.Action.VIEW
-            )
-            count = ListingInteractionEvent.objects.filter(user=current_user(request)).count()
-            if count % 10 == 0:
-                from ..tasks import recompute_category_affinity_task
-                recompute_category_affinity_task.delay(request.user.pk)
+            self._record_view_interaction(current_user(request), instance)
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
+    @staticmethod
+    def _record_view_interaction(user: Any, listing: Listing) -> None:
+        """Log one VIEW per user, listing and day for personalised re-ranking.
+
+        A GET must not grow the table without bound: every refresh used to
+        insert a row and then COUNT all of the user's rows. The unique
+        constraint on (user, listing, action, day) makes get_or_create safe
+        under concurrency, and the count now only runs when a row was added.
+        """
+        from ..models import ListingInteractionEvent
+
+        _, created = ListingInteractionEvent.objects.get_or_create(
+            user=user,
+            listing=listing,
+            action=ListingInteractionEvent.Action.VIEW,
+            day=timezone.localdate(),
+        )
+        if not created:
+            return
+        total = ListingInteractionEvent.objects.filter(user=user).count()
+        if total % 10 == 0:
+            try:
+                from ..tasks import recompute_category_affinity_task
+
+                recompute_category_affinity_task.delay(user.pk)
+            except Exception:
+                logger.exception("category affinity recompute could not be scheduled for user %s", user.pk)
+
+    @staticmethod
+    def _moderated_content(listing: Listing) -> tuple[Any, ...]:
+        """The fields moderation screens: public text, price and cover image."""
+        return (
+            listing.title,
+            listing.description,
+            listing.category,
+            listing.price_type,
+            listing.price_amount,
+            listing.image.name if listing.image else "",
+            listing.image_cdn_url,
+        )
+
+    def perform_update(self, serializer: Any) -> None:
+        before = self._moderated_content(serializer.instance)
+        listing = serializer.save()
+        if self._moderated_content(listing) == before:
+            return
+        # Moderation ran once at creation; an owner could post something
+        # clean and edit it afterwards. The task decides what a re-screen may
+        # change (it never lifts a moderator's flag). A scheduling failure
+        # must never fail the save that already happened.
+        try:
+            from ..tasks import remoderate_listing_task
+
+            remoderate_listing_task.delay(listing.pk)
+        except Exception:
+            logger.exception("re-moderation could not be scheduled for listing %s", listing.pk)
+            return
+        # Without a worker the task has already run inline; show its verdict.
+        listing.refresh_from_db(fields=["moderation_status", "moderation_flag_reason"])
+
     def perform_destroy(self, instance: Any) -> None:
-        instance.deleted_at = timezone.now()
-        instance.save(update_fields=["deleted_at", "updated_at"])
+        from ..services import release_listing_claims
+        from .dashboard import invalidate_user_dashboard_cache
+
+        with transaction.atomic():
+            instance.deleted_at = timezone.now()
+            instance.save(update_fields=["deleted_at", "updated_at"])
+            # A deleted listing must not keep a live claim pointing at it.
+            release_listing_claims(
+                instance, actor=self.request.user, reason="The owner removed the listing."
+            )
+        invalidate_user_dashboard_cache(instance.owner_id)
 
 
 MAX_GALLERY_IMAGES = 4  # extra photos beyond the cover image
 
 
 class ListingGalleryUploadView(APIView):
-    """POST /listings/:id/images — owner adds up to 4 extra gallery photos."""
+    """POST /listings/:id/images: owner adds up to 4 extra gallery photos."""
 
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -280,7 +364,7 @@ class ListingGalleryUploadView(APIView):
 
 
 class ListingGalleryImageView(APIView):
-    """DELETE /listings/:id/images/:image_id — owner removes a gallery photo."""
+    """DELETE /listings/:id/images/:image_id: owner removes a gallery photo."""
 
     permission_classes = [permissions.IsAuthenticated]
 
@@ -337,7 +421,7 @@ class SavedListingListView(generics.ListAPIView):
                 Prefetch(
                     "listing",
                     queryset=annotate_listing_queryset(
-                        Listing.objects.select_related("owner", "source_scan_session"), user
+                        Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS), user
                     ),
                 )
             )
@@ -407,7 +491,7 @@ class ListingReportListCreateView(generics.ListCreateAPIView):
     request=inline_serializer(
         "ListingBulkUpdateRequest",
         fields={
-            "pickup_zone": drf_serializers.CharField(required=False, allow_blank=True),
+            "pickup_zone": drf_serializers.CharField(required=False, max_length=140),
             "available_until": drf_serializers.DateTimeField(required=False),
             "listing_ids": drf_serializers.ListField(
                 child=drf_serializers.IntegerField(), required=False
@@ -467,21 +551,30 @@ class ListingBulkUpdateView(APIView):
                     status=400,
                 )
 
-        update_fields: dict[str, Any] = {}
+        # queryset.update() runs no model validation, so the values are
+        # validated here against the column they are written to. The old
+        # limit of 160 was longer than the column (140): PostgreSQL rejected
+        # such a value with a DataError, which surfaced as a 500.
+        update_fields: dict[str, Any] = {"updated_at": timezone.now()}
         if pickup_zone is not None:
             if not isinstance(pickup_zone, str):
                 return Response({"pickup_zone": "Must be text."}, status=400)
-            pickup_zone = pickup_zone.strip()
-            if len(pickup_zone) > 160:
-                return Response({"pickup_zone": "Must be 160 characters or fewer."}, status=400)
-            update_fields["pickup_zone"] = pickup_zone
+            zone_field = drf_serializers.CharField(
+                max_length=Listing._meta.get_field("pickup_zone").max_length or 140,
+                allow_blank=False,
+                trim_whitespace=True,
+            )
+            try:
+                update_fields["pickup_zone"] = zone_field.run_validation(pickup_zone)
+            except drf_serializers.ValidationError as exc:
+                return Response({"pickup_zone": exc.detail}, status=400)
         if available_until is not None:
             update_fields["available_until"] = available_until
 
         updated_count = queryset.update(**update_fields)
 
         refreshed_qs = annotate_listing_queryset(
-            Listing.objects.select_related("owner", "source_scan_session").filter(
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(
                 owner=current_user(request), is_demo=False, status__in=active_statuses
             ),
             current_user(request),
@@ -550,23 +643,33 @@ class GenerateDescriptionView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [StrictJSONParser]
+    throttle_classes = [GenerateDescriptionThrottle]
 
     def post(self, request: Request) -> Response:
-        title = str(request.data.get("title", "")).strip()
-        category = request.data.get("category", "other")
-        condition = request.data.get("condition", "good")
-        price_type = request.data.get("price_type", "free")
+        # Everything here ends up in a prompt, so it is coerced to short text
+        # first; a list or a 50 kB "title" must not reach the model.
+        title = str(request.data.get("title", "")).strip()[:140]
+        category = str(request.data.get("category", "other"))[:24]
+        condition = str(request.data.get("condition", "good"))[:24]
+        price_type = str(request.data.get("price_type", "free"))[:24]
         retail = request.data.get("estimated_retail_value")
 
         if not title:
             return Response({"detail": "title is required."}, status=400)
 
+        retail_value = Decimal("0")
+        if retail not in (None, ""):
+            try:
+                retail_value = Decimal(str(retail))
+            except InvalidOperation:
+                return Response({"estimated_retail_value": "Must be a number."}, status=400)
+            if not retail_value.is_finite():
+                return Response({"estimated_retail_value": "Must be a number."}, status=400)
+
         category_label = _CATEGORY_LABELS.get(category, "item")
-        condition_label = _CONDITION_LABELS.get(condition, condition)
+        condition_label = _CONDITION_LABELS.get(condition, "used")
         retail_line = (
-            f"Original retail value: approximately ${Decimal(retail):.0f}."
-            if retail and float(retail) > 0
-            else ""
+            f"Original retail value: approximately ${retail_value:.0f}." if retail_value > 0 else ""
         )
         price_line = "This item is being offered for free." if price_type == "free" else "This item is low-cost."
 
@@ -582,17 +685,17 @@ class GenerateDescriptionView(APIView):
             f"- Mention condition honestly\n"
             f"- Mention what the next student gets out of it\n"
             f"- No marketing fluff, no emojis, no price information\n"
-            f"- Plain prose only — no bullet points\n\n"
+            f"- Plain prose only, no bullet points\n\n"
             f"Write only the description text, nothing else."
         )
 
         try:
             description = trim_to_sentence(_generate_copy(prompt))
-        except RuntimeError as exc:
+        except AiNotConfigured as exc:
             return Response({"detail": str(exc)}, status=503)
         except Exception as exc:
             logger.exception("generate-description failed")
-            detail = "AI service unavailable — please write a description manually."
+            detail = "AI service unavailable. Please write a description manually."
             if settings.DEBUG:
                 detail = f"{detail} ({type(exc).__name__}: {exc})"
             return Response({"detail": detail}, status=503)
@@ -658,7 +761,7 @@ class PricingHintView(APIView):
                     "free_pct": None,
                     "median_price": None,
                     "price_range": None,
-                    "suggestion": "No comparable sales yet — set a price that feels fair to you.",
+                    "suggestion": "No comparable sales yet. Set a price that feels fair to you.",
                 }
             )
 
@@ -680,7 +783,7 @@ class PricingHintView(APIView):
             price_range = None
 
         if free_pct >= 70:
-            suggestion = f"{free_pct}% of similar items go free — consider making yours free too."
+            suggestion = f"{free_pct}% of similar items go free. Consider making yours free too."
         elif median_price:
             suggestion = f"Similar items typically sell for around ${median_price:.0f} ({free_pct}% go free)."
         else:
@@ -725,23 +828,28 @@ class ParseSearchView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [StrictJSONParser]
+    throttle_classes = [ParseSearchThrottle]
 
-    _VALID_CATEGORIES = {"storage", "lighting", "toiletries", "comfort", "supplies", "other"}
-    _VALID_PRICE_TYPES = {"free", "low_cost"}
+    # Derived from the model so a new category cannot be forgotten here; the
+    # hand-written set had already fallen behind (it rejected "decor").
+    _VALID_CATEGORIES = frozenset(Listing.Category.values)
+    _VALID_PRICE_TYPES = frozenset(Listing.PriceType.values)
+    _MAX_QUERY_CHARS = 200
 
     def post(self, request: Request) -> Response:
-        query = str(request.data.get("query", "")).strip()
+        query = str(request.data.get("query", "")).strip()[: self._MAX_QUERY_CHARS]
         if not query:
             return Response({"detail": "query is required."}, status=400)
 
+        categories = json.dumps(list(Listing.Category.values), separators=(",", ":"))
         prompt = (
             "You are a search query parser for a campus marketplace called ReNest where "
             "college students list dorm items during move-out. Parse the user's natural language "
             "search query into structured filter parameters.\n\n"
-            f'User query: "{query}"\n\n'
+            f"User query: {json.dumps(query)}\n\n"
             "Extract the following fields and respond ONLY with a JSON object, no other text:\n"
             '- "search": the core keyword(s) for text search (strip price/location qualifiers); null if none\n'
-            '- "category": one of ["storage","lighting","toiletries","comfort","supplies","other"] or null\n'
+            f'- "category": one of {categories} or null\n'
             '- "price_type": "free" if user wants free items, "low_cost" if under a dollar amount / cheap / low cost, null if no price constraint\n'
             '- "pickup_zone_hint": location string the user mentioned (e.g. "north dorms", "building A"); null if none\n\n'
             "Examples:\n"
@@ -751,30 +859,32 @@ class ParseSearchView(APIView):
             "Respond with only the JSON object."
         )
 
+        # generate_json asks the model for application/json and parses the
+        # answer with the shared fence- and prose-tolerant parser, replacing
+        # the regex this view used to carry for the same job.
         try:
-            raw = _generate_copy(prompt, max_tokens=150)
-        except RuntimeError as exc:
+            parsed = generate_json(prompt, max_tokens=150)
+        except AiNotConfigured as exc:
             return Response({"detail": str(exc)}, status=503)
         except Exception:
+            logger.exception("parse-search failed")
             return Response({"detail": "AI service unavailable."}, status=503)
 
-        import json as _json
-        try:
-            parsed = _json.loads(raw)
-        except _json.JSONDecodeError:
-            import re
-            match = re.search(r'\{[^}]+\}', raw, re.DOTALL)
-            if not match:
-                return Response({"detail": "Could not parse AI response."}, status=502)
-            try:
-                parsed = _json.loads(match.group())
-            except _json.JSONDecodeError:
-                return Response({"detail": "Could not parse AI response."}, status=502)
+        if not isinstance(parsed, dict):
+            return Response({"detail": "Could not parse AI response."}, status=502)
 
-        search = parsed.get("search") or None
-        category = parsed.get("category") if parsed.get("category") in self._VALID_CATEGORIES else None
-        price_type = parsed.get("price_type") if parsed.get("price_type") in self._VALID_PRICE_TYPES else None
-        pickup_zone_hint = parsed.get("pickup_zone_hint") or None
+        def _text(value: Any) -> str | None:
+            # The model is asked for strings but may return anything.
+            if not isinstance(value, str):
+                return None
+            return value.strip()[:200] or None
+
+        search = _text(parsed.get("search"))
+        raw_category = _text(parsed.get("category"))
+        raw_price_type = _text(parsed.get("price_type"))
+        category = raw_category if raw_category in self._VALID_CATEGORIES else None
+        price_type = raw_price_type if raw_price_type in self._VALID_PRICE_TYPES else None
+        pickup_zone_hint = _text(parsed.get("pickup_zone_hint"))
 
         chips: list[dict] = []
         if category:
@@ -824,38 +934,47 @@ class RepostListingView(APIView):
     _EXTEND_DAYS = 7
 
     def post(self, request: Request, pk: int) -> Response:
-        listing = get_object_or_404(
-            Listing.all_objects.select_related("owner", "source_scan_session"),
-            pk=pk,
-            owner=request.user,
-            is_demo=False,
-        )
+        from ..services import release_listing_claims
 
-        token = request.data.get("token", "")
-        if (
-            not listing.repost_token
-            or not secrets.compare_digest(str(listing.repost_token), str(token))
-        ):
-            return Response({"detail": "Invalid or missing repost token."}, status=400)
-
-        if listing.repost_token_expires_at and listing.repost_token_expires_at < timezone.now():
-            return Response({"detail": "Repost token has expired. Go to My Listings to edit and re-save."}, status=400)
-
-        if listing.status not in {Listing.Status.EXPIRED, Listing.Status.AVAILABLE}:
-            return Response(
-                {"detail": "Only expired or available listings can be reposted."},
-                status=400,
+        with transaction.atomic():
+            # Listing.objects, not all_objects: a soft-deleted listing must
+            # not be revivable through a leftover token.
+            listing = get_object_or_404(
+                Listing.objects.select_for_update(),
+                pk=pk,
+                owner=request.user,
+                is_demo=False,
             )
 
-        listing.available_until = timezone.now() + timedelta(days=self._EXTEND_DAYS)
-        listing.status = Listing.Status.AVAILABLE
-        listing.repost_token = None
-        listing.repost_token_expires_at = None
-        listing.save(update_fields=["available_until", "status", "repost_token", "repost_token_expires_at", "updated_at"])
+            token = request.data.get("token", "")
+            if (
+                not listing.repost_token
+                or not secrets.compare_digest(str(listing.repost_token).encode(), str(token).encode())
+            ):
+                return Response({"detail": "Invalid or missing repost token."}, status=400)
 
-        from .helpers import annotate_listing_queryset
+            if listing.repost_token_expires_at and listing.repost_token_expires_at < timezone.now():
+                return Response({"detail": "Repost token has expired. Go to My Listings to edit and re-save."}, status=400)
+
+            if listing.status not in {Listing.Status.EXPIRED, Listing.Status.AVAILABLE}:
+                return Response(
+                    {"detail": "Only expired or available listings can be reposted."},
+                    status=400,
+                )
+
+            # A listing can expire with a requested or confirmed claim still
+            # attached. Relisting it as AVAILABLE while that claim stays live
+            # would show an item nobody else can reserve.
+            release_listing_claims(listing, actor=request.user, reason="The owner relisted the item.")
+
+            listing.available_until = timezone.now() + timedelta(days=self._EXTEND_DAYS)
+            listing.status = Listing.Status.AVAILABLE
+            listing.repost_token = None
+            listing.repost_token_expires_at = None
+            listing.save(update_fields=["available_until", "status", "repost_token", "repost_token_expires_at", "updated_at"])
+
         refreshed = annotate_listing_queryset(
-            Listing.objects.select_related("owner", "source_scan_session").filter(pk=listing.pk),
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(pk=listing.pk),
             current_user(request),
         ).first()
 
@@ -878,44 +997,65 @@ class DonateListingView(APIView):
     parser_classes = [StrictJSONParser]
 
     def post(self, request: Request, pk: int) -> Response:
-        listing = get_object_or_404(
-            Listing.objects.select_related("owner"),
-            pk=pk,
-            owner=request.user,
-            is_demo=False,
-        )
-        if listing.status not in {Listing.Status.AVAILABLE, Listing.Status.RESERVED, Listing.Status.EXPIRED}:
-            return Response({"detail": "Only available, reserved, or expired listings can be donated."}, status=400)
-
-        hub_id = request.data.get("hub_id")
-        if hub_id:
-            from hubs.models import DonationHub
-            hub = get_object_or_404(DonationHub, pk=hub_id, active=True)
-            listing.donation_hub = hub
-
-        listing.status = Listing.Status.DONATED
-        listing.save(update_fields=["status", "donation_hub", "updated_at"])
-
         from ..receipts import generate_donation_receipt
-        receipt = generate_donation_receipt(listing)
-        if receipt:
-            listing.donation_receipt.save(receipt.name or "receipt.pdf", receipt, save=True)
+        from ..services import release_listing_claims
 
-        from ..tasks import send_donation_receipt_email_task
-        send_donation_receipt_email_task.delay(listing.pk)
+        hub = None
+        hub_id = parse_int(request.data.get("hub_id"), field="hub_id", minimum=1)
+        if hub_id is not None:
+            from hubs.models import DonationHub
+
+            hub = get_object_or_404(DonationHub, pk=hub_id, active=True)
+
+        # One transaction: the status flip, the cancelled claims and the
+        # stored receipt either all happen or none do. Before, a failure
+        # after the first save left a DONATED listing with a live claim.
+        with transaction.atomic():
+            listing = get_object_or_404(
+                Listing.objects.select_for_update(),
+                pk=pk,
+                owner=request.user,
+                is_demo=False,
+            )
+            if listing.status not in {Listing.Status.AVAILABLE, Listing.Status.RESERVED, Listing.Status.EXPIRED}:
+                return Response({"detail": "Only available, reserved, or expired listings can be donated."}, status=400)
+
+            if hub is not None:
+                listing.donation_hub = hub
+            listing.status = Listing.Status.DONATED
+            listing.save(update_fields=["status", "donation_hub", "updated_at"])
+
+            # The item is going to a hub, so nobody can still be promised it.
+            release_listing_claims(
+                listing, actor=request.user, reason="The owner donated the item to a campus hub."
+            )
+
+            receipt = generate_donation_receipt(listing)
+            if receipt:
+                listing.donation_receipt.save(receipt.name or "receipt.pdf", receipt, save=True)
+
+        # Notifications go out only after the donation is committed, and a
+        # failure in one of them must not turn a saved donation into a 500.
+        try:
+            from ..tasks import send_donation_receipt_email_task
+
+            send_donation_receipt_email_task.delay(listing.pk)
+        except Exception:
+            logger.exception("donation receipt email could not be scheduled for listing %s", listing.pk)
 
         from .dashboard import invalidate_user_dashboard_cache
         invalidate_user_dashboard_cache(request.user.pk)
 
         try:
             from .partner import dispatch_webhook_event
+
             dispatch_webhook_event(
                 "listing_donated",
                 {"id": listing.pk, "title": listing.title, "hub_id": hub_id},
-                listing.owner.campus.name if listing.owner.campus else (listing.owner.campus_name or ""),
+                owner_campus_name(listing.owner),
             )
         except Exception:
-            pass
+            logger.exception("listing_donated webhook dispatch failed for listing %s", listing.pk)
 
         return Response({"status": "donated", "receipt_generated": receipt is not None})
 
@@ -1020,9 +1160,10 @@ class VisionAutofillView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [VisionAutofillThrottle]
 
-    _VALID_CATEGORIES = {"storage", "lighting", "toiletries", "comfort", "supplies", "decor", "other"}
-    _VALID_CONDITIONS = {"new", "good", "fair"}
+    _VALID_CATEGORIES = frozenset(Listing.Category.values)
+    _VALID_CONDITIONS = frozenset(Listing.Condition.values)
 
     def post(self, request: Request) -> Response:
         from .revenue import campus_is_paid
@@ -1043,7 +1184,7 @@ class VisionAutofillView(APIView):
             "Look at this image of a dorm item and return a JSON object with ONLY these four fields:\n"
             '- "title": short, specific product name (max 8 words, no brand names needed)\n'
             '- "category": one of ["storage","lighting","toiletries","comfort","supplies","decor","other"]\n'
-            '- "condition": one of ["new","good","fair"] — new=like new/unused, good=used but clean, fair=worn/functional\n'
+            '- "condition": one of ["new","good","fair"] (new=like new/unused, good=used but clean, fair=worn/functional)\n'
             '- "description": 2-3 honest sentences describing the item and its condition\n\n'
             "Respond with ONLY the JSON object, no markdown, no extra text."
         )
@@ -1053,9 +1194,10 @@ class VisionAutofillView(APIView):
             parsed = generate_vision_json(image_bytes, mime_type, prompt, max_tokens=400)
         except ValueError as exc:
             return Response({"detail": f"Could not use that image: {exc}"}, status=400)
-        except RuntimeError as exc:
+        except AiNotConfigured as exc:
             return Response({"detail": str(exc)}, status=503)
         except Exception:
+            logger.exception("vision-autofill failed")
             return Response({"detail": "AI service unavailable."}, status=503)
 
         if not isinstance(parsed, dict):
@@ -1193,6 +1335,9 @@ class RescueSuggestionsView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    # A throttle that also counts GET: this read makes a model call, and the
+    # write-only throttles used elsewhere would wave every request through.
+    throttle_classes = [RescueSuggestionsThrottle]
 
     def get(self, request: Request) -> Response:
         from .revenue import campus_is_paid
@@ -1227,7 +1372,7 @@ class RescueSuggestionsView(APIView):
             )
 
         listings_qs = annotate_listing_queryset(
-            Listing.objects.select_related("owner", "source_scan_session").filter(pk__in=matched_ids),
+            Listing.objects.select_related(*LISTING_SERIALIZER_RELATIONS).filter(pk__in=matched_ids),
             current_user(request),
         )
         return Response(
@@ -1242,7 +1387,7 @@ class RescueSuggestionsView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Public impact counter — no auth required
+# Public impact counter (no auth required)
 # ---------------------------------------------------------------------------
 
 _CATEGORY_CO2_LBS: dict[str, float] = {
@@ -1273,7 +1418,7 @@ _CATEGORY_CO2_LBS: dict[str, float] = {
 )
 class ImpactView(APIView):
     """
-    Public campus-level impact aggregates — no authentication required.
+    Public campus-level impact aggregates, no authentication required.
     Used on the landing page and shareable in university sustainability reports.
     """
 

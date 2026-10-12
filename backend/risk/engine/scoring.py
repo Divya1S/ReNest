@@ -28,7 +28,13 @@ from dataclasses import dataclass
 from .context import TransactionContext
 from .rules import RuleResult
 
-MODEL_VERSION = "risk-rules-v1"
+# Stored on every evaluation so a decision can be traced to the rules that
+# made it; it changes whenever a rule's meaning does.
+#   v1  original rule set
+#   v2  amount thresholds and averages compared in approximate USD; device
+#       sharing counts the account being evaluated; the average is trusted on
+#       successful payments and "no spending history" means no successful one
+MODEL_VERSION = "risk-rules-v2"
 
 REVIEW_INTERCEPT = 60
 BLOCK_INTERCEPT = 90

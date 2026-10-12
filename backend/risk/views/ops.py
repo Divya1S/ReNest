@@ -1,4 +1,10 @@
-"""Events and audit log: the traceability surface."""
+"""Events and audit log: the traceability surface.
+
+Every serializer here is given the request, because that is how the row
+serializers know whether the reader is staff. Customers get the redacted
+form described in services.privacy; leaving the context out would also
+redact (the policy fails closed), never expose.
+"""
 
 from __future__ import annotations
 
@@ -44,7 +50,7 @@ class EventListView(APIView):
             qs = qs.filter(status=params["status"])
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request, view=self)
-        return paginator.get_paginated_response(PaymentEventSerializer(page, many=True).data)
+        return paginator.get_paginated_response(PaymentEventSerializer(page, many=True, context={"request": request}).data)
 
 
 class EventReplayView(APIView):
@@ -65,7 +71,7 @@ class EventReplayView(APIView):
         )
         summary = dispatch_pending(limit=50)
         event.refresh_from_db()
-        return Response({"event": PaymentEventSerializer(event).data, "dispatch": summary})
+        return Response({"event": PaymentEventSerializer(event, context={"request": request}).data, "dispatch": summary})
 
 
 class EventDispatchView(APIView):
@@ -93,4 +99,4 @@ class AuditListView(APIView):
             qs = qs.filter(action=params["action"][:64])
         paginator = StandardPagination()
         page = paginator.paginate_queryset(qs, request, view=self)
-        return paginator.get_paginated_response(AuditLogSerializer(page, many=True).data)
+        return paginator.get_paginated_response(AuditLogSerializer(page, many=True, context={"request": request}).data)

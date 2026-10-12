@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-/* The app's dark mode is the `.dark` class the toggle puts on <html> — key
+/* The app's dark mode is the `.dark` class the toggle puts on <html>, so key
    every `dark:` utility to it. Without this, Tailwind v4 defaults dark: to
    the OS `prefers-color-scheme`, so a user whose system theme disagrees with
    the in-app toggle gets a half-dark UI (vars flip, utilities don't). */
@@ -122,7 +122,7 @@ html {
   color: var(--color-ink);
   background-color: var(--bg-paper);
   /* Native controls (date-picker popups, scrollbars, form widgets) follow
-     color-scheme, not our CSS vars — keep them in step with the app theme. */
+     color-scheme, not our CSS vars, so keep them in step with the app theme. */
   color-scheme: light;
 }
 
@@ -182,7 +182,7 @@ body {
     cursor: pointer;
   }
 
-  /* Global keyboard focus indicator — visible only on keyboard navigation.
+  /* Global keyboard focus indicator, visible only on keyboard navigation.
      Components override this with their own focus-visible styles. */
   :focus-visible {
     outline: 3px solid var(--color-tag);
@@ -369,7 +369,7 @@ html.dark .field:-webkit-autofill:focus {
 
 .primary-button {
   @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-[0.65rem] text-[0.875rem] font-medium relative overflow-hidden;
-  min-height: 2.75rem; /* 44px — WCAG 2.5.5 touch target */
+  min-height: 2.75rem; /* 44px, WCAG 2.5.5 touch target */
   letter-spacing: normal;
   text-transform: none;
   border: 1px solid transparent;
@@ -405,7 +405,7 @@ html.dark .field:-webkit-autofill:focus {
 
 .secondary-button {
   @apply inline-flex items-center justify-center gap-2 rounded-full px-5 py-[0.65rem] text-[0.875rem] font-medium;
-  min-height: 2.75rem; /* 44px — WCAG 2.5.5 touch target */
+  min-height: 2.75rem; /* 44px, WCAG 2.5.5 touch target */
   letter-spacing: normal;
   text-transform: none;
   border: 1px solid var(--color-line-strong);
@@ -488,7 +488,7 @@ html.dark .hero-panel {
   z-index: 1;
 }
 
-/* SVG illustration override — scan hero is the only page still using a
+/* SVG illustration override: scan hero is the only page still using a
    corner illustration; the rest were retired with the quiet redesign. */
 .visual-scan-hero::before {
   content: "";
@@ -515,7 +515,7 @@ html.dark .hero-panel {
   z-index: 1;
 }
 
-/* The SVG has baked-in light colors — as a near-opaque light blob it glares
+/* The SVG has baked-in light colors; as a near-opaque light blob it glares
    on the dark panel; ghost it back. */
 html.dark .visual-scan-hero::before {
   opacity: 0.16;
@@ -1042,7 +1042,7 @@ html.dark .floating-label-group input:-webkit-autofill:focus {
 /* ─── Mobile ─────────────────────────────────────────────────────────────── */
 
 /* ─── Nav height token ───────────────────────────────────────────────────── */
-/* Fallback only — AppFrame measures the rendered header and overwrites this
+/* Fallback only: AppFrame measures the rendered header and overwrites this
    at runtime (ResizeObserver), keeping under-nav sticky elements flush. */
 :root {
   --nav-h: 69px;

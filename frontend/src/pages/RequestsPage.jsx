@@ -237,7 +237,8 @@ export default function RequestsPage() {
     const params = new URLSearchParams();
     if (category) params.set("category", category);
     if (search) params.set("search", search);
-    setSearchParams(params, { replace: true });
+    // Same page, new filters: keep the reader where they are.
+    setSearchParams(params, { replace: true, preventScrollReset: true });
   }, [category, search, setSearchParams]);
 
   const loadData = React.useCallback(async () => {

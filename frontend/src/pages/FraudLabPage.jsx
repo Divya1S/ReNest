@@ -184,7 +184,7 @@ export default function FraudLabPage() {
     <RiskShell title="Fraud Lab" subtitle="Generate labelled synthetic attacks, score them with the real decision engine, and measure what it caught and what it slowed down.">
       <PageSection>
         <Panel title="Run a scenario" description={selected?.description}>
-          <StateBlock loading={catalogue.loading && !catalogue.data} error={catalogue.error} onRetry={catalogue.refetch} skeleton="h-40">
+          <StateBlock loading={catalogue.loading && !catalogue.data} error={catalogue.error} onRetry={catalogue.retry} skeleton="h-40">
             {catalogue.data ? (
               <form onSubmit={run} className="grid gap-4 md:grid-cols-[1.6fr_1fr]">
                 <fieldset>
@@ -236,7 +236,7 @@ export default function FraudLabPage() {
 
       <PageSection className="mt-6">
         <Panel title="Recent runs" description="The last six runs per account are kept; older ones and their rows are removed.">
-          <StateBlock loading={runs.loading && !runs.data} error={runs.error} onRetry={runs.refetch} empty={runs.data && runs.data.results.length === 0} emptyText="No runs yet. Pick a scenario above." skeleton="h-32">
+          <StateBlock loading={runs.loading && !runs.data} error={runs.error} onRetry={runs.retry} empty={runs.data && runs.data.results.length === 0} emptyText="No runs yet. Pick a scenario above." skeleton="h-32">
             {runs.data ? (
               <ul className="divide-y divide-black/5 dark:divide-white/10">
                 {runs.data.results.map((item) => (

@@ -102,7 +102,7 @@ class NotificationReadAllView(APIView):
 class NotificationDigestView(APIView):
     """
     GET /api/notifications/digest
-    Phase 26 — last 7 days of notifications grouped by date then type.
+    Phase 26: last 7 days of notifications grouped by date then type.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -138,7 +138,7 @@ class NotificationDigestView(APIView):
 class NotificationPreferenceView(APIView):
     """
     GET/PATCH /api/auth/notification-preferences
-    Phase 26 — read or bulk-update the user's per-type notification preferences.
+    Phase 26: read or bulk-update the user's per-type notification preferences.
     """
     permission_classes = [permissions.IsAuthenticated]
 

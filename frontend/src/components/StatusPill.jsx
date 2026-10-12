@@ -15,6 +15,13 @@ const labels = {
   needs_info: "Needs Info",
   donation_route: "Donation Route",
   published: "Published",
+  // Reservation statuses (the Handoff Hub header). Without these the pill
+  // printed the raw value, e.g. "expired_unresolved".
+  requested: "Requested",
+  confirmed: "Confirmed",
+  completed: "Completed",
+  cancelled: "Cancelled",
+  expired_unresolved: "Overdue",
 };
 
 const tones = {
@@ -31,6 +38,12 @@ const tones = {
   donation_route: "border-[color:var(--color-teal-soft)] bg-[color:var(--color-teal-soft)] text-[color:var(--color-teal)] dark:bg-[rgba(154,182,213,0.12)] dark:border-[rgba(154,182,213,0.2)]",
   published: "border-[rgba(30,48,74,0.22)] bg-[color:var(--color-night)] text-white dark:bg-[color:var(--color-surface-2)] dark:border-white/15",
 };
+// Reservation statuses reuse the listing tones that carry the same meaning.
+tones.requested = tones.reserved;
+tones.confirmed = tones.available;
+tones.completed = tones.picked_up;
+tones.cancelled = tones.expired;
+tones.expired_unresolved = tones.urgent;
 
 export default function StatusPill({ status, className }) {
   return (

@@ -1,6 +1,6 @@
 import { ArrowRight, ImagePlus, Images, Sparkles, TrendingUp, X } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import DraftStatusNotice from "../components/DraftStatusNotice";
@@ -8,10 +8,11 @@ import PageSection from "../components/PageSection";
 import SkeletonLoader from "../components/SkeletonLoader";
 import UnsavedChangesDialog from "../components/UnsavedChangesDialog";
 import { useAuth } from "../context/AuthContext";
+import { useDebounce } from "../hooks/useDebounce";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { usePersistentDraftState } from "../hooks/usePersistentDraftState";
 import { useUnsavedChangesGuard } from "../hooks/useUnsavedChangesGuard";
-import { apiFetch, toLocalDateTimeInput } from "../lib/api";
+import { ApiError, apiFetch, flattenErrorMessage, toLocalDateTimeInput } from "../lib/api";
 import type { Listing, ListingGalleryImage, PricingHint } from "../types";
 
 const initialForm = {
@@ -35,13 +36,44 @@ function normalizeFormForDirtyCheck(form: typeof initialForm) {
   };
 }
 
-function useDebounce<T>(value: T, delay: number): T {
-  const [debounced, setDebounced] = useState<T>(value);
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), delay);
-    return () => clearTimeout(id);
-  }, [value, delay]);
-  return debounced;
+// Fields the form owns, in reading order. A server validation error keyed by
+// one of these is shown next to that field; focus goes to the first of them.
+const FORM_FIELDS = [
+  "title",
+  "description",
+  "category",
+  "condition",
+  "price_type",
+  "price_amount",
+  "estimated_retail_value",
+  "pickup_zone",
+  "building",
+  "available_until",
+] as const;
+
+const INVALID_FIELD_CLASS = "border-red-400 focus:border-red-400 focus:ring-red-200";
+
+function fieldId(name: string): string {
+  return `listing-${name}`;
+}
+
+function errorId(name: string): string {
+  return `listing-${name}-error`;
+}
+
+/** An error tied to its field: announced when it appears, referenced by the input. */
+function FieldError({ name, message }: { name: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={errorId(name)} role="alert" className="text-xs font-semibold text-red-500">
+      {message}
+    </p>
+  );
+}
+
+function focusFirstInvalid(errors: Record<string, string>): void {
+  const first = FORM_FIELDS.find((name) => errors[name]);
+  if (first) document.getElementById(fieldId(first))?.focus();
 }
 
 function computeCompleteness(form: typeof initialForm, hasImage: boolean) {
@@ -74,9 +106,17 @@ export default function ListingFormPage() {
   const [loadedEditingForm, setLoadedEditingForm] = useState(initialForm);
   const [previewUrl, setPreviewUrl] = useState("");
   const [loading, setLoading] = useState(editing);
+  const [loadError, setLoadError] = useState<{ message: string; notFound: boolean } | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  // Client-side validation results, recomputed on blur and on submit.
+  const [clientErrors, setClientErrors] = useState<Record<string, string>>({});
+  // What the server rejected on the last submit. Kept apart so that tabbing
+  // out of a field (which re-runs client validation) cannot erase a message
+  // the client could not have produced; it clears when that field is edited.
+  const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
+  const fieldErrors: Record<string, string> = { ...serverErrors, ...clientErrors };
   const [generatingDesc, setGeneratingDesc] = useState(false);
   const [pricingHint, setPricingHint] = useState<PricingHint | null>(null);
   const [extraFiles, setExtraFiles] = useState<File[]>([]);
@@ -101,6 +141,8 @@ export default function ListingFormPage() {
     }
 
     let active = true;
+    setLoading(true);
+    setLoadError(null);
     apiFetch<Listing>(`/listings/${listingId}`)
       .then((listing) => {
         if (active) {
@@ -125,7 +167,10 @@ export default function ListingFormPage() {
       })
       .catch((requestError) => {
         if (active) {
-          setError((requestError as Error).message);
+          setLoadError({
+            message: (requestError as Error).message,
+            notFound: requestError instanceof ApiError && requestError.status === 404,
+          });
         }
       })
       .finally(() => {
@@ -137,7 +182,7 @@ export default function ListingFormPage() {
     return () => {
       active = false;
     };
-  }, [editing, listingId]);
+  }, [editing, listingId, loadAttempt]);
 
   const localPreview = useMemo(() => {
     if (!form.image) {
@@ -196,9 +241,9 @@ export default function ListingFormPage() {
       });
       setForm((c) => ({ ...c, description: data.description }));
       clearFieldError("description");
-      toast.success("Description written — edit it to make it yours.");
+      toast.success("Description written. Edit it to make it yours.");
     } catch (err) {
-      toast.error((err as Error).message || "AI unavailable — please write manually.");
+      toast.error((err as Error).message || "AI unavailable. Please write manually.");
     } finally {
       setGeneratingDesc(false);
     }
@@ -292,36 +337,54 @@ export default function ListingFormPage() {
     return errs;
   }
 
+  function withoutKey(current: Record<string, string>, field: string): Record<string, string> {
+    if (!(field in current)) return current;
+    const next = { ...current };
+    delete next[field];
+    return next;
+  }
+
   function handleBlur(field: string) {
     const errs = validateFields(form);
     if (errs[field]) {
-      setFieldErrors((current) => ({ ...current, [field]: errs[field] }));
+      setClientErrors((current) => ({ ...current, [field]: errs[field] }));
     } else {
-      setFieldErrors((current) => {
-        const next = { ...current };
-        delete next[field];
-        return next;
-      });
+      setClientErrors((current) => withoutKey(current, field));
     }
   }
 
+  // Editing a field retires whatever was wrong with its previous value.
   function clearFieldError(field: string) {
-    if (fieldErrors[field]) {
-      setFieldErrors((current) => {
-        const next = { ...current };
-        delete next[field];
-        return next;
-      });
-    }
+    setClientErrors((current) => withoutKey(current, field));
+    setServerErrors((current) => withoutKey(current, field));
+  }
+
+  /** aria wiring for one input: its id, validity and the text that explains it. */
+  function fieldProps(name: string, hintId?: string) {
+    const describedBy = [fieldErrors[name] ? errorId(name) : null, hintId ?? null]
+      .filter(Boolean)
+      .join(" ");
+    return {
+      id: fieldId(name),
+      "aria-invalid": fieldErrors[name] ? (true as const) : undefined,
+      "aria-describedby": describedBy || undefined,
+    };
+  }
+
+  function fieldClass(name: string, base = "field"): string {
+    return fieldErrors[name] ? `${base} ${INVALID_FIELD_CLASS}` : base;
   }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     const errs = validateFields(form);
+    setServerErrors({});
     if (Object.keys(errs).length > 0) {
-      setFieldErrors(errs);
+      setClientErrors(errs);
+      focusFirstInvalid(errs);
       return;
     }
+    setClientErrors({});
     setSubmitting(true);
     setError("");
 
@@ -385,22 +448,50 @@ export default function ListingFormPage() {
       if (!editing) createDraft.clearDraft({ reset: true });
       navigate(`/listings/${listing.id}`, { replace: true });
     } catch (requestError) {
-      setError((requestError as Error).message);
-      toast.error((requestError as Error).message);
+      // Put each server validation message next to the field it is about.
+      // Flattened into one sentence they read "This field may not be blank.
+      // Ensure this value is greater than 0." with no hint as to which field.
+      const data = requestError instanceof ApiError ? requestError.data : null;
+      const reported = requestError instanceof ApiError ? requestError.fieldErrors : {};
+      const mapped: Record<string, string> = {};
+      for (const name of FORM_FIELDS) {
+        if (reported[name]) mapped[name] = reported[name];
+      }
+
+      let summary = (requestError as Error).message;
+      if (Object.keys(mapped).length > 0) {
+        setServerErrors(mapped);
+        focusFirstInvalid(mapped);
+        // Anything not tied to a form field (non_field_errors, detail, a field
+        // this form does not show) still has to be said somewhere.
+        const rest =
+          data && typeof data === "object" && !Array.isArray(data)
+            ? Object.fromEntries(Object.entries(data).filter(([key]) => !(key in mapped)))
+            : {};
+        summary = ["Some fields need attention. See the messages next to them.", flattenErrorMessage(rest, "")]
+          .filter(Boolean)
+          .join(" ");
+      }
+      setError(summary);
+      toast.error(summary);
     } finally {
       setSubmitting(false);
     }
   }
 
+  // Resolves to false when direct upload is unavailable, so the caller falls
+  // back to a multipart PATCH. apiFetch throws on any non-2xx (including the
+  // 501 a deployment without object storage answers with), hence the catch:
+  // "no upload_url" is the only signal there is to check.
   async function _uploadImage(file: File, listingId: number) {
-    type UploadUrlResponse = { upload_url?: string; cdn_url?: string; status?: number };
+    type UploadUrlResponse = { upload_url?: string; cdn_url?: string };
     try {
-      const { upload_url, cdn_url, status } = await apiFetch<UploadUrlResponse>(`/listings/${listingId}/upload-url`, {
+      const { upload_url, cdn_url } = await apiFetch<UploadUrlResponse>(`/listings/${listingId}/upload-url`, {
         method: "POST",
         body: { content_type: file.type, content_length: file.size },
       }).catch(() => ({} as UploadUrlResponse));
 
-      if (!upload_url || status === 501) return false;
+      if (!upload_url) return false;
 
       const s3Res = await fetch(upload_url, {
         method: "PUT",
@@ -437,6 +528,34 @@ export default function ListingFormPage() {
     );
   }
 
+  // An edit form that failed to load must not fall through to an empty form:
+  // it looked like a blank listing and invited overwriting the real one.
+  if (loadError) {
+    return (
+      <PageSection className="mx-auto max-w-xl paper-panel p-10 text-center">
+        <div role="alert">
+          <p className="label-title">Edit listing</p>
+          <h1 className="mt-3 text-[24px] font-bold tracking-[-0.02em]">
+            {loadError.notFound ? "Listing not found" : "This listing could not be loaded"}
+          </h1>
+          <p className="mt-3 text-[color:var(--text-muted)]">
+            {loadError.notFound ? "It may have been removed, or it is not yours to edit." : loadError.message}
+          </p>
+        </div>
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
+          {!loadError.notFound && (
+            <button type="button" onClick={() => setLoadAttempt((n) => n + 1)} className="primary-button">
+              Try Again
+            </button>
+          )}
+          <Link to="/my-listings" className="secondary-button">
+            Back to My Listings
+          </Link>
+        </div>
+      </PageSection>
+    );
+  }
+
   return (
     <>
       <UnsavedChangesDialog {...unsavedGuard.dialogProps} />
@@ -467,7 +586,7 @@ export default function ListingFormPage() {
           )}
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-8 grid gap-4 sm:grid-cols-2">
+        <form onSubmit={handleSubmit} noValidate className="mt-8 grid gap-4 sm:grid-cols-2">
           {!editing ? (
             <div className="sm:col-span-2">
               <DraftStatusNotice
@@ -489,17 +608,18 @@ export default function ListingFormPage() {
               />
             </div>
           ) : null}
-        <label className="sm:col-span-2 flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Item Title</span>
+        <div className="sm:col-span-2 flex flex-col gap-1.5">
+          <label htmlFor={fieldId("title")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Item Title</label>
           <input
-            className={`field ${fieldErrors.title ? "border-red-400 focus:border-red-400 focus:ring-red-200" : ""}`}
+            {...fieldProps("title")}
+            className={fieldClass("title")}
             placeholder="e.g. Dorm fan, Storage bin, Desk lamp"
             value={form.title}
             onChange={(event) => { setForm((c) => ({ ...c, title: event.target.value })); clearFieldError("title"); }}
             onBlur={() => handleBlur("title")}
           />
-          {fieldErrors.title && <p className="text-xs font-semibold text-red-500">{fieldErrors.title}</p>}
-        </label>
+          <FieldError name="title" message={fieldErrors.title} />
+        </div>
 
         <div className="sm:col-span-2 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
@@ -515,22 +635,23 @@ export default function ListingFormPage() {
             </button>
           </div>
           <textarea
-            id="listing-description"
-            className={`field min-h-36 ${fieldErrors.description ? "border-red-400 focus:border-red-400 focus:ring-red-200" : ""}`}
+            {...fieldProps("description")}
+            className={fieldClass("description", "field min-h-36")}
             placeholder="Describe condition, what is included, and anything the next student should know."
             value={form.description}
             onChange={(event) => { setForm((c) => ({ ...c, description: event.target.value })); clearFieldError("description"); }}
             onBlur={() => handleBlur("description")}
           />
-          {fieldErrors.description && <p className="text-xs font-semibold text-red-500">{fieldErrors.description}</p>}
+          <FieldError name="description" message={fieldErrors.description} />
         </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Category</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("category")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Category</label>
           <select
-            className="field"
+            {...fieldProps("category")}
+            className={fieldClass("category")}
             value={form.category}
-            onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+            onChange={(event) => { setForm((current) => ({ ...current, category: event.target.value })); clearFieldError("category"); }}
           >
             <option value="storage">Storage</option>
             <option value="lighting">Lighting</option>
@@ -540,42 +661,53 @@ export default function ListingFormPage() {
             <option value="decor">Decor</option>
             <option value="other">Other</option>
           </select>
-        </label>
+          <FieldError name="category" message={fieldErrors.category} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Condition</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("condition")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Condition</label>
           <select
-            className="field"
+            {...fieldProps("condition")}
+            className={fieldClass("condition")}
             value={form.condition}
-            onChange={(event) => setForm((current) => ({ ...current, condition: event.target.value }))}
+            onChange={(event) => { setForm((current) => ({ ...current, condition: event.target.value })); clearFieldError("condition"); }}
           >
             <option value="new">Like new</option>
             <option value="good">Good</option>
             <option value="fair">Fair</option>
           </select>
-        </label>
+          <FieldError name="condition" message={fieldErrors.condition} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Pricing</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("price_type")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Pricing</label>
           <select
-            className="field"
+            {...fieldProps("price_type")}
+            className={fieldClass("price_type")}
             value={form.price_type}
-            onChange={(event) => setForm((current) => ({ ...current, price_type: event.target.value }))}
+            onChange={(event) => {
+              setForm((current) => ({ ...current, price_type: event.target.value }));
+              clearFieldError("price_type");
+              // A price error belongs to low-cost pricing; it is moot once free.
+              if (event.target.value !== "low_cost") clearFieldError("price_amount");
+            }}
           >
             <option value="free">Free</option>
             <option value="low_cost">Low cost</option>
           </select>
-        </label>
+          <FieldError name="price_type" message={fieldErrors.price_type} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("price_amount")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">
             Price
             {form.price_type !== "low_cost" && (
-              <span className="ml-2 font-medium normal-case tracking-normal text-[color:var(--text-muted)]">— set pricing to &quot;Low cost&quot; to enable</span>
+              <span className="ml-2 font-medium normal-case tracking-normal text-[color:var(--text-muted)]">(set pricing to &quot;Low cost&quot; to enable)</span>
             )}
-          </span>
+          </label>
           <input
-            className={`field disabled:cursor-not-allowed disabled:opacity-50 ${fieldErrors.price_amount ? "border-red-400 focus:border-red-400 focus:ring-red-200" : ""}`}
+            {...fieldProps("price_amount")}
+            className={fieldClass("price_amount", "field disabled:cursor-not-allowed disabled:opacity-50")}
             type="number"
             min="0.01"
             step="0.01"
@@ -585,8 +717,8 @@ export default function ListingFormPage() {
             onBlur={() => handleBlur("price_amount")}
             disabled={form.price_type !== "low_cost"}
           />
-          {fieldErrors.price_amount && <p className="text-xs font-semibold text-red-500">{fieldErrors.price_amount}</p>}
-        </label>
+          <FieldError name="price_amount" message={fieldErrors.price_amount} />
+        </div>
 
         {pricingHint && (
           <div className="sm:col-span-2 flex items-start gap-2.5 rounded-2xl bg-[color:var(--color-tag-soft)] px-4 py-3 text-sm text-[color:var(--color-tag)]">
@@ -595,58 +727,67 @@ export default function ListingFormPage() {
           </div>
         )}
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Estimated Retail Value</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("estimated_retail_value")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Estimated Retail Value</label>
           <input
-            className="field"
+            {...fieldProps("estimated_retail_value")}
+            className={fieldClass("estimated_retail_value")}
             type="number"
             min="0"
             step="0.01"
             placeholder="e.g. 24.00"
             value={form.estimated_retail_value}
-            onChange={(event) => setForm((current) => ({ ...current, estimated_retail_value: event.target.value }))}
+            onChange={(event) => { setForm((current) => ({ ...current, estimated_retail_value: event.target.value })); clearFieldError("estimated_retail_value"); }}
           />
-        </label>
+          <FieldError name="estimated_retail_value" message={fieldErrors.estimated_retail_value} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Pickup Zone</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("pickup_zone")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Pickup Zone</label>
           <input
-            className={`field ${fieldErrors.pickup_zone ? "border-red-400 focus:border-red-400 focus:ring-red-200" : ""}`}
+            {...fieldProps("pickup_zone")}
+            className={fieldClass("pickup_zone")}
             placeholder="e.g. Dorm A lobby, Building 3 entry"
             value={form.pickup_zone}
             onChange={(event) => { setForm((c) => ({ ...c, pickup_zone: event.target.value })); clearFieldError("pickup_zone"); }}
             onBlur={() => handleBlur("pickup_zone")}
           />
-          {fieldErrors.pickup_zone && <p className="text-xs font-semibold text-red-500">{fieldErrors.pickup_zone}</p>}
-        </label>
+          <FieldError name="pickup_zone" message={fieldErrors.pickup_zone} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Building / Dorm <span className="normal-case font-normal opacity-60">(optional)</span></span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("building")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Building / Dorm <span className="normal-case font-normal opacity-60">(optional)</span></label>
           <input
-            className="field"
+            {...fieldProps("building", "listing-building-hint")}
+            className={fieldClass("building")}
             placeholder="e.g. Marks Hall, North Tower, Building 7"
             value={form.building}
-            onChange={(event) => setForm((c) => ({ ...c, building: event.target.value }))}
+            onChange={(event) => { setForm((c) => ({ ...c, building: event.target.value })); clearFieldError("building"); }}
           />
-          <p className="text-[11px] text-[color:var(--text-muted)]">Helps nearby students find your item faster.</p>
-        </label>
+          <p id="listing-building-hint" className="text-[11px] text-[color:var(--text-muted)]">Helps nearby students find your item faster.</p>
+          <FieldError name="building" message={fieldErrors.building} />
+        </div>
 
-        <label className="flex flex-col gap-1.5">
-          <span className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Available Until</span>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={fieldId("available_until")} className="text-xs font-bold uppercase tracking-widest text-[color:var(--text-muted)]">Available Until</label>
           <input
-            className={`field ${fieldErrors.available_until ? "border-red-400 focus:border-red-400 focus:ring-red-200" : ""}`}
+            {...fieldProps(
+              "available_until",
+              !editing && user?.campus?.move_out_end ? "listing-available_until-hint" : undefined,
+            )}
+            className={fieldClass("available_until")}
             type="datetime-local"
             value={form.available_until}
             onChange={(event) => { setForm((c) => ({ ...c, available_until: event.target.value })); clearFieldError("available_until"); }}
             onBlur={() => handleBlur("available_until")}
           />
           {!editing && user?.campus?.move_out_end && (
-            <p className="text-[11px] text-[color:var(--text-muted)]">
+            <p id="listing-available_until-hint" className="text-[11px] text-[color:var(--text-muted)]">
               Pre-filled with {user.campus.name}&apos;s move-out date. You can adjust it.
             </p>
           )}
-          {fieldErrors.available_until && <p className="text-xs font-semibold text-red-500">{fieldErrors.available_until}</p>}
-        </label>
+          <FieldError name="available_until" message={fieldErrors.available_until} />
+        </div>
         <div className="sm:col-span-2 space-y-3">
           {/* sr-only rather than hidden: display:none removes the input from
               the tab order, leaving no keyboard path to the file picker. */}
@@ -729,7 +870,7 @@ export default function ListingFormPage() {
             </div>
           )}
         </div>
-        {error ? <p className="sm:col-span-2 text-sm font-bold text-[color:var(--color-urgent)]">{error}</p> : null}
+        {error ? <p role="alert" className="sm:col-span-2 text-sm font-bold text-[color:var(--color-urgent)]">{error}</p> : null}
           <button type="submit" disabled={submitting} className="primary-button sm:col-span-2">
             <ArrowRight size={15} />
             {submitting ? "Saving..." : editing ? "Save Changes" : "Create Listing"}

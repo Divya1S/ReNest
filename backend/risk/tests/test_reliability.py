@@ -169,7 +169,9 @@ class OpsIntegrationTests(TestCase):
         user = make_user("seed@example.com")
         out = io.StringIO()
         call_command("seed_risk_demo", email=user.email, payments=6, skip_simulations=True, stdout=out)
-        self.assertEqual(PaymentTransaction.objects.filter(user=user, is_simulation=False).count(), 6)
+        # --payments is the ordinary history; the fixed anomalies come on top:
+        # a large purchase, a new-device purchase, a decline and a burst of six.
+        self.assertEqual(PaymentTransaction.objects.filter(user=user, is_simulation=False).count(), 6 + 3 + 6)
         self.assertEqual(AgentPolicy.objects.filter(user=user).count(), 1)
         self.assertEqual(SimulationRun.objects.count(), 0)
-        self.assertIn("payments created: 6", out.getvalue())
+        self.assertIn("payments created: 15 (6 ordinary", out.getvalue())

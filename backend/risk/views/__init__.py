@@ -1,4 +1,4 @@
-from .agents import AgentDetailView, AgentListCreateView, AgentTransactionView
+from .agents import AgentDetailView, AgentListCreateView, AgentTransactionResolveView, AgentTransactionView
 from .dashboard import (
     DistributionView,
     FeedView,
@@ -24,6 +24,7 @@ from .payments import PaymentDetailView, PaymentListCreateView, PaymentReviewVie
 __all__ = [
     "AgentDetailView",
     "AgentListCreateView",
+    "AgentTransactionResolveView",
     "AgentTransactionView",
     "AuditListView",
     "DistributionView",

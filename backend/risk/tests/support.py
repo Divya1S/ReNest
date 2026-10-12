@@ -44,6 +44,16 @@ def payment_payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def fingerprint(**overrides: Any) -> dict[str, Any]:
+    """The idempotency fingerprint the API computes for `payment_payload(**overrides)`."""
+    from risk.serializers import PaymentCreateSerializer
+    from risk.services import idempotency
+
+    serializer = PaymentCreateSerializer(data=payment_payload(**overrides))
+    serializer.is_valid(raise_exception=True)
+    return idempotency.payment_request_fingerprint(validated=serializer.validated_data)
+
+
 def context(**overrides: Any) -> TransactionContext:
     """An established, trusted customer unless overridden."""
     fields: dict[str, Any] = dict(

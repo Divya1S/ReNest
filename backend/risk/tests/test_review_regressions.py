@@ -41,13 +41,21 @@ class LiveSignalTests(APITestCase):
         self.assertEqual(snapshot["historical_txn_count"], 4)
         self.assertEqual(snapshot["txn_count_1h"], 4)
 
-    def test_known_device_needs_three_prior_uses(self):
+    def test_known_device_needs_three_prior_uses_over_at_least_a_day(self):
         for _ in range(3):
             self.client.post(URL, payment_payload(device_id="laptop-1"), format="json")
+        # Three uses within the same minute are not yet a trusted device.
+        body = self.client.post(URL, payment_payload(device_id="laptop-1"), format="json").json()
+        self.assertNotIn("known_device", {f["code"] for f in body["evaluation"]["factors"]})
+        self.assertEqual(body["evaluation"]["context_snapshot"]["device_seen_count"], 3)
+
+        PaymentTransaction.objects.filter(user=self.user, device_id="laptop-1").update(
+            created_at=timezone.now() - timedelta(days=2)
+        )
         body = self.client.post(URL, payment_payload(device_id="laptop-1"), format="json").json()
         codes = {f["code"] for f in body["evaluation"]["factors"]}
         self.assertIn("known_device", codes)
-        self.assertEqual(body["evaluation"]["context_snapshot"]["device_seen_count"], 3)
+        self.assertEqual(body["evaluation"]["context_snapshot"]["device_seen_count"], 4)
 
 
 class IdempotencyAfterCommitTests(APITestCase):
@@ -63,9 +71,11 @@ class IdempotencyAfterCommitTests(APITestCase):
             crashed = self.client.post(URL, payment_payload(), format="json", HTTP_IDEMPOTENCY_KEY="after-commit")
         self.assertEqual(crashed.status_code, 500)
         self.assertEqual(PaymentTransaction.objects.count(), 1)
+        # The key was bound in the payment's own transaction. No response was
+        # stored (the request died), so the retry is answered from the payment.
         record = IdempotencyKey.objects.get(key="after-commit")
-        self.assertEqual(record.status, "completed")
-        self.assertEqual(record.response_status, 201)
+        self.assertEqual(record.transaction_id, PaymentTransaction.objects.get().pk)
+        self.assertEqual(record.status, "in_progress")
 
         retry = self.client.post(URL, payment_payload(), format="json", HTTP_IDEMPOTENCY_KEY="after-commit")
         self.assertEqual(retry.status_code, 201)

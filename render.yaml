@@ -1,4 +1,4 @@
-# ReNest — Render Blueprint (https://render.com/docs/blueprint-spec)
+# ReNest Render Blueprint (https://render.com/docs/blueprint-spec)
 #
 # One-click deploy: Render Dashboard -> New -> Blueprint -> pick this repo.
 #
@@ -88,6 +88,9 @@ services:
         sync: false
       - key: DEFAULT_FROM_EMAIL
         sync: false
+      # Inbox for campus onboarding requests; defaults to DEFAULT_FROM_EMAIL.
+      - key: PLATFORM_ADMIN_EMAIL
+        sync: false
       - key: AWS_S3_BUCKET_NAME
         sync: false
       - key: AWS_S3_ENDPOINT_URL
@@ -128,7 +131,9 @@ services:
 # Uncomment to run Celery in real worker processes. Requires a paid plan for
 # each worker and a Redis instance; also set REDIS_URL on renest-web and
 # remove the MAINTENANCE_URL variable from GitHub so the cron does not double
-# up with beat.
+# up with beat. Beat schedules the same tick / daily / weekly job sets the
+# maintenance endpoint runs (CELERY_BEAT_SCHEDULE in settings.py), so nothing
+# is lost by switching from one scheduler to the other.
 #
 #  - type: keyvalue
 #    name: renest-redis

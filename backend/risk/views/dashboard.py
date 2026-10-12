@@ -263,9 +263,11 @@ def _handler_types() -> list[str]:
 def health_payload() -> dict[str, Any]:
     now = timezone.now()
     day = now - timedelta(hours=24)
-    db_latency = metrics.summarize(
-        float(v) for v in RiskEvaluation.objects.filter(created_at__gte=day).values_list("evaluation_ms", flat=True)[:5000]
-    )
+    # Live payments only. A single Fraud Lab run adds a thousand evaluations
+    # of synthetic contexts; mixed in, they would be what this percentile
+    # describes instead of real traffic. They are counted separately below.
+    live_evaluations = RiskEvaluation.objects.filter(created_at__gte=day, transaction__is_simulation=False)
+    db_latency = metrics.summarize(float(v) for v in live_evaluations.values_list("evaluation_ms", flat=True)[:5000])
     events = _event_health()
     counters = metrics.all_counters()
     requests_total = counters["requests_total"]
@@ -290,7 +292,9 @@ def health_payload() -> dict[str, Any]:
         "database": {
             "transactions_24h": PaymentTransaction.objects.filter(created_at__gte=day, is_simulation=False).count(),
             "simulated_transactions_24h": PaymentTransaction.objects.filter(created_at__gte=day, is_simulation=True).count(),
-            "evaluations_24h": db_latency.count,
+            # The count is exact; the latency summary samples at most the
+            # 5,000 most recent evaluations.
+            "evaluations_24h": live_evaluations.count(),
             "evaluation_latency_24h": db_latency.as_dict(),
         },
         "events": events,
@@ -300,7 +304,7 @@ def health_payload() -> dict[str, Any]:
         },
         "notes": [
             "Counters and latency reservoirs live in the cache (process-local without Redis) and reset on restart.",
-            "Database figures are exact and survive restarts.",
+            "Database figures are exact and survive restarts. Evaluation counts and latency cover live payments only; Fraud Lab rows are excluded.",
         ],
     }
 

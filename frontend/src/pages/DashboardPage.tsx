@@ -45,7 +45,7 @@ import { usePageTitle } from "../hooks/usePageTitle";
 import { usePushNotifications } from "../hooks/usePushNotifications";
 import { cn } from "../lib/cn";
 import { formatCurrencyValue, formatDateTime, formatLabel } from "../lib/formatters";
-import type { DashboardData } from "../types";
+import type { DashboardData, ReservationStatus } from "../types";
 
 type LucideIcon = React.ComponentType<{ size?: number; className?: string }>;
 
@@ -96,8 +96,10 @@ function SectionCard({ title, action, children, className }: { title?: string; a
   );
 }
 
-function PickupStatusPill({ status }: { status: string }) {
-  const isConfirmed = status === "confirmed" || status === "reserved";
+// `status` is a reservation status. Only requested and confirmed handoffs are
+// queued here by the API.
+function PickupStatusPill({ status }: { status: ReservationStatus }) {
+  const isConfirmed = status === "confirmed";
   return (
     <span className={cn(
       "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium",
@@ -207,7 +209,7 @@ function OnboardingChecklist({ step }: { step: number }) {
 export default function DashboardPage() {
   usePageTitle("Dashboard");
   const { user } = useAuth();
-  const { data, loading, error, refetch } = useApi<DashboardData>("/dashboard");
+  const { data, loading, error, retry } = useApi<DashboardData>("/dashboard");
 
   const firstName = user?.display_name?.split(" ")[0] || "there";
   const { canInstall, install, dismiss } = useInstallPrompt();
@@ -243,7 +245,8 @@ export default function DashboardPage() {
         <h2 className="text-[28px] font-bold text-[color:var(--color-ink)] dark:text-white tracking-[-0.025em]">Dashboard failed to load</h2>
         <p className="mt-3 text-[color:var(--text-muted)]">{error}</p>
         <button
-          onClick={() => refetch()}
+          type="button"
+          onClick={retry}
           className="mt-8 px-6 py-3 bg-[color:var(--color-tag)] text-white rounded-full text-[14px] font-semibold hover:opacity-90 transition-opacity"
         >
           Try Again
@@ -271,7 +274,9 @@ export default function DashboardPage() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-[14px] font-semibold leading-snug">Add ReNest to your home screen</p>
-              <p className="text-[12px] text-white/75 mt-0.5">Works offline · faster than the browser</p>
+              {/* No offline claim: without a connection the app shows only an
+                  offline notice (see public/sw.js). */}
+              <p className="text-[12px] text-white/75 mt-0.5">Opens full screen, one tap from your home screen</p>
             </div>
             <button
               onClick={install}
@@ -289,7 +294,7 @@ export default function DashboardPage() {
           </motion.div>
         )}
 
-        {/* Onboarding checklist — shown until step 3 (complete) */}
+        {/* Onboarding checklist, shown until step 3 (complete) */}
         {user && (user.onboarding_step ?? 0) < 3 && (
           <OnboardingChecklist step={user.onboarding_step ?? 0} />
         )}
@@ -392,7 +397,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* Ready to publish — horizontal scroll */}
+        {/* Ready to publish, horizontal scroll */}
         <section className="pb-10">
           <div className="flex justify-between items-center mb-5">
             <h2 className="text-[28px] font-bold text-[color:var(--color-ink)] dark:text-white tracking-[-0.025em]">Ready to publish</h2>
@@ -466,7 +471,7 @@ export default function DashboardPage() {
                     <tr className="bg-[color:var(--color-surface-2)] border-b border-black/5 dark:border-white/5">
                       <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Item</th>
                       <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Buyer</th>
-                      <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Location</th>
+                      <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Pickup window</th>
                       <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">Status</th>
                       <th className="px-6 py-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)] text-right">Action</th>
                     </tr>
@@ -481,7 +486,10 @@ export default function DashboardPage() {
                             <span className="text-[14px] text-[color:var(--color-ink)] dark:text-white">{action.claimant_name}</span>
                           </div>
                         </td>
-                        <td className="px-6 py-4 text-[14px] text-[color:var(--text-muted)]">{action.pickup_zone || "TBD"}</td>
+                        {/* The API sends the claimant's requested window here. The
+                            column used to read a pickup_zone the payload never
+                            carried, so every row said "TBD". */}
+                        <td className="px-6 py-4 text-[14px] text-[color:var(--text-muted)]">{action.pickup_time_window || "To be arranged"}</td>
                         <td className="px-6 py-4">
                           <PickupStatusPill status={action.status} />
                         </td>
@@ -563,7 +571,7 @@ export default function DashboardPage() {
                   <MoveOutTaskCard key={task.id} task={task} compact showSessionName onStatusChange={undefined} onDelete={undefined} />
                 ))
               ) : (
-                <EmptyState icon={ClipboardCheck} title="No urgent tasks today" description="Nice work — you're all caught up!" />
+                <EmptyState icon={ClipboardCheck} title="No urgent tasks today" description="Nice work, you're all caught up!" />
               )}
             </div>
           </SectionCard>

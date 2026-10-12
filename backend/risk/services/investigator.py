@@ -29,6 +29,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any, Callable, Protocol
 
 from django.db.models import Count, Q
@@ -62,21 +63,98 @@ INTENTS: dict[str, str] = {
     INTENT_SUMMARY: "Overall risk summary for the period",
 }
 
-_INTENT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (INTENT_NEW_DEVICE, ("new device", "unknown device", "unrecognised device", "unrecognized device", "device")),
-    (INTENT_REVIEW_QUEUE, ("review queue", "under review", "pending review", "held", "waiting", "queue", "manual review")),
-    (INTENT_RISK_PATTERN, ("pattern", "velocity", "card testing", "card-testing", "coordinated", "ring", "multi-account", "multiple accounts", "shared device", "burst")),
-    (INTENT_TOP_REASONS, ("reason", "factor", "why are", "why were", "driving", "cause", "top")),
-    (INTENT_BLOCKED_TREND, ("increase", "spike", "trend", "more blocks", "blocked", "blocks", "declined", "change")),
-    (INTENT_HIGH_RISK, ("highest", "riskiest", "top risk", "high risk", "most risky", "worst")),
+# Classification works on whole words, never on substrings: "monitoring" does
+# not contain the word "ring", "because" is not "cause", "exchange" is not
+# "change". Each intent lists words and multi-word phrases; a question is
+# given to the intent whose phrases cover the most of its words, so a specific
+# phrase ("shared device", "top risk") outweighs a generic word it happens to
+# contain ("device", "top"). Ties go to the intent listed first.
+_INTENT_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (INTENT_NEW_DEVICE, (
+        "new device", "unknown device", "unrecognised device", "unrecognized device", "unfamiliar device",
+        "unseen device", "first seen device", "device",
+    )),
+    (INTENT_REVIEW_QUEUE, (
+        "review queue", "under review", "pending review", "manual review", "awaiting review",
+        "held", "hold", "waiting", "queue", "backlog",
+    )),
+    (INTENT_RISK_PATTERN, (
+        "pattern", "velocity", "card testing", "coordinated", "ring", "multi account", "multiple accounts",
+        "many accounts", "shared device", "device sharing", "same device", "burst", "rapid",
+    )),
+    (INTENT_TOP_REASONS, (
+        "reason", "factor", "why are", "why were", "driving", "driver", "cause", "top", "most common",
+    )),
+    (INTENT_BLOCKED_TREND, (
+        "increase", "spike", "trend", "more blocks", "blocked", "block", "declined", "change", "rise", "rising",
+        "drop", "decrease",
+    )),
+    (INTENT_HIGH_RISK, (
+        "highest", "riskiest", "top risk", "high risk", "most risky", "worst", "highest scoring", "highest risk",
+    )),
 )
 
-_WINDOW_RULES: tuple[tuple[tuple[str, ...], int], ...] = (
+_WINDOW_PHRASES: tuple[tuple[tuple[str, ...], int], ...] = (
     (("last hour", "past hour", "this hour"), 1),
     (("today", "24 hours", "24h", "last day", "past day", "yesterday"), 24),
     (("this week", "7 days", "past week", "last week", "weekly"), 24 * 7),
     (("this month", "30 days", "past month", "last month"), 24 * 30),
 )
+
+_SIMULATION_PHRASES = ("simulation", "simulated", "fraud lab", "synthetic", "lab run")
+
+_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _stem(word: str) -> str:
+    """Fold the plain inflections of a word together: block, blocks, blocked
+    and blocking are one word to the classifier, as are device and devices.
+
+    Deliberately crude and deliberately only ever applied to both sides of a
+    whole-word comparison: it removes -ing / -ed / -es / -s and a final -e
+    when at least three letters remain. It is not a general stemmer and does
+    not need to be; it must merely never merge two words the phrase lists
+    tell apart, which the tests pin down.
+    """
+    for suffix in ("ing", "ed", "es", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            word = word[: -len(suffix)]
+            break
+    if word.endswith("e") and len(word) > 3:
+        word = word[:-1]
+    return word
+
+
+def _tokens(text: str) -> tuple[str, ...]:
+    """Lower-cased word stems; punctuation and hyphens separate words."""
+    return tuple(_stem(w) for w in _WORD.findall(text.lower()))
+
+
+def _positions(tokens: tuple[str, ...], phrase: tuple[str, ...]) -> set[int]:
+    """Indexes of the question's words covered by occurrences of `phrase`."""
+    covered: set[int] = set()
+    width = len(phrase)
+    for start in range(len(tokens) - width + 1):
+        if tokens[start:start + width] == phrase:
+            covered.update(range(start, start + width))
+    return covered
+
+
+def _compile(phrases: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    return tuple(_tokens(p) for p in phrases)
+
+
+_INTENT_RULES: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] = tuple(
+    (name, _compile(phrases)) for name, phrases in _INTENT_PHRASES
+)
+_WINDOW_RULES: tuple[tuple[tuple[tuple[str, ...], ...], int], ...] = tuple(
+    (_compile(phrases), hours) for phrases, hours in _WINDOW_PHRASES
+)
+_SIMULATION_RULES = _compile(_SIMULATION_PHRASES)
+
+
+def _mentions(tokens: tuple[str, ...], phrases: tuple[tuple[str, ...], ...]) -> bool:
+    return any(_positions(tokens, phrase) for phrase in phrases)
 
 
 @dataclass(frozen=True)
@@ -87,19 +165,21 @@ class Intent:
 
 
 def classify(question: str) -> Intent:
-    text = " ".join(question.lower().split())
+    tokens = _tokens(question)
     name = INTENT_SUMMARY
-    for candidate, needles in _INTENT_RULES:
-        if any(n in text for n in needles):
-            name = candidate
-            break
+    best = 0
+    for candidate, phrases in _INTENT_RULES:
+        covered: set[int] = set()
+        for phrase in phrases:
+            covered |= _positions(tokens, phrase)
+        if len(covered) > best:  # strictly more: earlier intents win ties
+            name, best = candidate, len(covered)
     window = 24
-    for needles, hours in _WINDOW_RULES:
-        if any(n in text for n in needles):
+    for phrases, hours in _WINDOW_RULES:
+        if _mentions(tokens, phrases):
             window = hours
             break
-    include_sim = any(n in text for n in ("simulation", "simulated", "fraud lab", "synthetic", "lab run"))
-    return Intent(name=name, window_hours=window, include_simulation=include_sim)
+    return Intent(name=name, window_hours=window, include_simulation=_mentions(tokens, _SIMULATION_RULES))
 
 
 # ── Allowed queries ──────────────────────────────────────────────────────────
@@ -197,31 +277,34 @@ def q_review_queue(user: Any, intent: Intent) -> tuple[dict[str, Any], dict[str,
 
 def q_patterns(user: Any, intent: Intent) -> tuple[dict[str, Any], dict[str, Any]]:
     base = _scope(user, intent).filter(created_at__gte=_since(intent.window_hours))
-    shared_devices = list(
-        base.exclude(device_id="")
-        .values("device_id")
-        .annotate(accounts=Count("user_id", distinct=True), txns=Count("id"))
-        .filter(accounts__gte=3)
-        .order_by("-accounts")[:5]
-    )
     busy_users = list(
         base.values("user_id").annotate(txns=Count("id")).filter(txns__gte=5).order_by("-txns")[:5]
     )
     card_testing = base.filter(evaluations__factors__code="card_testing").distinct()
     velocity = base.filter(evaluations__factors__code__in=["velocity_1h", "velocity_24h"]).distinct()
-    return (
-        {"name": "patterns", "params": {"window_hours": intent.window_hours}},
-        {
-            "shared_devices": shared_devices,
-            "busy_accounts": busy_users,
-            "card_testing_count": card_testing.count(),
-            "velocity_count": velocity.count(),
-            "transactions": _txn_rows(
-                base.filter(Q(evaluations__factors__code__in=["card_testing", "velocity_1h", "device_sharing"]))
-                .distinct().order_by("-risk_score", "-created_at")
-            ),
-        },
-    )
+    result: dict[str, Any] = {
+        "busy_accounts": busy_users,
+        "card_testing_count": card_testing.count(),
+        "velocity_count": velocity.count(),
+        "transactions": _txn_rows(
+            base.filter(Q(evaluations__factors__code__in=["card_testing", "velocity_1h", "device_sharing"]))
+            .distinct().order_by("-risk_score", "-created_at")
+        ),
+    }
+    if getattr(user, "is_staff", False):
+        # Device sharing is a statement about several accounts, so it can
+        # only be computed over everyone's payments. A customer's scope holds
+        # one account: the query could never find anything there, and an
+        # empty result would read as "we looked and your device is clean".
+        # For non-staff the finding is left out instead of reported empty.
+        result["shared_devices"] = list(
+            base.exclude(device_id="")
+            .values("device_id")
+            .annotate(accounts=Count("user_id", distinct=True), txns=Count("id"))
+            .filter(accounts__gte=3)
+            .order_by("-accounts")[:5]
+        )
+    return ({"name": "patterns", "params": {"window_hours": intent.window_hours}}, result)
 
 
 def q_high_risk(user: Any, intent: Intent) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -364,15 +447,22 @@ class DeterministicExplainer:
                 f"{pat['card_testing_count']} transactions matched the card-testing pattern and "
                 f"{pat['velocity_count']} carried a velocity signal in {window}."
             )
-            if pat["shared_devices"]:
-                d = pat["shared_devices"][0]
+            # Absent (not empty) when the reader's scope is a single account.
+            sharing_checked = "shared_devices" in pat
+            shared = pat.get("shared_devices") or []
+            if shared:
+                d = shared[0]
                 facts.append(f"Device {d['device_id']} was used by {d['accounts']} different accounts ({d['txns']} transactions).")
                 inferences.append("A device shared by three or more accounts in a day is consistent with a coordinated ring.")
             if pat["busy_accounts"]:
                 b = pat["busy_accounts"][0]
                 facts.append(f"The busiest account made {b['txns']} attempts.")
-            if not (pat["card_testing_count"] or pat["velocity_count"] or pat["shared_devices"]):
-                facts.append("No velocity, card-testing or device-sharing pattern was found.")
+            if not (pat["card_testing_count"] or pat["velocity_count"] or shared):
+                facts.append(
+                    "No velocity, card-testing or device-sharing pattern was found."
+                    if sharing_checked
+                    else "No velocity or card-testing pattern was found in your own payments."
+                )
 
         hr = results.get("high_risk_transactions")
         if hr and hr["transactions"]:
@@ -429,13 +519,102 @@ class GeminiExplainer:
         )
 
 
-_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+# ── Grounding ────────────────────────────────────────────────────────────────
+# A narration is accepted only if every quantity and every id in it can be
+# found in the facts it was given. Rejection is cheap (the deterministic
+# answer is used instead), so the checks lean towards rejecting.
+
+_ID = re.compile(r"\b(?:txn|evt|sim|inv|agent)_[0-9A-Z]{26}\b")
+_NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+_LETTERS = re.compile(r"[a-z]+")
+
+_SMALL_NUMBERS: dict[str, int] = {
+    "zero": 0, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19,
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+_SCALES: dict[str, int] = {"hundred": 100, "thousand": 1000, "million": 1_000_000}
+# "one" is a pronoun far more often than a count ("the highest-scoring one",
+# "no one", "one of them"), so on its own it is only read as the number 1
+# when it sits directly in front of something this domain counts. Without
+# this, nearly every honest narration would be rejected.
+_COUNTED_NOUNS = frozenset({
+    "transaction", "transactions", "payment", "payments", "block", "blocks", "attempt", "attempts",
+    "account", "accounts", "device", "devices", "network", "networks", "charge", "charges",
+    "purchase", "purchases", "customer", "customers", "user", "users", "factor", "factors",
+    "hour", "hours", "day", "days", "week", "weeks", "month", "months", "percent", "time", "times",
+})
+
+
+def _is_number_word(words: list[str], i: int) -> bool:
+    word = words[i]
+    if word in _SMALL_NUMBERS or word in _SCALES:
+        return True
+    if word != "one":
+        return False
+    before = words[i - 1] if i else ""
+    after = words[i + 1:i + 3]
+    if before in _SMALL_NUMBERS or (after and after[0] in _SCALES):  # "twenty one", "one hundred"
+        return True
+    return any(w in _COUNTED_NOUNS for w in after)  # "one blocked payment"
+
+
+def _spelled_numbers(text: str) -> list[Decimal]:
+    """Cardinal numbers written as words, as values: "twenty-five" -> 25.
+
+    Ordinals and fractions (third, a fifth), vague amounts (dozens,
+    hundreds) and the pronoun "one" are not numbers a fact can be checked
+    against and are ignored.
+    """
+    words = _LETTERS.findall(text.lower())
+    values: list[Decimal] = []
+    i = 0
+    while i < len(words):
+        if not _is_number_word(words, i):
+            i += 1
+            continue
+        total = current = 0
+        while i < len(words):
+            word = words[i]
+            if word == "and" and current + total and i + 1 < len(words) and _is_number_word(words, i + 1):
+                i += 1  # "one hundred and five"
+                continue
+            if not _is_number_word(words, i):
+                break
+            if word == "one":
+                current += 1
+            elif word in _SMALL_NUMBERS:
+                current += _SMALL_NUMBERS[word]
+            elif word == "hundred":
+                current = max(current, 1) * 100
+            else:
+                total += max(current, 1) * _SCALES[word]
+                current = 0
+            i += 1
+        values.append(Decimal(total + current))
+    return values
+
+
+def _quantities(text: str) -> set[Decimal]:
+    """Every number in the text, digits or words, with ids taken out first so
+    the digits inside txn_01M4... are not mistaken for counts."""
+    plain = _ID.sub(" ", text)
+    digits = {Decimal(n.replace(",", "")) for n in _NUMBER.findall(plain)}
+    return digits | set(_spelled_numbers(plain))
 
 
 def _grounded(text: str, base: Explanation) -> bool:
-    """Reject a narrative that mentions a number absent from the facts."""
-    allowed = set(_NUMBER.findall(" ".join(base.facts + base.inferences)))
-    return all(n in allowed for n in _NUMBER.findall(text))
+    """Reject a narrative that states a number or an id absent from the facts.
+
+    Numbers are compared by value, so "3", "3.0" and "three" are the same
+    claim, and "five blocked payments" is caught when the facts say 3.
+    """
+    source = " ".join(base.facts + base.inferences)
+    if not _quantities(text) <= _quantities(source):
+        return False
+    known_ids = set(_ID.findall(source)) | set(base.evidence)
+    return set(_ID.findall(text)) <= known_ids
 
 
 def get_explainer() -> Explainer:

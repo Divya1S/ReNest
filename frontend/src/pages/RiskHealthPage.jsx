@@ -70,7 +70,7 @@ export default function RiskHealthPage() {
       }
     >
       <PageSection>
-        <StateBlock loading={health.loading && !data} error={health.error} onRetry={refetch} skeleton="h-40">
+        <StateBlock loading={health.loading && !data} error={health.error} onRetry={health.retry} skeleton="h-40">
           {data ? (
             <>
               <div className={`mb-4 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold uppercase tracking-[0.12em] ${status === "ok" ? "bg-[color:var(--color-teal-soft)] text-[color:var(--color-teal)]" : "bg-[rgba(201,100,68,0.14)] text-[color:var(--color-urgent)]"}`}>
@@ -159,7 +159,7 @@ export default function RiskHealthPage() {
               </ul>
             </Panel>
             <Panel title="Dead letters" description="Events whose handlers failed five times. Nothing is dropped silently.">
-              <StateBlock loading={dead.loading && !dead.data} error={dead.error} onRetry={dead.refetch} empty={dead.data && dead.data.results.length === 0} emptyText="No dead-lettered events." skeleton="h-20">
+              <StateBlock loading={dead.loading && !dead.data} error={dead.error} onRetry={dead.retry} empty={dead.data && dead.data.results.length === 0} emptyText="No dead-lettered events." skeleton="h-20">
                 {dead.data ? (
                   <ul className="space-y-2 text-[13px]">
                     {dead.data.results.map((event) => (

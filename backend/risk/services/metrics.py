@@ -23,9 +23,10 @@ import math
 import statistics
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from django.core.cache import cache
+from django.db import transaction
 
 RESERVOIR_SIZE = 500
 COUNTER_TTL = 60 * 60 * 24 * 3
@@ -50,8 +51,11 @@ COUNTERS = (
     "events_emitted_total",
     "events_processed_total",
     "events_dead_lettered_total",
+    "event_dispatch_errors_total",
+    "event_claims_lost_total",
     "idempotent_replays_total",
     "idempotency_conflicts_total",
+    "idempotency_takeovers_total",
     "simulations_total",
     "investigations_total",
 )
@@ -67,6 +71,24 @@ def increment(name: str, amount: int = 1) -> None:
     except Exception:
         # Metrics must never break a request.
         pass
+
+
+def _increment_after_commit(name: str, amount: int) -> Callable[[], None]:
+    def run() -> None:
+        increment(name, amount)
+
+    return run
+
+
+def increment_on_commit(name: str, amount: int = 1) -> None:
+    """Count something that only happened if the surrounding transaction commits.
+
+    A cache counter is not part of the database transaction, so incrementing
+    it inside one would keep the count when the work is rolled back. This
+    defers the increment to the outermost commit (and drops it on rollback);
+    outside a transaction it counts immediately.
+    """
+    transaction.on_commit(_increment_after_commit(name, amount), robust=True)
 
 
 def counter(name: str) -> int:

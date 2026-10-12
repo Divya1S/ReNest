@@ -24,7 +24,7 @@ import UnsubscribePage from "./pages/UnsubscribePage";
 import VerifyEmailConfirmPage from "./pages/VerifyEmailConfirmPage";
 import VerifyEmailPage from "./pages/VerifyEmailPage";
 
-// Lazy-loaded — split into separate chunks so the initial JS bundle stays lean.
+// Lazy-loaded, split into separate chunks so the initial JS bundle stays lean.
 // Suspense + ErrorBoundary are applied in AppFrame around the Outlet.
 const BrowsePage = lazy(routeLoaders.browse);
 const CampusAnalyticsPage = lazy(routeLoaders.campusAnalytics);
@@ -81,10 +81,12 @@ const router = createBrowserRouter(
         <Route path="/unsubscribe" element={<UnsubscribePage />} />
         <Route path="/hubs" element={<HubsPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
-        {/* Declared before /campus/:slug so "onboard" is not read as a slug. */}
+        {/* "/campus/onboard" matches both routes below. react-router ranks
+            matches by specificity (a static segment outranks a dynamic one),
+            so the onboarding page wins whatever order they are declared in. */}
         <Route path="/campus/onboard" element={<CampusOnboardPage />} />
         <Route path="/campus/:slug" element={<CampusLandingPage />} />
-        {/* Public marketplace — browsing and listing details need no account;
+        {/* Public marketplace: browsing and listing details need no account;
             reserve/save/report actions inside are gated on auth in-page */}
         <Route path="/browse" element={<BrowsePage />} />
         <Route path="/listings/:listingId" element={<ListingDetailPage />} />
@@ -133,7 +135,7 @@ const router = createBrowserRouter(
 export default function App() {
   return (
     // reducedMotion="user": every framer-motion animation collapses to a
-    // no-op for people with prefers-reduced-motion set — one switch, app-wide.
+    // no-op for people with prefers-reduced-motion set: one switch, app-wide.
     <MotionConfig reducedMotion="user">
       <AuthProvider>
         <Toaster richColors position="top-right" />

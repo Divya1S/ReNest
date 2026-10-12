@@ -38,13 +38,31 @@ class Rule(Protocol):
 
 
 # ── Amount ───────────────────────────────────────────────────────────────────
+# Every threshold in this section is in approximate US dollars. The context
+# normalises the payment with the static reference table in engine.currency,
+# so 2,000 JPY is judged as about 13 dollars, not as 2,000.
 
 # An "average" over one or two payments is noise; the ratio rules wait for this many.
 MIN_HISTORY_FOR_AVERAGE = 3
 
+LARGE_FIRST_USD = Decimal("200")
+VERY_LARGE_FIRST_USD = Decimal("1000")
+VERY_LARGE_USD = Decimal("1000")
+EXTREME_USD = Decimal("2000")
+CARD_TEST_BELOW_USD = Decimal("5")
+
+
+def _amount_detail(ctx: TransactionContext) -> dict[str, Any]:
+    """The figures an amount rule compared: `amount` is what the customer was
+    charged, `amount_usd` is the value the threshold was applied to."""
+    return {"amount": str(ctx.amount), "currency": ctx.currency, "amount_usd": str(ctx.amount_usd)}
+
 
 def _reliable_ratio(ctx: TransactionContext) -> Decimal | None:
-    if ctx.historical_txn_count < MIN_HISTORY_FOR_AVERAGE:
+    # The average is taken over successful payments only, so that is the
+    # sample size that decides whether it can be trusted. Failed and blocked
+    # attempts add to historical_txn_count but tell us nothing about spend.
+    if ctx.successful_txn_count < MIN_HISTORY_FOR_AVERAGE:
         return None
     return ctx.amount_ratio
 
@@ -53,23 +71,26 @@ class AmountVsHistory:
     """Spend far above the customer's own average is the strongest single signal."""
 
     code = "amount_vs_history"
-    description = "Transaction amount relative to the customer's historical average (needs 3+ prior payments)."
+    description = (
+        "Transaction amount relative to the customer's historical average (needs 3+ successful payments), "
+        "or a large amount from an account that has never completed a payment."
+    )
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
         ratio = _reliable_ratio(ctx)
         if ratio is None:
-            if not ctx.has_history and ctx.amount >= Decimal("1000"):
-                return RuleResult(
-                    "first_transaction_large", 18,
-                    "Very large first transaction with no spending history",
-                    {"amount": str(ctx.amount)},
-                )
-            if not ctx.has_history and ctx.amount >= Decimal("200"):
-                return RuleResult(
-                    "first_transaction_large", 10,
-                    "Large first transaction with no spending history",
-                    {"amount": str(ctx.amount)},
-                )
+            # "No spending history" means no successful payment. Keying this
+            # on attempts instead would switch the signal off for the retry
+            # that follows a blocked first attempt, which is exactly when it
+            # matters.
+            if ctx.has_successful_history:
+                return None
+            usd = ctx.amount_usd
+            subject = "payment from an account with no successful payments" if ctx.has_history else "first transaction with no spending history"
+            if usd >= VERY_LARGE_FIRST_USD:
+                return RuleResult("first_transaction_large", 18, f"Very large {subject}", _amount_detail(ctx))
+            if usd >= LARGE_FIRST_USD:
+                return RuleResult("first_transaction_large", 10, f"Large {subject}", _amount_detail(ctx))
             return None
         if ratio >= 6:
             points = 34
@@ -82,7 +103,7 @@ class AmountVsHistory:
         return RuleResult(
             self.code, points,
             f"Transaction amount is {ratio}x above historical average",
-            {"ratio": str(ratio), "average": str(ctx.historical_avg_amount), "amount": str(ctx.amount)},
+            {"ratio": str(ratio), "average": str(ctx.historical_avg_amount), **_amount_detail(ctx)},
         )
 
 
@@ -90,48 +111,62 @@ class ExtremeAmount:
     """Absolute size matters too: a campus marketplace rarely sees four figures."""
 
     code = "extreme_amount"
-    description = "Absolute transaction size against what the marketplace normally sees."
+    description = "Absolute transaction size (approximate USD) against what the marketplace normally sees."
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
-        if ctx.amount >= Decimal("2000"):
-            return RuleResult(self.code, 35, "Exceptionally large amount for this marketplace", {"amount": str(ctx.amount)})
-        if ctx.amount >= Decimal("1000"):
-            return RuleResult(self.code, 12, "Very large amount for this marketplace", {"amount": str(ctx.amount)})
+        usd = ctx.amount_usd
+        if usd >= EXTREME_USD:
+            return RuleResult(self.code, 35, "Exceptionally large amount for this marketplace", _amount_detail(ctx))
+        if usd >= VERY_LARGE_USD:
+            return RuleResult(self.code, 12, "Very large amount for this marketplace", _amount_detail(ctx))
         return None
 
 
 # ── Device and network ───────────────────────────────────────────────────────
 
 class NewDevice:
-    """An established account on a device it has never used before."""
+    """An account with prior activity on a device it has never used before."""
 
     code = "new_device"
     description = "The account has never transacted from this device."
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
+        # device_seen_count counts every prior attempt from the device, so the
+        # "has it been active before" side reads every prior attempt as well
+        # (has_history): hopping to a fresh device after a block still counts.
         if ctx.is_new_device and ctx.has_history:
             return RuleResult(self.code, 21, "New device", {"device_id": ctx.device_id})
         return None
 
 
 class KnownDevice:
+    """Repeated use over time earns trust. Repeated use within minutes does
+    not: without the age check, the fourth charge of a card-testing burst on a
+    brand-new device would get a discount for being a familiar device."""
+
     code = "known_device"
-    description = "The device has a track record with this account."
+    description = "The device has a track record with this account (three or more uses, first seen at least a day ago)."
+
+    MIN_USES = 3
+    MIN_AGE_DAYS = 1.0
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
-        if ctx.device_seen_count >= 3:
-            return RuleResult(
-                self.code, -12, "Known, trusted device",
-                {"device_seen_count": ctx.device_seen_count},
-            )
-        return None
+        if ctx.device_seen_count < self.MIN_USES:
+            return None
+        # None means the age is unknown (a caller that does not track it), not new.
+        if ctx.device_first_seen_days is not None and ctx.device_first_seen_days < self.MIN_AGE_DAYS:
+            return None
+        return RuleResult(
+            self.code, -12, "Known, trusted device",
+            {"device_seen_count": ctx.device_seen_count},
+        )
 
 
 class DeviceSharing:
     """One device, many accounts in a day: the signature of multi-account abuse."""
 
     code = "device_sharing"
-    description = "Number of distinct accounts transacting from this device today."
+    description = "Number of distinct accounts transacting from this device today, this one included."
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
         if ctx.accounts_on_device_24h >= 3:
@@ -198,13 +233,13 @@ class CardTesting:
     """Rapid tiny charges are how stolen card numbers get validated."""
 
     code = "card_testing"
-    description = "Burst of very small charges."
+    description = "Burst of very small charges (under about 5 USD each)."
 
     def evaluate(self, ctx: TransactionContext) -> RuleResult | None:
-        if ctx.amount < Decimal("5") and ctx.txn_count_1h >= 4:
+        if ctx.amount_usd < CARD_TEST_BELOW_USD and ctx.txn_count_1h >= 4:
             return RuleResult(
                 self.code, 28, "Card-testing pattern: burst of very small charges",
-                {"amount": str(ctx.amount), "txn_count_1h": ctx.txn_count_1h},
+                {**_amount_detail(ctx), "txn_count_1h": ctx.txn_count_1h},
             )
         return None
 

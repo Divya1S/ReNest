@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any, Callable, Iterable, Optional
 
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from .models import Listing, RoomScanSession, sync_system_move_out_tasks
+from .models import Listing, ListingViewEvent, RoomScanSession, sync_system_move_out_tasks
 from .notifications import sync_notifications_for_all_users
 from .transactional_emails import send_handoff_reminder_emails
 
@@ -42,16 +43,71 @@ def sync_all_system_move_out_tasks(queryset: Optional[QuerySet[RoomScanSession]]
     return count
 
 
+BUMP_EMAIL_QUIET_DAYS = 3
+BUMP_EMAIL_BATCH_SIZE = 100
+
+
+def bump_email_candidates() -> QuerySet[Listing]:
+    """Listings whose owner is due a "still available?" email, oldest first.
+
+    The one statement of the rule, read by the task that sends the emails and
+    by `send_bump_emails --dry-run`, which used to preview a different set:
+
+      * available, not a demo, deadline not passed
+      * posted at least BUMP_EMAIL_QUIET_DAYS days ago
+      * no view in the last BUMP_EMAIL_QUIET_DAYS days
+      * never bump-emailed before (once per listing, ever)
+      * owner has not opted out of email (filtered here so opted-out owners
+        cannot fill a batch and starve everyone behind them)
+    """
+    now = timezone.now()
+    cutoff = now - timedelta(days=BUMP_EMAIL_QUIET_DAYS)
+    return (
+        Listing.objects.select_related("owner")
+        .filter(
+            status=Listing.Status.AVAILABLE,
+            is_demo=False,
+            available_until__gt=now,
+            bump_emailed_at__isnull=True,
+            created_at__lt=cutoff,
+            owner__email_notifications=True,
+        )
+        .exclude(
+            id__in=ListingViewEvent.objects.filter(viewed_at__gte=cutoff).values("listing_id")
+        )
+        .order_by("created_at", "id")
+    )
+
+
 def send_stale_listing_bump_emails() -> int:
     """Email owners of active listings that have had no views for 3 days.
 
-    Delegates to the Celery task body so the cron/maintenance path and the
-    beat schedule share one rule set (opt-out and List-Unsubscribe headers
-    included). Returns the number of emails sent.
+    Delegates to the Celery task body so every way of running it shares one
+    rule set (opt-out and List-Unsubscribe headers included). Returns the
+    number of emails sent.
     """
     from .tasks import send_bump_emails_task
 
     return int(send_bump_emails_task())
+
+
+def clear_expired_sessions() -> int:
+    """Delete expired session rows (Django's `clearsessions`). Returns how many.
+
+    Every visitor, signed in or not, gets a django_session row, and Django
+    never removes expired ones on its own, so without this job the table only
+    grows.
+    """
+    from django.conf import settings
+    from django.core.management import call_command
+
+    expired = 0
+    if settings.SESSION_ENGINE.endswith((".db", ".cached_db")):
+        from django.contrib.sessions.models import Session
+
+        expired = Session.objects.filter(expire_date__lt=timezone.now()).count()
+    call_command("clearsessions")
+    return expired
 
 
 def run_maintenance_cycle() -> dict[str, Any]:
@@ -69,10 +125,12 @@ def run_maintenance_cycle() -> dict[str, Any]:
     }
 
 
-# ── Scheduled job sets (Celery beat replacement) ─────────────────────────────
-# Each entry mirrors a CELERY_BEAT_SCHEDULE job. They are plain callables so an
-# external cron (manage.py run_maintenance, or POST /api/internal/maintenance/)
-# can run them in-process on hosts without a beat worker.
+# ── Scheduled job sets ───────────────────────────────────────────────────────
+# This is the list of periodic work, not a copy of one. Every scheduler calls
+# run_scheduled_jobs with a set name: Celery beat where there is a worker,
+# manage.py run_maintenance or POST /api/internal/maintenance/ from an
+# external cron where there is not. The jobs are plain callables so all three
+# run them the same way, in-process.
 
 def _job_sweep_stale_confirmations() -> Any:
     from .tasks import sweep_stale_confirmations_task
@@ -149,6 +207,7 @@ SCHEDULED_JOB_SETS: dict[str, list[tuple[str, Callable[[], Any]]]] = {
     ],
     "daily": [
         ("recompute_demand_forecast", _job_recompute_demand_forecast),
+        ("clear_expired_sessions", clear_expired_sessions),
     ],
     "weekly": [
         ("recompute_completion_rates", _job_recompute_completion_rates),

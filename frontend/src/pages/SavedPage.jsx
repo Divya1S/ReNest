@@ -26,7 +26,7 @@ function SavedCardSkeleton() {
 
 export default function SavedPage() {
   usePageTitle("Saved Items");
-  const { data, loading, error, refetch, setData } = useApi("/saved-listings", {
+  const { data, loading, error, retry, setData } = useApi("/saved-listings", {
     initialData: { results: [], count: 0 },
   });
   const savedListings = data?.results ?? [];
@@ -65,7 +65,7 @@ export default function SavedPage() {
         </div>
         <h2 className="text-[24px] font-bold tracking-[-0.02em] text-[color:var(--color-ink)] dark:text-white">Could not load saved items</h2>
         <p className="mt-4 text-[color:var(--text-muted)]">{error}</p>
-        <button onClick={refetch} className="primary-button mt-8">Try Again</button>
+        <button type="button" onClick={retry} className="primary-button mt-8">Try Again</button>
       </div>
     );
   }

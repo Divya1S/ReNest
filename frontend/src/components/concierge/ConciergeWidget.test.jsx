@@ -177,6 +177,23 @@ describe("ConciergeWidget", () => {
     expect(await screen.findByText(/instant answer/i)).toBeInTheDocument();
   });
 
+  test("a help-guide answer during an outage reads as an answer, not an error", async () => {
+    mockHistory();
+    await openWidget();
+    mockChat({
+      reply: "From the help guide: a handoff completes when the owner enters your PIN.",
+      used_tools: [],
+      degraded: true,
+      meta: { fallback: "knowledge_base", degraded_reason: "provider_error", ui_blocks: [] },
+    });
+
+    sendMessage("how do handoffs work");
+
+    expect(await screen.findByText(/owner enters your PIN/i)).toBeInTheDocument();
+    expect(screen.getByText(/from the help guide while the assistant is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/couldn't get a reply just now/i)).not.toBeInTheDocument();
+  });
+
   test("a failed chat call renders an inline error and the widget survives", async () => {
     mockHistory();
     await openWidget();
@@ -224,7 +241,7 @@ describe("ConciergeWidget", () => {
 
     expect(await screen.findByText("All caught up.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Helpful" })).toBeInTheDocument();
-    // The streaming path answered — the JSON fallback was never used.
+    // The streaming path answered; the JSON fallback was never used.
     expect(apiFetch).not.toHaveBeenCalledWith("/concierge/chat/", expect.anything());
   });
 
@@ -264,6 +281,93 @@ describe("ConciergeWidget", () => {
         expect.objectContaining({ body: { rating: "clear" } }),
       ),
     );
+  });
+
+  test("restores each reply's thumbs state from the history rating", async () => {
+    // The history endpoint now returns rating (1, -1 or null) per message, so
+    // a reload shows what was already rated instead of two blank thumbs.
+    mockHistory({
+      messages: [
+        { id: 1, role: "user", content: "any lamps?", rating: null },
+        { id: 2, role: "assistant", content: "Liked reply", used_tools: [], meta: {}, rating: 1 },
+        { id: 3, role: "assistant", content: "Disliked reply", used_tools: [], meta: {}, rating: -1 },
+        { id: 4, role: "assistant", content: "Unrated reply", used_tools: [], meta: {}, rating: null },
+        // An older API that omits the field must read as unrated, not crash.
+        { id: 5, role: "assistant", content: "Legacy reply", used_tools: [], meta: {} },
+      ],
+    });
+    await openWidget();
+    await screen.findByText("Liked reply");
+
+    const helpful = screen.getAllByRole("button", { name: "Helpful" });
+    const notHelpful = screen.getAllByRole("button", { name: "Not helpful" });
+    expect(helpful.map((button) => button.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+    expect(notHelpful.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true", "false", "false"]);
+  });
+
+  test("a restored rating toggles off with one click", async () => {
+    mockHistory({
+      messages: [{ id: 2, role: "assistant", content: "Liked reply", used_tools: [], meta: {}, rating: 1 }],
+    });
+    await openWidget();
+    await screen.findByText("Liked reply");
+    apiFetch.mockResolvedValue({});
+
+    fireEvent.click(screen.getByRole("button", { name: "Helpful" }));
+
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith(
+        "/concierge/messages/2/feedback/",
+        expect.objectContaining({ body: { rating: "clear" } }),
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Helpful" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("earlier messages loaded on demand keep their ratings too", async () => {
+    apiFetch.mockImplementation((path) => {
+      if (path === "/concierge/history/") {
+        return Promise.resolve({
+          enabled: true,
+          has_more: true,
+          messages: [{ id: 20, role: "assistant", content: "Recent reply", used_tools: [], meta: {}, rating: null }],
+        });
+      }
+      if (path === "/concierge/history/?before=20") {
+        return Promise.resolve({
+          has_more: false,
+          messages: [{ id: 10, role: "assistant", content: "Older reply", used_tools: [], meta: {}, rating: -1 }],
+        });
+      }
+      return Promise.reject(new Error(`unexpected call: ${path}`));
+    });
+    await openWidget();
+    await screen.findByText("Recent reply");
+
+    fireEvent.click(screen.getByRole("button", { name: /show earlier messages/i }));
+
+    await screen.findByText("Older reply");
+    const notHelpful = screen.getAllByRole("button", { name: "Not helpful" });
+    expect(notHelpful[0]).toHaveAttribute("aria-pressed", "true");
+    expect(notHelpful[1]).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("a rating the server did not save is not left pressed", async () => {
+    mockHistory({
+      messages: [{ id: 7, role: "assistant", content: "Earlier reply", used_tools: [], meta: {}, rating: -1 }],
+    });
+    await openWidget();
+    await screen.findByText("Earlier reply");
+    apiFetch.mockRejectedValue(new Error("offline"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Helpful" }));
+
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith("/concierge/messages/7/feedback/", expect.anything()));
+    // Back to what the server still holds: thumbs down.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Not helpful" })).toHaveAttribute("aria-pressed", "true"),
+    );
+    expect(screen.getByRole("button", { name: "Helpful" })).toHaveAttribute("aria-pressed", "false");
   });
 
   test("path suggestions render as navigation chips, plain ones as send chips", async () => {

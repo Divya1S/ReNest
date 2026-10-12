@@ -194,7 +194,8 @@ export default function RegisterPage() {
           )}
 
           {error && (
-            <motion.p 
+            <motion.p
+              role="alert"
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               className="sm:col-span-2 text-sm font-bold text-red-500 bg-red-50 p-3 rounded-xl dark:bg-red-900/20"

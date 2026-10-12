@@ -4,7 +4,7 @@ import logging
 from collections import defaultdict
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import permissions, serializers, status
 from rest_framework.request import Request
@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 # schedule an unbounded amount of work.
 _MAX_BATCH = 50
 _MAX_HOLD_HOURS = 24 * 14
+# Truncate to what the column can store; a longer note is a DataError on PostgreSQL.
+_HOLD_NOTE_MAX = StorageHold._meta.get_field("note").max_length or 300
 
 
 def is_hub_manager(user: Any, hub_id: Any) -> bool:
@@ -113,14 +115,19 @@ class BatchConfirmReservationsView(APIView):
         ).select_related("listing")
 
         # Goes through the shared transition so batch-confirmed handoffs get
-        # their PIN, listing status, emails and cache invalidation. A bare
-        # status write here used to leave PIN verification permanently broken.
-        from ..services import confirm_reservation
+        # their PIN, listing status, emails, partner webhook and cache
+        # invalidation. A bare status write here used to leave PIN
+        # verification permanently broken.
+        from ..services import ReservationConflict, confirm_reservation
 
         confirmed = []
         for reservation in qs:
             try:
                 confirm_reservation(reservation)
+            except ReservationConflict:
+                # Cancelled or confirmed by another request since the query
+                # above ran; it is simply not part of this batch any more.
+                continue
             except Exception:
                 logger.exception("Batch confirm failed for reservation %s", reservation.pk)
                 continue
@@ -135,8 +142,8 @@ class BatchConfirmReservationsView(APIView):
 
 class StorageHoldListCreateView(APIView):
     """
-    GET  /api/logistics/holds?hub=<id>  — list active holds for a hub
-    POST /api/logistics/holds           — place a hold on a listing
+    GET  /api/logistics/holds?hub=<id>  - list active holds for a hub
+    POST /api/logistics/holds           - place a hold on a listing
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -161,7 +168,7 @@ class StorageHoldListCreateView(APIView):
     def post(self, request: Request) -> Response:
         listing_id = parse_int(request.data.get("listing_id"), field="listing_id", minimum=1)
         hub_id = parse_int(request.data.get("hub_id"), field="hub_id", minimum=1)
-        note = str(request.data.get("note", ""))[:500]
+        note = str(request.data.get("note") or "")[:_HOLD_NOTE_MAX]
         hours = parse_int(
             request.data.get("hold_hours"), field="hold_hours", default=48, minimum=1, maximum=_MAX_HOLD_HOURS
         ) or 48
@@ -171,34 +178,61 @@ class StorageHoldListCreateView(APIView):
         if not is_hub_manager(current_user(request), hub_id):
             return _forbidden()
 
-        try:
-            listing = Listing.objects.get(pk=listing_id, is_demo=False)
-        except Listing.DoesNotExist:
-            return Response({"detail": "Listing not found."}, status=404)
+        if not DonationHub.objects.filter(pk=hub_id).exists():
+            return Response({"detail": "Hub not found."}, status=404)
 
         now = timezone.now()
-        existing = StorageHold.objects.filter(
-            listing=listing, status=StorageHold.Status.ACTIVE, expires_at__gt=now
-        ).first()
-        if existing is not None:
-            return Response(
-                {"detail": "This listing is already on hold.", "hold_id": existing.pk},
-                status=409,
-            )
+        try:
+            with transaction.atomic():
+                # Lock the listing so a hold and a claim cannot both pass
+                # their checks at once (ReservationSerializer.create takes the
+                # same lock and refuses a listing that is on hold).
+                listing = (
+                    Listing.objects.select_for_update().filter(pk=listing_id, is_demo=False).first()
+                )
+                if listing is None:
+                    return Response({"detail": "Listing not found."}, status=404)
 
-        hold = StorageHold.objects.create(
-            listing=listing,
-            held_by=current_user(request),
-            hub_id=hub_id,
-            note=note,
-            expires_at=now + timedelta(hours=hours),
-        )
+                # A hold past expires_at has auto-released. Record that, or
+                # the stale ACTIVE row would trip the one-active-hold constraint.
+                StorageHold.objects.filter(
+                    listing=listing, status=StorageHold.Status.ACTIVE, expires_at__lte=now
+                ).update(status=StorageHold.Status.RELEASED, updated_at=now)
+
+                existing = StorageHold.objects.filter(
+                    listing=listing, status=StorageHold.Status.ACTIVE
+                ).first()
+                if existing is not None:
+                    return Response(
+                        {"detail": "This listing is already on hold.", "hold_id": existing.pk},
+                        status=409,
+                    )
+                if Reservation.objects.filter(
+                    listing=listing, status__in=Reservation.ACTIVE_STATUSES
+                ).exists():
+                    return Response(
+                        {"detail": "This listing has an active claim and cannot be put on hold."},
+                        status=409,
+                    )
+
+                hold = StorageHold.objects.create(
+                    listing=listing,
+                    held_by=current_user(request),
+                    hub_id=hub_id,
+                    note=note,
+                    expires_at=now + timedelta(hours=hours),
+                )
+        except IntegrityError:
+            # Without row locks (SQLite) two requests can both pass the check
+            # above; the partial unique constraint decides, and the loser
+            # gets the same answer as if it had seen the other hold.
+            return Response({"detail": "This listing is already on hold."}, status=409)
         return Response(StorageHoldSerializer(hold).data, status=201)
 
 
 class StorageHoldDetailView(APIView):
     """
-    PATCH /api/logistics/holds/<pk>  — update status (release or mark collected)
+    PATCH /api/logistics/holds/<pk>  - update status (release or mark collected)
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -215,6 +249,9 @@ class StorageHoldDetailView(APIView):
         new_status = request.data.get("status")
         if new_status not in (StorageHold.Status.RELEASED, StorageHold.Status.COLLECTED):
             return Response({"detail": "status must be 'released' or 'collected'."}, status=400)
+        if hold.status != StorageHold.Status.ACTIVE:
+            # A released hold must not be revived as "collected" (or back).
+            return Response({"detail": "This hold is already closed."}, status=409)
 
         hold.status = new_status
         hold.save(update_fields=["status", "updated_at"])
@@ -227,8 +264,8 @@ class StorageHoldDetailView(APIView):
 
 class CollectionEventListCreateView(APIView):
     """
-    GET  /api/logistics/events?hub=<id>  — list events for a hub
-    POST /api/logistics/events           — schedule a new collection event
+    GET  /api/logistics/events?hub=<id>  - list events for a hub
+    POST /api/logistics/events           - schedule a new collection event
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -282,8 +319,8 @@ class CollectionEventListCreateView(APIView):
 
 class CollectionEventDetailView(APIView):
     """
-    GET   /api/logistics/events/<pk>        — event detail with holds
-    PATCH /api/logistics/events/<pk>        — update status / add holds / set route
+    GET   /api/logistics/events/<pk>        - event detail with holds
+    PATCH /api/logistics/events/<pk>        - update status / add holds / set route
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -345,7 +382,7 @@ class CollectionEventDetailView(APIView):
 
 
 # ---------------------------------------------------------------------------
-# Route optimiser — groups holds by building for a collection event
+# Route optimiser: groups holds by building for a collection event
 # ---------------------------------------------------------------------------
 
 class RouteOptimiseView(APIView):

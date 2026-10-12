@@ -1,4 +1,4 @@
-# Development / CI tooling — not needed at runtime
+# Development / CI tooling, not needed at runtime
 -r requirements.txt
 
 mypy==2.3.1

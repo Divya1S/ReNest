@@ -1,5 +1,5 @@
-import { Bot, Plus } from "lucide-react";
-import React, { useEffect, useState } from "react";
+import { Bot, Check, Plus, X } from "lucide-react";
+import React, { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 
 import PageSection from "../components/PageSection";
@@ -9,7 +9,7 @@ import { useApi } from "../hooks/useApi";
 import { usePageTitle } from "../hooks/usePageTitle";
 import { apiFetch } from "../lib/api";
 import { formatDateTime } from "../lib/formatters";
-import { formatMoney } from "../lib/risk";
+import { agentAttemptResolvePath, formatMoney, needsResolution } from "../lib/risk";
 
 const EMPTY_POLICY = {
   name: "Dorm restock agent",
@@ -128,6 +128,67 @@ function AttemptForm({ agent, onVerdict }) {
   );
 }
 
+/**
+ * Approve / Reject for an attempt the policy held for review. `onResolved`
+ * receives the updated attempt, or null when the call failed (the list is
+ * refreshed either way: a 409 means someone else already resolved it).
+ */
+function ReviewActions({ agent, attempt, onResolved }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(null); // "approve" | "reject" | null
+  const noteId = useId();
+  const what = `${formatMoney(attempt.amount, attempt.currency)} at ${attempt.merchant_id}`;
+
+  async function resolve(approve) {
+    setBusy(approve ? "approve" : "reject");
+    try {
+      const updated = await apiFetch(agentAttemptResolvePath(agent.public_id, attempt.id), {
+        method: "POST",
+        body: { approve, note: note.trim() },
+      });
+      toast.success(approve ? `Approved ${what}.` : `Rejected ${what}.`);
+      onResolved(updated);
+    } catch (error) {
+      toast.error(error.message || "Could not resolve the attempt.");
+      onResolved(null);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex w-full flex-wrap items-center gap-2">
+      <label htmlFor={noteId} className="sr-only">Review note for {what}</label>
+      <input
+        id={noteId}
+        className="field !min-h-0 min-w-[10rem] flex-1 !py-1.5 !text-[13px]"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+        placeholder="Note (optional)"
+        maxLength={200}
+      />
+      <button
+        type="button"
+        className="primary-button !px-3.5 !py-1.5 !text-[12px]"
+        disabled={busy !== null}
+        onClick={() => resolve(true)}
+        aria-label={`Approve ${what}`}
+      >
+        <Check size={13} aria-hidden="true" /> {busy === "approve" ? "Approving…" : "Approve"}
+      </button>
+      <button
+        type="button"
+        className="secondary-button !px-3.5 !py-1.5 !text-[12px]"
+        disabled={busy !== null}
+        onClick={() => resolve(false)}
+        aria-label={`Reject ${what}`}
+      >
+        <X size={13} aria-hidden="true" /> {busy === "reject" ? "Rejecting…" : "Reject"}
+      </button>
+    </div>
+  );
+}
+
 function BudgetBar({ agent }) {
   const spent = Number(agent.spent_today);
   const limit = Number(agent.daily_limit) || 1;
@@ -168,6 +229,21 @@ export default function AgentSandboxPage() {
     attempts.refetch().catch(() => {});
   }
 
+  function handleResolved(updated) {
+    if (updated) {
+      // Show the server's answer for this row at once...
+      attempts.setData((prev) =>
+        prev ? { ...prev, results: prev.results.map((item) => (item.id === updated.id ? updated : item)) } : prev,
+      );
+      // ...and drop a verdict panel that still says "review" for it.
+      setVerdict((current) => (current?.attempt?.id === updated.id ? null : current));
+    }
+    // An approval counts toward the daily budget and a rejection releases the
+    // hold, so both the attempts and the agent's spend have to be re-read.
+    attempts.refetch().catch(() => {});
+    agents.refetch().catch(() => {});
+  }
+
   return (
     <RiskShell
       title="Agent Payment Sandbox"
@@ -195,7 +271,7 @@ export default function AgentSandboxPage() {
 
       <PageSection className="mt-6 grid gap-6 lg:grid-cols-3">
         <Panel title="Agents">
-          <StateBlock loading={agents.loading && !agents.data} error={agents.error} onRetry={agents.refetch} empty={agents.data && agents.data.results.length === 0} emptyText="No agents yet. Create one above." skeleton="h-32">
+          <StateBlock loading={agents.loading && !agents.data} error={agents.error} onRetry={agents.retry} empty={agents.data && agents.data.results.length === 0} emptyText="No agents yet. Create one above." skeleton="h-32">
             {agents.data ? (
               <ul className="space-y-2" aria-label="Agents">
                 {agents.data.results.map((item) => (
@@ -247,17 +323,22 @@ export default function AgentSandboxPage() {
               ) : null}
               </div>
               <Panel title="Recent attempts">
-                <StateBlock loading={attempts.loading && !attempts.data} error={attempts.error} onRetry={attempts.refetch} empty={attempts.data && attempts.data.results.length === 0} emptyText="No attempts yet." skeleton="h-24">
+                <StateBlock loading={attempts.loading && !attempts.data} error={attempts.error} onRetry={attempts.retry} empty={attempts.data && attempts.data.results.length === 0} emptyText="No attempts yet." skeleton="h-24">
                   {attempts.data ? (
                     <ul className="divide-y divide-black/5 dark:divide-white/10 text-[13px]">
                       {attempts.data.results.map((item) => (
-                        <li key={item.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-                          <div>
-                            <span className="font-semibold">{formatMoney(item.amount, item.currency)}</span> · {item.category} · {item.merchant_id}
-                            {item.description ? <span className="text-[color:var(--text-muted)]"> · {item.description}</span> : null}
-                            <p className="text-[12px] text-[color:var(--text-muted)]">{formatDateTime(item.created_at)}{item.counts_toward_spend ? " · counted" : " · not counted"}</p>
+                        <li key={item.id} className="py-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <span className="font-semibold">{formatMoney(item.amount, item.currency)}</span> · {item.category} · {item.merchant_id}
+                              {item.description ? <span className="text-[color:var(--text-muted)]"> · {item.description}</span> : null}
+                              <p className="text-[12px] text-[color:var(--text-muted)]">{formatDateTime(item.created_at)}{item.counts_toward_spend ? " · counted" : " · not counted"}</p>
+                            </div>
+                            <DecisionPill decision={item.decision} />
                           </div>
-                          <DecisionPill decision={item.decision} />
+                          {needsResolution(item) ? (
+                            <ReviewActions agent={agent} attempt={item} onResolved={handleResolved} />
+                          ) : null}
                         </li>
                       ))}
                     </ul>

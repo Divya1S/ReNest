@@ -134,7 +134,7 @@ export default function RiskInvestigatorPage() {
 
       <PageSection className="mt-6">
         <Panel title="Previous investigations">
-          <StateBlock loading={history.loading && !history.data} error={history.error} onRetry={history.refetch} empty={history.data && history.data.results.length === 0} emptyText="Nothing asked yet." skeleton="h-24">
+          <StateBlock loading={history.loading && !history.data} error={history.error} onRetry={history.retry} empty={history.data && history.data.results.length === 0} emptyText="Nothing asked yet." skeleton="h-24">
             {history.data ? (
               <ul className="divide-y divide-black/5 dark:divide-white/10">
                 {history.data.results.map((item) => (
