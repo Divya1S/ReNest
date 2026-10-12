@@ -17,7 +17,7 @@
     "lint:fix": "eslint src/ --fix"
   },
   "dependencies": {
-    "@capacitor/app": "^7.0.0",
+    "@capacitor/app": "^8.1.1",
     "@capacitor/camera": "^7.0.0",
     "@capacitor/core": "^7.0.0",
     "@capacitor/preferences": "^7.0.0",
