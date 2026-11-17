@@ -32,7 +32,7 @@ test.describe("My Reservations", () => {
   test("renders cards and the unread-messages badge from a paginated payload", async ({ page }) => {
     await mockAuth(page, MOCK_USER);
     await mockNotifications(page);
-    await page.route("**/api/reservations", (route) =>
+    await page.route(/\/api\/reservations(\?|$)/, (route) =>
       route.fulfill({
         json: { count: 1, next: null, previous: null, results: [RESERVATION] },
       }),

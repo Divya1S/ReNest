@@ -107,7 +107,10 @@ export function useConciergeChat(active) {
         idleTimer = setTimeout(() => controller.abort(), STREAM_IDLE_TIMEOUT_MS);
       };
 
-      let receivedFrame = false;
+      // True once the server has accepted the request. From then on it runs
+      // the turn to the end and stores the reply, whatever happens to this
+      // connection, so the message must not be sent a second time.
+      let turnStarted = false;
       try {
         resetIdleTimer();
         const response = await fetch("/api/concierge/chat/stream/", {
@@ -118,6 +121,7 @@ export function useConciergeChat(active) {
           signal: controller.signal,
         });
         if (!response.ok || !response.body) throw new Error(`stream unavailable (${response.status})`);
+        turnStarted = true;
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -139,7 +143,6 @@ export function useConciergeChat(active) {
               // A truncated frame is not a reason to abandon the turn.
               continue;
             }
-            receivedFrame = true;
             if (event.type === "phase" && mounted.current) {
               setPhase(event);
             } else if (event.type === "done") {
@@ -148,13 +151,12 @@ export function useConciergeChat(active) {
             }
           }
         }
-        if (!done) {
-          const error = new Error("stream ended without a result");
-          // The server had already begun the turn, so retrying through the
-          // JSON endpoint would run (and persist) the same turn a second time.
-          error.turnStarted = receivedFrame;
-          throw error;
-        }
+        if (!done) throw new Error("stream ended without a result");
+      } catch (error) {
+        // Tell the caller whether a retry through the JSON endpoint would run
+        // (and persist) the same turn a second time.
+        if (turnStarted && error && typeof error === "object") error.turnStarted = true;
+        throw error;
       } finally {
         if (idleTimer) clearTimeout(idleTimer);
         if (streamControllerRef.current === controller) streamControllerRef.current = null;
@@ -177,7 +179,8 @@ export function useConciergeChat(active) {
           // Streaming is an enhancement; the JSON endpoint is the contract.
           // But only fall back when the turn never started server-side,
           // otherwise the same message is answered (and stored) twice.
-          if (streamError?.turnStarted) throw streamError;
+          // Nor after leaving the page: nobody is there to read the answer.
+          if (streamError?.turnStarted || !mounted.current) throw streamError;
           // Agentic turns can take a while: longer leash than the 15s default.
           const data = await apiFetch("/concierge/chat/", {
             method: "POST",

@@ -3,8 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import hmac
-import secrets
-import textwrap
+from datetime import timedelta
 from datetime import timezone as dt_timezone
 
 from django.conf import settings
@@ -278,7 +277,7 @@ class ReservationEnRouteView(APIView):
         if reservation.status != Reservation.Status.CONFIRMED:
             return Response({"detail": "The reservation must be confirmed first."}, status=400)
 
-        claimant_name = reservation.claimant.display_name or reservation.claimant.email.split("@")[0]
+        claimant_name = reservation.claimant.public_name
 
         # Log as a chat message so it appears in the thread
         from ..models import ReservationMessage
@@ -320,14 +319,11 @@ class ReservationCalendarView(APIView):
         # /handoffs/ (plural) is the SPA route; /handoff/ 404s.
         deep_link = f"{settings.APP_BASE_URL}/handoffs/{reservation.pk}"
 
-        # Use confirmed_slot if available, otherwise now + 1h as fallback
+        # The agreed slot when there is one; otherwise a one-hour block starting now.
         if reservation.confirmed_slot:
             dt_start = reservation.confirmed_slot.astimezone(dt_timezone.utc)
         else:
-            from datetime import timedelta
             dt_start = timezone.now().astimezone(dt_timezone.utc)
-
-        from datetime import timedelta
         dt_end = dt_start + timedelta(hours=1)
 
         def _ical_dt(dt: Any) -> str:
@@ -341,7 +337,7 @@ class ReservationCalendarView(APIView):
             """
             text = str(value or "")
             text = text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
-            return text.replace("\r\n", "\\n").replace("\n", "\\n")
+            return text.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
 
         uid = f"renest-reservation-{reservation.pk}@renest.app"
         summary = f"Pickup: {listing_title}"

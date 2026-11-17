@@ -1,5 +1,6 @@
 from django.contrib.auth.tokens import default_token_generator
 from django.core import signing
+from django.core.cache import cache
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 from django.urls import reverse
@@ -9,7 +10,20 @@ from rest_framework.test import APITestCase
 from accounts.models import User
 
 
-class AuthApiTests(APITestCase):
+class AuthEndpointTestCase(APITestCase):
+    """Register, login and reset are rate limited per client address.
+
+    The counters live in the cache and every test client shares one address,
+    so each test starts with a fresh budget.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+
+class AuthApiTests(AuthEndpointTestCase):
     def test_register_me_and_logout_flow(self):
         payload = {
             "email": "jules@example.com",
@@ -35,8 +49,9 @@ class AuthApiTests(APITestCase):
         self.assertFalse(me_after_logout.data["authenticated"])
 
 
-class PasswordResetTests(APITestCase):
+class PasswordResetTests(AuthEndpointTestCase):
     def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(
             email="reset@example.com",
             password="oldpassword123",
@@ -138,8 +153,9 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-class EmailVerificationTests(APITestCase):
+class EmailVerificationTests(AuthEndpointTestCase):
     def setUp(self):
+        super().setUp()
         self.user = User.objects.create_user(
             email="verify@example.com",
             password="testpass123",
@@ -194,8 +210,6 @@ class EmailVerificationTests(APITestCase):
         self.assertIn("/verify-email/confirm?token=", response.data["dev_verify_url"])
 
         self.client.logout()
-        from django.core.cache import cache
-
         cache.clear()  # reset the register throttle for the second attempt
         payload["email"] = "fresh2@example.com"
         response = self.client.post(reverse("auth-register"), payload, format="json")
@@ -278,10 +292,11 @@ class EmailVerificationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
 
-class CampusAutoMatchTests(APITestCase):
+class CampusAutoMatchTests(AuthEndpointTestCase):
     """Registration assigns campus by exact email-domain match."""
 
     def setUp(self):
+        super().setUp()
         from .models import Campus
 
         self.usc = Campus.objects.create(name="USC", slug="usc", email_domains="usc.edu, alumni.usc.edu")

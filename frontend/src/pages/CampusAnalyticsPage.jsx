@@ -166,7 +166,7 @@ export default function CampusAnalyticsPage() {
           icon={BarChart2}
           label="Items rescued"
           value={summary.total_rescued.toLocaleString()}
-          sublabel={`$${formatCurrencyValue(summary.total_retail_rescued)} retail value`}
+          sublabel={`${formatCurrencyValue(summary.total_retail_rescued)} retail value`}
         />
         <StatCard
           icon={Users}

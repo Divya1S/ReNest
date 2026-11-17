@@ -11,6 +11,10 @@ MAX_DIMENSION = 1920
 JPEG_QUALITY = 85
 # Maximum pixels in either dimension before we reject (prevents zip-bomb pixel floods)
 MAX_PIXEL_DIMENSION = 8000
+# Maximum total pixels. A side limit alone admits 8000 x 8000: 64 megapixels,
+# about 190 MB once decoded and more while it is rotated and converted, from
+# a file of a few hundred kilobytes. 25 MP still covers a 24 MP camera photo.
+MAX_PIXELS = 25_000_000
 
 # Second line of defence: Pillow itself refuses to decode anything larger, so a
 # decode reached through another code path cannot exhaust memory either.
@@ -61,6 +65,10 @@ def compress_image(upload: UploadedFile, field_name: str = "image") -> InMemoryU
     if max(img.width, img.height) > MAX_PIXEL_DIMENSION:
         raise ValidationError(
             {field_name: f"Image dimensions must not exceed {MAX_PIXEL_DIMENSION}px on any side."}
+        )
+    if img.width * img.height > MAX_PIXELS:
+        raise ValidationError(
+            {field_name: f"Image is too large. Use a photo of at most {MAX_PIXELS // 1_000_000} megapixels."}
         )
 
     try:

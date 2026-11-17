@@ -475,6 +475,21 @@ class MeUpdateErrorShapeTests(APITestCase):
         self.assertIsInstance(register.data["email"], list)
         self.assertIs(type(me.data["display_name"]), type(register.data["email"]))
 
+    def test_email_notifications_can_be_turned_back_on(self) -> None:
+        """Unsubscribing was one-way: nothing could set the flag to true again."""
+        self.user.email_notifications = False
+        self.user.save(update_fields=["email_notifications"])
+        self.assertIs(self.client.get(reverse("auth-me")).data["user"]["email_notifications"], False)
+
+        response = self.client.patch(reverse("auth-me"), {"email_notifications": True}, format="json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.data["user"]["email_notifications"], True)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.email_notifications)
+        bad = self.client.patch(reverse("auth-me"), {"email_notifications": "yes"}, format="json")
+        self.assertEqual(bad.status_code, 400)
+
     def test_valid_update_still_works(self) -> None:
         response = self.client.patch(
             reverse("auth-me"), {"display_name": "  New Name  ", "show_on_leaderboard": False}, format="json"
@@ -483,3 +498,121 @@ class MeUpdateErrorShapeTests(APITestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.display_name, "New Name")
         self.assertFalse(self.user.show_on_leaderboard)
+
+
+# --- Rate limits on the auth endpoints must not depend on being signed out ---
+
+
+class AuthThrottlesCoverSignedInCallersTests(AnonymousEndpointTestCase):
+    """Holding a session used to switch the auth rate limits off.
+
+    They were AnonRateThrottle subclasses, which skip authenticated requests,
+    so a throwaway account could guess another user's password, or request
+    reset and verification emails, without any limit.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.attacker = User.objects.create_user(
+            email="attacker@example.com", password=PASSWORD, display_name="Attacker"
+        )
+        User.objects.create_user(email="victim@example.com", password=PASSWORD, display_name="Victim")
+        self.client.force_authenticate(self.attacker)
+
+    def test_password_guessing_from_a_session_is_limited(self) -> None:
+        statuses = [
+            self.client.post(
+                reverse("auth-login"),
+                {"email": "victim@example.com", "password": f"wrong-guess-{attempt}"},
+                format="json",
+            ).status_code
+            for attempt in range(12)
+        ]
+        self.assertNotIn(200, statuses)
+        self.assertNotIn(429, statuses[:10])
+        self.assertEqual(statuses[10:], [429, 429])
+
+    def test_reset_emails_from_a_session_are_limited(self) -> None:
+        statuses = [
+            self.client.post(
+                reverse("auth-password-reset"), {"email": "victim@example.com"}, format="json"
+            ).status_code
+            for _ in range(7)
+        ]
+        self.assertEqual(statuses[:5], [200] * 5)
+        self.assertEqual(statuses[5:], [429, 429])
+        self.assertEqual(len(mail.outbox), 5)
+
+    def test_verification_emails_are_limited_per_user(self) -> None:
+        statuses = [self.client.post(reverse("auth-verify-email-send")).status_code for _ in range(7)]
+        self.assertEqual(statuses[:5], [200] * 5)
+        self.assertEqual(statuses[5:], [429, 429])
+
+
+# --- What /api/auth/me tells the app about the signed-in account ---
+
+
+class AccountPayloadTests(APITestCase):
+    def _me(self, user: User) -> Any:
+        self.client.force_authenticate(user)
+        return self.client.get(reverse("auth-me")).data["user"]
+
+    def test_staff_flag_is_sent_so_the_app_can_show_staff_controls(self) -> None:
+        """The SPA hides manual review, policy and replay controls unless user.is_staff is true.
+
+        The field was missing from the payload, so those screens were hidden
+        from staff as well.
+        """
+        staff = User.objects.create_user(email="ops@example.com", password=PASSWORD, display_name="Ops", is_staff=True)
+        student = User.objects.create_user(email="student@example.com", password=PASSWORD, display_name="Sam")
+        self.assertIs(self._me(staff)["is_staff"], True)
+        self.assertIs(self._me(student)["is_staff"], False)
+
+    def test_onboarding_step_follows_what_the_account_has_done(self) -> None:
+        """The getting-started list read a stored step that nothing ever advanced."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from listings.models import Listing, Reservation
+
+        user = User.objects.create_user(email="new@example.com", password=PASSWORD, display_name="New")
+        self.assertEqual(self._me(user)["onboarding_step"], 0)
+
+        user.campus_name = "Pacific State"
+        user.save(update_fields=["campus_name"])
+        self.assertEqual(self._me(user)["onboarding_step"], 1)
+
+        listing_fields: dict[str, Any] = {
+            "description": "Works.",
+            "category": Listing.Category.LIGHTING,
+            "condition": Listing.Condition.GOOD,
+            "price_type": Listing.PriceType.FREE,
+            "pickup_zone": "Lobby",
+            "available_until": timezone.now() + timedelta(days=2),
+        }
+        Listing.objects.create(owner=user, title="Lamp", **listing_fields)
+        self.assertEqual(self._me(user)["onboarding_step"], 2)
+
+        other = User.objects.create_user(email="seller@example.com", password=PASSWORD, display_name="Seller")
+        theirs = Listing.objects.create(owner=other, title="Fan", **listing_fields)
+        Reservation.objects.create(listing=theirs, claimant=user, pickup_time_window="Friday")
+        self.assertEqual(self._me(user)["onboarding_step"], 3)
+
+
+class VerificationEmailRobustnessTests(AnonymousEndpointTestCase):
+    """Two ways the verification endpoints answered 500."""
+
+    def test_a_token_that_is_not_text_is_an_invalid_link(self) -> None:
+        for token in (5, None, ["a"], {"k": "v"}):
+            with self.subTest(token=token):
+                response = self.client.post(reverse("auth-verify-email-confirm"), {"token": token}, format="json")
+                self.assertEqual(response.status_code, 400)
+
+    def test_a_mail_outage_on_resend_is_reported_not_raised(self) -> None:
+        user = User.objects.create_user(email="unverified@example.com", password=PASSWORD, display_name="U")
+        self.client.force_authenticate(user)
+        with patch.object(account_views, "send_mail", side_effect=OSError("smtp down")):
+            response = self.client.post(reverse("auth-verify-email-send"))
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("try again", response.data["detail"])

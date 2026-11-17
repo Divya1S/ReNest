@@ -193,20 +193,3 @@ export const INVESTIGATION = {
   latency_ms: "4.200",
   created_at: "2026-09-09T14:02:00Z",
 };
-
-export const HEALTH = {
-  status: "ok",
-  generated_at: "2026-09-09T14:00:00Z",
-  model_version: "risk-rules-v2",
-  processor: "sandbox",
-  investigator_mode: "deterministic",
-  investigator_setting: "deterministic",
-  policy: { sensitivity: 50, review_threshold: 40, block_threshold: 70 },
-  counters: { requests_total: 120, errors_total: 0, payments_created_total: 42, decisions_allow_total: 35, decisions_review_total: 4, decisions_block_total: 3, payments_completed_total: 33, payments_failed_total: 2, events_emitted_total: 160, events_processed_total: 160, events_dead_lettered_total: 0, idempotent_replays_total: 1, idempotency_conflicts_total: 0, simulations_total: 2, investigations_total: 1 },
-  error_rate: 0,
-  latency: { risk_evaluation_ms: { count: 42, mean_ms: 0.02, p50_ms: 0.018, p95_ms: 0.04, p99_ms: 0.06, max_ms: 0.09 }, payment_create_ms: { count: 42, mean_ms: 12.1, p50_ms: 11.2, p95_ms: 18.4, p99_ms: 22.0, max_ms: 25.5 }, request_ms: { count: 120, mean_ms: 9.5, p50_ms: 8.1, p95_ms: 20.2, p99_ms: 31.0, max_ms: 40.0 }, event_dispatch_ms: { count: 42, mean_ms: 3.1, p50_ms: 2.8, p95_ms: 5.0, p99_ms: 6.0, max_ms: 7.0 }, simulation_ms: { count: 2, mean_ms: 180.5, p50_ms: 180.5, p95_ms: 190.0, p99_ms: 190.0, max_ms: 190.0 } },
-  database: { transactions_24h: 42, simulated_transactions_24h: 2000, evaluations_24h: 2042, evaluation_latency_24h: { count: 2042, mean_ms: 0.01, p50_ms: 0.008, p95_ms: 0.02, p99_ms: 0.04, max_ms: 0.09 } },
-  events: { pending: 0, failed: 0, dead: 0, processed_24h: 160, total: 160, oldest_unprocessed_age_s: null, handlers: { "payment.blocked": ["audit", "notify_customer"] } },
-  idempotency: { active_keys: 3, in_progress: 0 },
-  notes: ["Counters live in the cache."],
-};

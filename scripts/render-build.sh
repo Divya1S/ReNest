@@ -7,7 +7,10 @@ pip install -r backend/requirements.txt
 
 echo "── Frontend build"
 cd frontend
-npm ci
+# The build tools (Vite, Tailwind) are dev dependencies. --include=dev installs
+# them even where the host sets NODE_ENV=production, which makes plain
+# `npm ci` skip them and the build fail.
+npm ci --include=dev
 npm run build
 cd ..
 

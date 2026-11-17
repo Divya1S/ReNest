@@ -9,6 +9,7 @@ export interface User {
   is_staff: boolean;
   is_campus_manager?: boolean;
   email_verified?: boolean;
+  email_notifications?: boolean;
   show_on_leaderboard?: boolean;
   milestone?: string | null;
   completion_rate?: number | null;
@@ -147,8 +148,6 @@ export interface Reservation {
 
 // ─── Notifications ───────────────────────────────────────────────────────────
 
-export type NotificationChannel = "both" | "push" | "email" | "off";
-
 export interface Notification {
   id: number;
   notification_type: string;
@@ -159,23 +158,7 @@ export interface Notification {
   created_at: string;
 }
 
-export interface NotificationPreference {
-  notification_type: string;
-  channel: NotificationChannel;
-  quiet_hours_start?: string | null;
-  quiet_hours_end?: string | null;
-}
-
 // ─── Saved Searches ──────────────────────────────────────────────────────────
-
-export interface SavedSearch {
-  id: number;
-  label?: string;
-  keyword?: string;
-  category?: string;
-  price_type?: PriceType;
-  last_notified_at?: string | null;
-}
 
 // ─── Hubs ────────────────────────────────────────────────────────────────────
 
@@ -189,44 +172,9 @@ export interface Hub {
   is_accepting?: boolean;
 }
 
-export interface CollectionEvent {
-  id: number;
-  hub: number | Hub;
-  title: string;
-  status: "scheduled" | "in_progress" | "completed" | "cancelled";
-  scheduled_at: string;
-  holds_count: number;
-}
-
 // ─── Partner / API Keys ──────────────────────────────────────────────────────
 
-export interface PartnerUsage {
-  campus: string;
-  listing_count: number;
-  reservation_count: number;
-  webhook_endpoints: number;
-  rate_limit_per_day: number;
-  scopes: string[];
-}
-
-export interface WebhookEndpoint {
-  id: number;
-  url: string;
-  events: string[];
-  secret?: string;
-}
-
 // ─── Leaderboard ─────────────────────────────────────────────────────────────
-
-export interface LeaderboardEntry {
-  rank: number;
-  display_name: string;
-  is_me: boolean;
-  milestone?: string | null;
-  item_count: number;
-  total_value: number;
-  completion_rate?: number | null;
-}
 
 export interface BuildingRow {
   building: string;
@@ -236,13 +184,6 @@ export interface BuildingRow {
 }
 
 // ─── API response wrappers ───────────────────────────────────────────────────
-
-export interface PaginatedResponse<T> {
-  results: T[];
-  count: number;
-  next: string | null;
-  previous: string | null;
-}
 
 export interface AuthMeResponse {
   user: User | null;
@@ -314,7 +255,8 @@ interface RequestRecommendation {
 interface ReadyToPublishItem {
   id: number;
   title: string;
-  image_url?: string | null;
+  /** The room photo the draft was tagged on; drafts have no image of their own. */
+  source_image_detail?: { image_url?: string | null } | null;
   notes?: string;
   category: string;
   scan_session: string;

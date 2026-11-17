@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import logging
+import secrets
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -29,7 +30,6 @@ def generate_donation_receipt(listing: Listing) -> ContentFile | None:
     """
     try:
         from reportlab.lib.pagesizes import LETTER
-        from reportlab.lib.units import inch
         from reportlab.pdfgen import canvas as rl_canvas
     except ImportError:
         logger.warning("reportlab is not installed, donation receipt skipped")
@@ -43,7 +43,9 @@ def generate_donation_receipt(listing: Listing) -> ContentFile | None:
         _draw_receipt(c, listing, width, height)
         c.save()
 
-        filename = f"receipt-{listing.pk}-{timezone.now().strftime('%Y%m%d')}.pdf"
+        # Media files are served without authentication, so the name must not
+        # be derivable from the listing id and the donation date.
+        filename = f"receipt-{listing.pk}-{secrets.token_urlsafe(16)}.pdf"
         return ContentFile(buf.getvalue(), name=filename)
     except Exception:
         logger.exception("Failed to generate donation receipt for listing %s", listing.pk)
@@ -52,7 +54,6 @@ def generate_donation_receipt(listing: Listing) -> ContentFile | None:
 
 def _draw_receipt(c: Canvas, listing: Listing, width: float, height: float) -> None:
     from reportlab.lib.units import inch
-    from reportlab.pdfgen import canvas as rl_canvas
 
     margin = inch
     y = height - margin
@@ -91,7 +92,7 @@ def _draw_receipt(c: Canvas, listing: Listing, width: float, height: float) -> N
     _set_muted(c)
     c.setFont("Helvetica", 10)
     owner = listing.owner
-    donor_name = owner.get_full_name() or owner.email
+    donor_name = owner.display_name or owner.email
     c.drawString(margin, y, f"Name:   {donor_name}")
     y -= 0.22 * inch
     c.drawString(margin, y, f"Email:  {owner.email}")

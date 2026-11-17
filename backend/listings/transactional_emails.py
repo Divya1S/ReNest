@@ -485,7 +485,7 @@ def check_and_award_milestone(user: Any) -> str | None:
                 f"You've completed {completed} handoff{'s' if completed != 1 else ''} "
                 f"on ReNest. Keep it up. Your campus thanks you."
             ),
-            "link_path": "/trust/me",
+            "link_path": "/trust",
             "priority": Notification.Priority.NORMAL,
         },
     )
@@ -497,7 +497,7 @@ def check_and_award_milestone(user: Any) -> str | None:
             f"You've completed {completed} handoff{'s' if completed != 1 else ''}, "
             f"and that earns you the \"{new_label}\" badge.\n\n"
             f"Your badge is now visible on your listings and trust page:\n"
-            f"{settings.APP_BASE_URL}/trust/me\n\n"
+            f"{settings.APP_BASE_URL}/trust\n\n"
             "Keep rescuing: every item counts.\n\nReNest"
         ),
         recipient=user.email,
@@ -521,7 +521,7 @@ def send_donation_receipt_email(listing: Listing) -> None:
     subject = f"Your ReNest donation receipt: {listing.title}"
 
     body = (
-        f"Hi {owner.get_full_name() or 'there'},\n\n"
+        f"Hi {owner.display_name or 'there'},\n\n"
         f"Thank you for donating \"{listing.title}\" to {hub_name} through ReNest.\n\n"
         f"Your PDF receipt is attached. Keep it for your personal records.\n\n"
         f"The ReNest Team\n"

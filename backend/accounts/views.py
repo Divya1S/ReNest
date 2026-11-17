@@ -19,11 +19,12 @@ from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from .models import Campus, User
 from dormcycle.parsers import StrictJSONParser
+from dormcycle.throttles import ClientIpRateThrottle
 from dormcycle.typed import current_user
 from typing import Any
 
@@ -42,11 +43,11 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
-class LoginRateThrottle(AnonRateThrottle):
+class LoginRateThrottle(ClientIpRateThrottle):
     scope = "login"
 
 
-class RegisterRateThrottle(AnonRateThrottle):
+class RegisterRateThrottle(ClientIpRateThrottle):
     scope = "register"
 
 
@@ -203,6 +204,7 @@ class MeView(APIView):
                 "display_name": drf_serializers.CharField(max_length=120, required=False),
                 "campus_name": drf_serializers.CharField(max_length=120, required=False, allow_blank=True),
                 "show_on_leaderboard": drf_serializers.BooleanField(required=False),
+                "email_notifications": drf_serializers.BooleanField(required=False),
             },
         ),
         responses={200: UserSerializer},
@@ -238,6 +240,15 @@ class MeView(APIView):
             request.user.show_on_leaderboard = show_on_leaderboard
             update_fields.append("show_on_leaderboard")
 
+        # The unsubscribe link in every email turns this off; this is the way
+        # to turn it back on, which the unsubscribe page promises exists.
+        email_notifications = request.data.get("email_notifications")
+        if email_notifications is not None:
+            if not isinstance(email_notifications, bool):
+                return _field_error("email_notifications", "Must be true or false.")
+            request.user.email_notifications = email_notifications
+            update_fields.append("email_notifications")
+
         step = request.data.get("onboarding_step")
         if step is not None:
             try:
@@ -256,7 +267,7 @@ class MeView(APIView):
         return Response({"authenticated": True, "user": UserSerializer(request.user).data})
 
 
-class PasswordResetRateThrottle(AnonRateThrottle):
+class PasswordResetRateThrottle(ClientIpRateThrottle):
     scope = "password_reset"
 
 
@@ -351,8 +362,13 @@ def _send_verification_email(user: User) -> str:
     return verify_url
 
 
+class VerificationEmailRateThrottle(UserRateThrottle):
+    scope = "verify_email"
+
+
 class SendVerificationEmailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [VerificationEmailRateThrottle]
 
     @extend_schema(
         operation_id="auth_verify_email_send",
@@ -362,7 +378,14 @@ class SendVerificationEmailView(APIView):
     def post(self, request: Request) -> Response:
         if current_user(request).email_verified:
             return Response({"detail": "Email is already verified."})
-        verify_url = _send_verification_email(current_user(request))
+        try:
+            verify_url = _send_verification_email(current_user(request))
+        except Exception:
+            logger.warning("Verification email failed for user %s", request.user.pk, exc_info=True)
+            return Response(
+                {"detail": "We could not send the email right now. Please try again in a few minutes."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         payload = {"detail": "Verification email sent."}
         if settings.DEBUG:
             payload["dev_verify_url"] = verify_url
@@ -379,6 +402,8 @@ class VerifyEmailConfirmView(APIView):
     )
     def post(self, request: Request) -> Response:
         token = request.data.get("token", "")
+        if not isinstance(token, str):
+            return Response({"detail": "Invalid verification link."}, status=status.HTTP_400_BAD_REQUEST)
         try:
             pk = signing.loads(token, salt=_EMAIL_VERIFY_SALT, max_age=_EMAIL_VERIFY_MAX_AGE)
         except signing.SignatureExpired:
@@ -647,7 +672,7 @@ class DataExportView(APIView):
         return Response(payload)
 
 
-# ---------- Phase 17: Impact Card ----------
+# ---------- Impact Card ----------
 
 _CATEGORY_WEIGHTS_LB = {
     "storage": 3.5,
@@ -705,7 +730,7 @@ class ImpactCardView(APIView):
         user = current_user(request)
 
         try:
-            from listings.models import Listing, Reservation
+            from listings.models import Reservation
             completed_reservations = Reservation.objects.filter(
                 listing__owner=user,
                 status="completed",
@@ -790,7 +815,7 @@ class ImpactCardView(APIView):
         return buf.getvalue()
 
 
-class CampusOnboardRateThrottle(AnonRateThrottle):
+class CampusOnboardRateThrottle(ClientIpRateThrottle):
     scope = "campus_onboard"
 
 

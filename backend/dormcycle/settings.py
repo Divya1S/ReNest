@@ -432,9 +432,12 @@ LOGGING = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
+# Uploads made by tests go to a temporary directory, not MEDIA_ROOT.
+TEST_RUNNER = "dormcycle.test_runner.TempMediaTestRunner"
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "dormcycle.exceptions.api_exception_handler",
     "DEFAULT_PARSER_CLASSES": [
         "dormcycle.parsers.StrictJSONParser",
         "rest_framework.parsers.FormParser",
@@ -454,7 +457,9 @@ REST_FRAMEWORK = {
         "login": "10/min",
         "register": "5/min",
         "password_reset": "5/hour",
+        "verify_email": "5/hour",
         "listing_create": "20/hour",
+        "scan_publish": "60/hour",
         "ai_detect": "10/hour",
         "reservation_create": "10/hour",
         "push_subscribe": "10/day",

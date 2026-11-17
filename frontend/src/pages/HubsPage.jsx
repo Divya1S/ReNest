@@ -17,7 +17,7 @@ export default function HubsPage() {
 
   useEffect(() => {
     let active = true;
-    apiFetch("/hubs")
+    apiFetch("/hubs?page_size=100")
       .then((data) => {
         if (active) {
           setHubs(asResults(data));

@@ -1,7 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+const DRAFT_KEY_PREFIX = "renest:draft:";
+
 function getStorageKey(key, version) {
-  return `renest:draft:${key}:v${version}`;
+  return `${DRAFT_KEY_PREFIX}${key}:v${version}`;
+}
+
+/**
+ * Remove every saved form draft from this browser. Drafts are keyed by form,
+ * not by account, so they are cleared when a session ends: otherwise the next
+ * person to sign in on a shared computer is offered the previous person's
+ * half-written listing.
+ */
+export function clearAllDrafts() {
+  try {
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith(DRAFT_KEY_PREFIX))
+      .forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Storage unavailable: there is nothing to clear.
+  }
 }
 
 function canUseStorage() {

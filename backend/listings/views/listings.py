@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
@@ -15,12 +14,14 @@ from django.db.models import Count, Prefetch, Q, QuerySet, Sum
 from django.db.models.functions import TruncDate
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import generics, permissions, serializers as drf_serializers
 from rest_framework.parsers import FormParser, MultiPartParser
 from dormcycle.parsers import StrictJSONParser
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
 from rest_framework.views import APIView
 
 from ..ai_client import (
@@ -32,7 +33,14 @@ from ..ai_client import (
     generate_vision_json,
     trim_to_sentence,
 )
-from ..models import Listing, ListingReport, ListingUpdate, ListingViewEvent, SavedListing
+from ..models import (
+    Listing,
+    ListingInteractionEvent,
+    ListingReport,
+    ListingUpdate,
+    ListingViewEvent,
+    SavedListing,
+)
 from ..permissions import IsEmailVerified, IsListingOwnerOrReadOnly
 from ..throttles import (
     GenerateDescriptionThrottle,
@@ -59,9 +67,10 @@ from .helpers import (
     annotate_listing_queryset,
     browse_listing_queryset,
     _expire_for_user,
-    owner_campus_name,
+    owner_campus_id,
     parse_int,
     parse_int_list,
+    record_listing_interaction,
     run_listing_created_hooks,
     user_can_post_update,
 )
@@ -175,7 +184,7 @@ class ListingListCreateView(generics.ListCreateAPIView):
                     | Q(pickup_zone__icontains=search)
                 )
 
-        # Phase 17: active boosts surface first (NULLS LAST via conditional annotation)
+        # Active boosts surface first (NULLS LAST via conditional annotation)
         from django.db.models import BooleanField, ExpressionWrapper, Q as _Q
         from django.utils import timezone as _tz
         now = _tz.now()
@@ -236,43 +245,27 @@ class ListingDetailView(generics.RetrieveUpdateDestroyAPIView):
     def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
         instance = self.get_object()
         instance.refresh_status(commit=True)
-        session_key = request.session.session_key
-        if not session_key:
-            request.session.create()
-            session_key = request.session.session_key
-        ListingViewEvent.objects.get_or_create(listing=instance, session_key=session_key)
+        ListingViewEvent.objects.get_or_create(listing=instance, session_key=self._viewer_key(request))
         if request.user.is_authenticated:
-            self._record_view_interaction(current_user(request), instance)
+            record_listing_interaction(current_user(request), instance, ListingInteractionEvent.Action.VIEW)
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
     @staticmethod
-    def _record_view_interaction(user: Any, listing: Listing) -> None:
-        """Log one VIEW per user, listing and day for personalised re-ranking.
+    def _viewer_key(request: Request) -> str:
+        """Identify the visitor so each one counts as a single view.
 
-        A GET must not grow the table without bound: every refresh used to
-        insert a row and then COUNT all of the user's rows. The unique
-        constraint on (user, listing, action, day) makes get_or_create safe
-        under concurrency, and the count now only runs when a row was added.
+        A visitor who already has a session is identified by it. Anyone else
+        is identified by a keyed hash of their address. A session used to be
+        created on the spot, so every cookieless request added a session row
+        and a fresh view: a plain request loop could fill both tables and
+        push any listing to the top of the trending strip.
         """
-        from ..models import ListingInteractionEvent
-
-        _, created = ListingInteractionEvent.objects.get_or_create(
-            user=user,
-            listing=listing,
-            action=ListingInteractionEvent.Action.VIEW,
-            day=timezone.localdate(),
-        )
-        if not created:
-            return
-        total = ListingInteractionEvent.objects.filter(user=user).count()
-        if total % 10 == 0:
-            try:
-                from ..tasks import recompute_category_affinity_task
-
-                recompute_category_affinity_task.delay(user.pk)
-            except Exception:
-                logger.exception("category affinity recompute could not be scheduled for user %s", user.pk)
+        session_key = request.session.session_key
+        if session_key:
+            return str(session_key)
+        address = BaseThrottle().get_ident(request)
+        return "anon-" + salted_hmac("listing-view", address).hexdigest()[:40]
 
     @staticmethod
     def _moderated_content(listing: Listing) -> tuple[Any, ...]:
@@ -448,6 +441,8 @@ class SavedListingToggleView(APIView):
             )
 
         _, created = SavedListing.objects.get_or_create(user=current_user(request), listing=listing)
+        if created:
+            record_listing_interaction(current_user(request), listing, ListingInteractionEvent.Action.SAVE)
         serializer = ListingSerializer(listing, context={"request": request})
         return Response(
             {"saved": True, "created": created, "listing": serializer.data},
@@ -481,9 +476,15 @@ class ListingReportListCreateView(generics.ListCreateAPIView):
             return queryset
         return queryset.filter(reporter=current_user(self.request))
 
+    def get_serializer_context(self) -> dict[str, Any]:
+        context = super().get_serializer_context()
+        # Not during schema generation, which has no URL to read a listing from.
+        if not getattr(self, "swagger_fake_view", False):
+            context["listing"] = self.get_listing()
+        return context
+
     def perform_create(self, serializer: Any) -> None:
-        listing = self.get_listing()
-        serializer.save(listing=listing, reporter=self.request.user)
+        serializer.save(listing=serializer.context["listing"], reporter=self.request.user)
 
 
 @extend_schema(
@@ -1052,7 +1053,7 @@ class DonateListingView(APIView):
             dispatch_webhook_event(
                 "listing_donated",
                 {"id": listing.pk, "title": listing.title, "hub_id": hub_id},
-                owner_campus_name(listing.owner),
+                owner_campus_id(listing.owner),
             )
         except Exception:
             logger.exception("listing_donated webhook dispatch failed for listing %s", listing.pk)

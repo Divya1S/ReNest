@@ -277,6 +277,20 @@ class StrictJsonParserTests(TestCase):
         self.assertEqual(response.data["length"], 0)
 
 
+class NotFoundResponseTests(TestCase):
+    """A missing object answers "Not found." and never names the model."""
+
+    def test_missing_object_does_not_leak_the_model_name(self):
+        response = APIClient().get(reverse("listings-detail", args=[999_999]))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data, {"detail": "Not found."})
+
+    def test_other_api_errors_keep_their_own_message(self):
+        response = APIClient().get(reverse("dashboard"))
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("credentials", str(response.data["detail"]))
+
+
 class RenderHostnameTests(SimpleTestCase):
     """RENDER_EXTERNAL_HOSTNAME is trusted automatically so a blueprint deploy boots."""
 

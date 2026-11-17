@@ -85,16 +85,42 @@ class PublicUserSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    """The signed-in user's own account, for /api/auth/me and the auth responses."""
+
     campus = CampusSerializer(read_only=True)
+    onboarding_step = serializers.SerializerMethodField()
 
     class Meta:
         model = User
+        # is_staff is what the SPA keys its staff-only controls on (manual
+        # review, policy changes, event replay). The API enforces those
+        # permissions itself; the flag only decides what is drawn.
         fields = (
             "id", "email", "display_name", "campus_name", "campus",
-            "email_verified", "milestone", "referral_count", "is_campus_manager",
-            "onboarding_step", "completion_rate", "show_on_leaderboard", "created_at",
+            "email_verified", "milestone", "referral_count", "is_campus_manager", "is_staff",
+            "onboarding_step", "completion_rate", "show_on_leaderboard", "email_notifications", "created_at",
         )
         read_only_fields = fields
+
+    def get_onboarding_step(self, user: User) -> int:
+        """Progress through the dashboard's getting-started list (0 to 3).
+
+        Derived from what the account has done: profile filled in, first
+        listing posted, first item claimed. The stored field was only ever
+        raised by a client PATCH that the app never sends, so everybody saw
+        0 of 3 for ever; it now acts as a floor.
+        """
+        from listings.models import Listing, Reservation
+
+        if not (user.display_name and (user.campus_id or user.campus_name)):
+            step = 0
+        elif not Listing.all_objects.filter(owner=user).exists():
+            step = 1
+        elif not Reservation.objects.filter(claimant=user).exists():
+            step = 2
+        else:
+            step = 3
+        return max(step, user.onboarding_step)
 
 
 # Same wording DRF's automatic UniqueValidator produced, so clients that show

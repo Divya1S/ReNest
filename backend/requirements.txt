@@ -1,18 +1,16 @@
 django==6.0.8
 python-json-logger>=2.0,<3.0
 drf-spectacular>=0.27,<0.31
-djangorestframework==3.17.2
+djangorestframework==3.18.2
 django-cors-headers>=4.3,<5.0
 sentry-sdk[django]>=2.0,<3.0
-pillow==12.3.0
+pillow==13.0.0
 psycopg[binary]>=3.1,<4.0
 python-dotenv>=1.0,<2.0
 
 stripe>=10.0,<12.0
-scikit-learn>=1.4,<2.0
 boto3>=1.34,<2.0
 reportlab>=4.0,<5.0
-types-reportlab>=4.0
 pywebpush>=2.0,<3.0
 celery[redis]>=5.3,<6.0
 # kombu (the Celery transport) caps redis below 6.5; do not raise this alone.

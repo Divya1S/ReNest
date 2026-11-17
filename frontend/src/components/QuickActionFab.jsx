@@ -12,7 +12,6 @@ const actions = [
     to: "/scan",
     color: "bg-[color:var(--color-teal)]",
     routeKey: "scan",
-    data: "/scan-sessions",
   },
   {
     icon: Plus,

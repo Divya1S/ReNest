@@ -37,7 +37,7 @@ export default function UnsubscribePage() {
           </p>
           <Link
             to="/dashboard"
-            className="btn-primary mt-2"
+            className="primary-button mt-2"
           >
             Back to ReNest
           </Link>
@@ -53,7 +53,7 @@ export default function UnsubscribePage() {
             This link may have expired or already been used. If you&apos;d like to
             unsubscribe, please contact us.
           </p>
-          <Link to="/dashboard" className="btn-primary mt-2">
+          <Link to="/dashboard" className="primary-button mt-2">
             Back to ReNest
           </Link>
         </>

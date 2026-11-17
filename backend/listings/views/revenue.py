@@ -10,7 +10,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from drf_spectacular.utils import extend_schema, inline_serializer
-from rest_framework import permissions, serializers as drf_serializers, status
+from rest_framework import permissions, serializers as drf_serializers
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -110,8 +110,8 @@ class CampusSubscribeView(APIView):
                 payment_method_types=["card"],
                 line_items=[{"price": price_id, "quantity": 1}],
                 mode="payment",
-                success_url=f"{base_url}/campus-admin?subscribed=1",
-                cancel_url=f"{base_url}/campus-admin?cancelled=1",
+                success_url=f"{base_url}/analytics?subscribed=1",
+                cancel_url=f"{base_url}/analytics?cancelled=1",
                 metadata={"campus_id": str(campus.pk), "tier": tier},
             )
             return Response({"checkout_url": session.url})

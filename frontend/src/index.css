@@ -460,33 +460,7 @@ html.dark .ghost-button {
   outline-offset: 3px;
 }
 
-/* ─── Hero panel ─────────────────────────────────────────────────────────── */
-
-.hero-panel {
-  @apply relative overflow-hidden rounded-[1.5rem] border p-8 sm:p-10 transition-colors duration-200;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
-  isolation: isolate;
-}
-
-html.dark .hero-panel {
-  background: var(--bg-surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 6px 20px rgba(0, 0, 0, 0.18);
-}
-
-.hero-panel::before {
-  content: none;
-}
-
-.hero-panel::after {
-  content: none;
-}
-
-.hero-panel > * {
-  position: relative;
-  z-index: 1;
-}
+/* ─── Scan hero illustration ─────────────────────────────────────────────────────────── */
 
 /* SVG illustration override: scan hero is the only page still using a
    corner illustration; the rest were retired with the quiet redesign. */
@@ -536,99 +510,6 @@ html.dark .soft-panel {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-/* ─── Browse ─────────────────────────────────────────────────────────────── */
-
-.browse-filter-panel {
-  position: relative;
-  overflow: hidden;
-  background: var(--bg-surface);
-}
-
-html.dark .browse-filter-panel {
-  background: var(--bg-surface);
-}
-
-.browse-filter-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(rgba(0, 0, 0, 0.02) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 0, 0, 0.02) 1px, transparent 1px);
-  background-size: 38px 38px;
-  opacity: 0.15;
-  pointer-events: none;
-}
-
-.browse-filter-panel > * {
-  position: relative;
-  z-index: 1;
-}
-
-.browse-search-shell {
-  @apply rounded-[1.25rem] border p-1;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface);
-  box-shadow: none;
-}
-
-html.dark .browse-search-shell {
-  background: var(--bg-surface);
-  border-color: var(--color-line-strong);
-}
-
-.browse-chip {
-  @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2.5 text-[0.8rem] font-medium transition duration-150;
-  letter-spacing: normal;
-  border: 1px solid var(--color-line-strong);
-  background: var(--bg-surface);
-  color: var(--color-ink);
-}
-
-.browse-chip:hover:not(:disabled) {
-  transform: none;
-  border-color: var(--color-tag);
-  color: var(--color-tag);
-}
-
-.browse-chip--active {
-  border-color: var(--color-tag);
-  background: var(--color-tag);
-  color: white;
-  box-shadow: none;
-}
-
-.browse-result-pill {
-  @apply rounded-[1rem] border px-4 py-3 text-sm font-medium transition-colors duration-200;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface-2);
-  color: var(--color-night);
-}
-
-/* ─── Dash card ──────────────────────────────────────────────────────────── */
-
-.dash-card {
-  @apply rounded-[1rem] border p-5 transition-all duration-150;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface-2);
-  box-shadow: none;
-}
-
-.dash-card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-  border-color: var(--color-line-strong);
-}
-
-/* ─── Tag chip ───────────────────────────────────────────────────────────── */
-
-.tag-chip {
-  @apply inline-flex items-center gap-2 rounded-full px-3 py-1 text-[0.66rem] font-semibold uppercase;
-  letter-spacing: 0.1em;
-  background: var(--color-tag);
-  color: white;
-}
-
 /* ─── Metric ─────────────────────────────────────────────────────────────── */
 
 .metric-number {
@@ -675,55 +556,6 @@ html.dark .scan-chip {
   color: var(--accent-tag);
 }
 
-.studio-card {
-  @apply rounded-[1rem] border p-4 transition duration-150;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface);
-  box-shadow: none;
-}
-
-html.dark .studio-card {
-  background: var(--bg-surface);
-  box-shadow: none;
-}
-
-.studio-card:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
-}
-
-/* ─── Icon tile ──────────────────────────────────────────────────────────── */
-
-.icon-tile {
-  @apply flex items-center justify-center rounded-[0.875rem] border;
-  width: 3rem;
-  height: 3rem;
-}
-
-.icon-tile--tag {
-  border-color: rgba(138, 29, 69, 0.14);
-  background: rgba(138, 29, 69, 0.06);
-  color: var(--color-tag);
-}
-
-.icon-tile--navy {
-  border-color: rgba(30, 48, 74, 0.14);
-  background: rgba(30, 48, 74, 0.06);
-  color: var(--color-teal);
-}
-
-.icon-tile--gold {
-  border-color: rgba(217, 164, 65, 0.18);
-  background: rgba(217, 164, 65, 0.08);
-  color: var(--color-box);
-}
-
-.icon-tile--urgent {
-  border-color: rgba(201, 100, 68, 0.16);
-  background: rgba(201, 100, 68, 0.07);
-  color: var(--color-urgent);
-}
-
 /* ─── Notice panel ───────────────────────────────────────────────────────── */
 
 .notice-panel {
@@ -735,17 +567,7 @@ html.dark .studio-card {
   background: rgba(201, 100, 68, 0.06);
 }
 
-.notice-panel--gold {
-  border-color: rgba(217, 164, 65, 0.2);
-  background: rgba(217, 164, 65, 0.06);
-}
-
-.notice-panel--navy {
-  border-color: rgba(30, 48, 74, 0.14);
-  background: rgba(30, 48, 74, 0.05);
-}
-
-/* ─── Empty / stat / ink panels ──────────────────────────────────────────── */
+/* ─── Empty panel ──────────────────────────────────────────── */
 
 .empty-dashed-panel {
   @apply rounded-[1.25rem] border border-dashed px-5 py-8 text-center;
@@ -757,31 +579,6 @@ html.dark .studio-card {
 html.dark .empty-dashed-panel {
   background: var(--bg-surface);
   border-color: var(--color-line-strong);
-}
-
-.stat-tile {
-  @apply rounded-[1.25rem] border p-5;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface);
-  box-shadow: none;
-}
-
-html.dark .stat-tile {
-  background: var(--bg-surface);
-  box-shadow: none;
-}
-
-.ink-panel {
-  @apply rounded-[1.5rem] border;
-  border-color: rgba(255, 255, 255, 0.06);
-  background: linear-gradient(145deg, var(--color-teal) 0%, var(--color-tag) 100%);
-  color: white;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
-}
-
-html.dark .ink-panel {
-  border-color: rgba(255, 255, 255, 0.06);
-  background: linear-gradient(145deg, #1a1f2e 0%, #0a0d14 100%);
 }
 
 /* ─── Action tray ────────────────────────────────────────────────────────── */
@@ -847,44 +644,6 @@ html.dark .action-tray {
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* ─── Listing ────────────────────────────────────────────────────────────── */
-
-.listing-media-shell::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0 0;
-  height: 45%;
-  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.14) 100%);
-  pointer-events: none;
-}
-
-.listing-meta-band {
-  @apply rounded-[1rem] p-4;
-  background: rgba(138, 29, 69, 0.05);
-  border: 1px solid rgba(138, 29, 69, 0.08);
-}
-
-html.dark .listing-meta-band {
-  background: rgba(225, 122, 155, 0.08);
-  border-color: rgba(225, 122, 155, 0.1);
-}
-
-.listing-footer-note {
-  @apply rounded-full px-3 py-2 text-[0.68rem] font-semibold uppercase;
-  letter-spacing: 0.1em;
-  background: var(--bg-tag-soft);
-  color: var(--color-tag);
-}
-
-/* ─── Glass card ─────────────────────────────────────────────────────────── */
-
-.glass-card {
-  @apply relative overflow-hidden rounded-[1.5rem] border transition-all duration-200;
-  border-color: var(--color-line-strong);
-  background: var(--bg-surface);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.04);
-}
-
 /* ─── Shimmer skeleton ───────────────────────────────────────────────────── */
 
 .shimmer-skeleton {
@@ -914,12 +673,6 @@ html.dark .shimmer-skeleton::after {
     rgba(255, 255, 255, 0.1) 60%,
     rgba(255, 255, 255, 0)
   );
-}
-
-/* ─── Glow ring ──────────────────────────────────────────────────────────── */
-
-.glow-ring {
-  animation: pulse-ring 2s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
 }
 
 /* ─── Floating label ─────────────────────────────────────────────────────── */
@@ -996,21 +749,6 @@ html.dark .floating-label-group input:-webkit-autofill:focus {
   }
 }
 
-@keyframes pulse-ring {
-  0% {
-    transform: scale(0.8);
-    box-shadow: 0 0 0 0 rgba(138, 29, 69, 0.42);
-  }
-  70% {
-    transform: scale(1);
-    box-shadow: 0 0 0 12px rgba(138, 29, 69, 0);
-  }
-  100% {
-    transform: scale(0.8);
-    box-shadow: 0 0 0 0 rgba(138, 29, 69, 0);
-  }
-}
-
 @keyframes drift-float {
   0%,
   100% {
@@ -1039,8 +777,6 @@ html.dark .floating-label-group input:-webkit-autofill:focus {
   }
 }
 
-/* ─── Mobile ─────────────────────────────────────────────────────────────── */
-
 /* ─── Nav height token ───────────────────────────────────────────────────── */
 /* Fallback only: AppFrame measures the rendered header and overwrites this
    at runtime (ResizeObserver), keeping under-nav sticky elements flush. */
@@ -1049,7 +785,6 @@ html.dark .floating-label-group input:-webkit-autofill:focus {
 }
 
 @media (max-width: 640px) {
-  .hero-panel,
   .soft-panel,
   .paper-panel,
   .bulletin-card,
@@ -1070,10 +805,5 @@ html.dark .floating-label-group input:-webkit-autofill:focus {
     right: -2rem;
     bottom: -1.75rem;
     opacity: 0.08;
-  }
-
-  /* Ensure filter chips and compact controls meet 44px tap target on touch */
-  .filter-chip {
-    min-height: 2.75rem;
   }
 }

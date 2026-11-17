@@ -129,13 +129,13 @@ class Listing(models.Model):
         db_index=True,
         help_text="Phase 17: listings boosted via Stripe tip surface first in browse until this datetime.",
     )
-    # Phase 25: Semantic Search
+    # Semantic Search
     embedding = models.JSONField(
         null=True,
         blank=True,
         help_text="Versioned lexical search vector (hashing trick over title and description). Not a learned embedding.",
     )
-    # Phase 18: Platform Intelligence
+    # Platform Intelligence
     quality_hints = models.JSONField(
         default=list,
         blank=True,
@@ -536,7 +536,7 @@ class Reservation(models.Model):
     )
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.REQUESTED)
     pickup_time_window = models.CharField(max_length=140)
-    # Phase 16: Handoff Coordination
+    # Handoff Coordination
     pickup_slots = models.JSONField(
         default=list,
         blank=True,
@@ -886,7 +886,7 @@ class Dispute(models.Model):
 
 class PushSubscription(models.Model):
     """Web Push API subscription for a user's browser/device.
-    Phase 22: also holds native APNs/FCM tokens from the Capacitor shell.
+    Also holds native APNs/FCM tokens from a native app shell.
     """
 
     class Platform(models.TextChoices):
@@ -925,9 +925,9 @@ class PushSubscription(models.Model):
 
 class DemandForecast(models.Model):
     """
-    Phase 18: weekly per-category demand forecast computed by a scikit-learn
-    linear regression over the last 3 semesters of interaction data.
-    Recomputed every Sunday midnight by a Celery beat task.
+    Next-week demand per category: a least-squares line fitted over the last
+    year of weekly view and save counts. Recomputed by the daily job set
+    (listings.tasks.recompute_demand_forecast_task).
     """
 
     category = models.CharField(max_length=24, choices=Listing.Category.choices, db_index=True)
@@ -969,7 +969,7 @@ class ListingBoostPayment(models.Model):
 
 class Organization(models.Model):
     """
-    Phase 17 (Tip Jar): campus sustainability clubs, dorm councils, and donation hubs
+    Tip jar: campus sustainability clubs, dorm councils, and donation hubs
     can register here and receive optional tip allocations from listing completions.
     """
 
@@ -989,7 +989,7 @@ class Organization(models.Model):
 
 class DonationIntent(models.Model):
     """
-    Phase 17: Honour-system tip logged when a listing completes.
+    Honour-system tip logged when a listing completes.
     No actual payment processing; the owner's Venmo QR does the transfer.
     """
 
@@ -1019,7 +1019,7 @@ class DonationIntent(models.Model):
 
 
 class Announcement(models.Model):
-    """Phase 21: Campus-manager posts pinned to the browse/dashboard header."""
+    """Campus-manager posts pinned to the browse/dashboard header."""
 
     campus = models.ForeignKey(
         "accounts.Campus",
@@ -1184,7 +1184,7 @@ def sync_system_move_out_tasks(scan_session):
 
 
 class BuildingCoord(models.Model):
-    """Phase 25: lat/lon for a named building on a campus, used for map view and proximity sort."""
+    """Lat/lon for a named building on a campus, used for map view and proximity sort."""
 
     campus = models.ForeignKey(
         "accounts.Campus",
@@ -1205,7 +1205,7 @@ class BuildingCoord(models.Model):
 
 
 class SavedSearch(models.Model):
-    """Phase 25: a persisted search preset that triggers push alerts when new matches appear."""
+    """A persisted search preset that triggers push alerts when new matches appear."""
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1234,7 +1234,7 @@ class SavedSearch(models.Model):
 
 class StorageHold(models.Model):
     """
-    Phase 24: Logistics & Batching.
+    Logistics & Batching.
     A hub staff member places a temporary hold on a listing to batch it with
     a scheduled collection event, preventing it from being reserved elsewhere.
 
@@ -1308,7 +1308,7 @@ class StorageHold(models.Model):
 
 class CollectionEvent(models.Model):
     """
-    Phase 24: Logistics & Batching.
+    Logistics & Batching.
     A scheduled hub collection run: a van/person picks up multiple held listings
     from dorms in a defined route window.
     """
@@ -1360,7 +1360,7 @@ class CollectionEvent(models.Model):
 
 class NotificationPreference(models.Model):
     """
-    Phase 26: per-user, per-type notification delivery preferences.
+    Per-user, per-type notification delivery preferences.
     Quiet hours are stored as naive Time values interpreted in the user's campus timezone.
     """
 
@@ -1418,7 +1418,7 @@ class NotificationPreference(models.Model):
 
 class PartnerAPIKey(models.Model):
     """
-    Phase 27: API key for partner integrations (housing portals, sustainability dashboards).
+    API key for partner integrations (housing portals, sustainability dashboards).
     The raw key is shown once at creation; only the SHA-256 hash is stored.
     """
 
@@ -1466,7 +1466,7 @@ class PartnerAPIKey(models.Model):
 
 
 class WebhookEndpoint(models.Model):
-    """Phase 27: A partner-registered URL that receives signed event payloads."""
+    """A partner-registered URL that receives signed event payloads."""
 
     partner = models.ForeignKey(
         PartnerAPIKey,
@@ -1492,7 +1492,7 @@ class WebhookEndpoint(models.Model):
 
 
 class WebhookDelivery(models.Model):
-    """Phase 27: Delivery attempt log for a webhook event."""
+    """Delivery attempt log for a webhook event."""
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"

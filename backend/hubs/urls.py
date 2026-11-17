@@ -5,7 +5,6 @@ from .views import (
     DonationHubListView,
     HubManagerUpdateView,
     MyManagedHubsView,
-    PreviewDonationHubListView,
 )
 
 urlpatterns = [
@@ -13,5 +12,4 @@ urlpatterns = [
     path("hubs/mine", MyManagedHubsView.as_view(), name="hubs-mine"),
     path("hubs/<int:pk>", DonationHubDetailView.as_view(), name="hubs-detail"),
     path("hubs/<int:pk>/manage", HubManagerUpdateView.as_view(), name="hubs-manage"),
-    path("preview/hubs", PreviewDonationHubListView.as_view(), name="preview-hubs"),
 ]

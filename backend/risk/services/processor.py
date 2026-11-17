@@ -89,8 +89,3 @@ _processor: PaymentProcessor = SandboxProcessor()
 def get_processor() -> PaymentProcessor:
     return _processor
 
-
-def set_processor(processor: PaymentProcessor) -> None:
-    """Swap the processor (tests, or a future real integration)."""
-    global _processor
-    _processor = processor

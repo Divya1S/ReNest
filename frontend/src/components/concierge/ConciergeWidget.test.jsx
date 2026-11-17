@@ -256,6 +256,22 @@ describe("ConciergeWidget", () => {
     expect(await screen.findByText("Fallback worked.")).toBeInTheDocument();
   });
 
+  test("a stream that was accepted and then dropped is not sent again", async () => {
+    // Once the server answers 200 it runs the turn to the end and stores the
+    // reply. Resending through the JSON endpoint answered the same message
+    // twice, even when the connection died before the first event arrived.
+    mockHistory();
+    await openWidget();
+    const sse = sseStream();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sse.response));
+
+    sendMessage("how do handoffs work");
+    sse.close(); // the connection ends with nothing but keep-alives received
+
+    expect(await screen.findByText(/couldn't get a reply just now/i)).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalledWith("/concierge/chat/", expect.anything());
+  });
+
   test("thumbs feedback posts the rating and toggles pressed state", async () => {
     mockHistory({
       messages: [{ id: 7, role: "assistant", content: "Earlier reply", used_tools: [], meta: {}, rating: null }],

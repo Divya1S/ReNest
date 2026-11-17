@@ -244,7 +244,9 @@ class ConciergeHistoryView(APIView):
         thread = _get_thread(request.user)
         queryset = thread.messages.order_by("-created_at", "-id")
         before = request.query_params.get("before", "")
-        if before.isdigit():
+        # isdecimal + a length cap: isdigit also accepts characters such as
+        # superscripts that int() rejects, and int() refuses very long strings.
+        if before.isdecimal() and len(before) <= 18:
             # Cursor pagination for scrollback: ids are monotonic, so "older
             # than message <id>" is exact even across created_at ties.
             queryset = queryset.filter(id__lt=int(before))

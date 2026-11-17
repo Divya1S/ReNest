@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 
 from ..models import PushSubscription
 from ..throttles import PushSubscribeThrottle
+from ..webpush import push_endpoint_error
 from dormcycle.typed import current_user
 
 
@@ -36,7 +37,7 @@ class PushSubscribeView(APIView):
     def post(self, request: Request) -> Response:
         platform = request.data.get("platform", "web")
 
-        # Phase 22: native APNs/FCM token from Capacitor shell
+        # Native APNs/FCM token from a native app shell
         if platform in ("apns", "fcm"):
             # str(): a number or object here must be a 400, not an AttributeError.
             native_token = str(request.data.get("token") or "").strip()
@@ -65,6 +66,9 @@ class PushSubscribeView(APIView):
         # further down instead of being refused here.
         if not all(isinstance(value, str) and value for value in (endpoint, p256dh, auth)):
             return Response({"detail": "endpoint, keys.p256dh and keys.auth are required."}, status=400)
+        endpoint_error = push_endpoint_error(endpoint)
+        if endpoint_error:
+            return Response({"detail": endpoint_error}, status=400)
 
         sub, created = PushSubscription.objects.update_or_create(
             endpoint=endpoint,

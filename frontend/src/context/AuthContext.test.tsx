@@ -93,6 +93,29 @@ describe("AuthProvider", () => {
     expect(env.subscription!.unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  test("logout removes saved form drafts so the next person does not inherit them", async () => {
+    // Drafts are keyed by form, not by account. On a shared computer the next
+    // user to open "Create listing" was offered the previous user's draft.
+    localStorage.setItem("renest:draft:listing-create:v1", JSON.stringify({ title: "My lamp, Maple Hall 204" }));
+    localStorage.setItem("renest-theme", "dark");
+    sessionStorage.setItem("renest_partner_key", "rk_live_secret");
+    mockAuthApi();
+
+    render(
+      <AuthProvider>
+        <Session />
+      </AuthProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: /log out maya/i }));
+
+    expect(await screen.findByText("Signed out")).toBeInTheDocument();
+    expect(localStorage.getItem("renest:draft:listing-create:v1")).toBeNull();
+    expect(sessionStorage.getItem("renest_partner_key")).toBeNull();
+    // Device preferences are not account data and stay.
+    expect(localStorage.getItem("renest-theme")).toBe("dark");
+    localStorage.clear();
+  });
+
   test("logout works without any push support", async () => {
     const log: string[] = [];
     mockAuthApi({ log });

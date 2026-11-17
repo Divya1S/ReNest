@@ -551,7 +551,13 @@ def run_turn(
         on_reply(response)
 
     # Housekeeping. Nothing below may fail a turn that has been answered.
-    if route.name == "chat" and context_free:
+    shareable = (
+        route.name == "chat"
+        and context_free
+        and set(result["used_tools"]) <= orchestrator.CHAT_TOOL_NAMES
+        and result["reply"] != orchestrator.EMPTY_REPLY
+    )
+    if shareable:
         try:
             semantic_cache.store(text, result["reply"], meta.get("ui_blocks") or [])
         except Exception:
@@ -695,6 +701,9 @@ def _maybe_compress(thread: ConciergeThread, client: Any, *, deadline: float | N
             },
         )
         summary = orchestrator._text(response).strip()
+        if not summary:
+            # An empty answer must not fold the turns away with nothing kept.
+            raise ValueError("empty summary")
     except Exception:
         logger.warning("concierge summariser unavailable; using deterministic digest")
         topics = [row.content[:60] for row in to_fold if row.role == ConciergeMessage.Role.USER][:8]

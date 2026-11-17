@@ -12,7 +12,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypeVar
+from typing import Callable, TypeVar
 
 logger = logging.getLogger("risk.retry")
 

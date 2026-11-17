@@ -9,31 +9,25 @@ class DonationHubApiTests(APITestCase):
     def setUp(self):
         DonationHub.objects.all().delete()
 
-    def test_preview_only_returns_demo_hubs(self):
-        DonationHub.objects.create(
-            name="Maple Hall Hub",
-            campus_name="Pacific State",
-            zone_label="North Quad",
-            description="Front desk collection zone.",
-            open_instructions="Bring boxed items between 4pm and 7pm.",
-            active=True,
-            is_demo=True,
-        )
-        DonationHub.objects.create(
-            name="Internal Hub",
-            campus_name="Pacific State",
-            zone_label="Staff Only",
-            description="Not for preview mode.",
-            open_instructions="Private.",
-            active=True,
-            is_demo=False,
-        )
+    def test_public_list_hides_demo_and_inactive_hubs(self):
+        for name, active, is_demo in (
+            ("Campus Reuse Closet", True, False),
+            ("Sample Hub", True, True),
+            ("Closed Hub", False, False),
+        ):
+            DonationHub.objects.create(
+                name=name,
+                campus_name="Pacific State",
+                zone_label="North Quad",
+                description="Front desk collection zone.",
+                open_instructions="Bring boxed items between 4pm and 7pm.",
+                active=active,
+                is_demo=is_demo,
+            )
 
-        response = self.client.get(reverse("preview-hubs"))
+        response = self.client.get(reverse("hubs-list"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        results = response.data["results"]
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["name"], "Maple Hall Hub")
+        self.assertEqual([row["name"] for row in response.data["results"]], ["Campus Reuse Closet"])
 
     def test_public_hubs_endpoint_returns_non_demo_hubs(self):
         DonationHub.objects.create(
@@ -179,7 +173,7 @@ class HubListQueryCountTests(APITestCase):
         )
         self.client.force_authenticate(self.user)
 
-    def _make_hubs(self, count, *, is_demo=False):
+    def _make_hubs(self, count):
         from .models import HubManager
 
         start = DonationHub.objects.count()
@@ -191,7 +185,6 @@ class HubListQueryCountTests(APITestCase):
                 description="Collection point.",
                 open_instructions="Open daily.",
                 active=True,
-                is_demo=is_demo,
             )
             for index in range(count)
         ]
@@ -227,15 +220,12 @@ class HubListQueryCountTests(APITestCase):
         self.assertEqual({row["id"] for row in rows if row["is_manager"]}, managed)
         self.assertEqual({row["id"] for row in rows if not row["is_manager"]}, {hub.pk for hub in hubs} - managed)
 
-    def test_other_hub_lists_are_constant_too(self):
-        for url_name, is_demo in (("hubs-mine", False), ("preview-hubs", True)):
-            with self.subTest(endpoint=url_name):
-                DonationHub.objects.all().delete()
-                self._make_hubs(2, is_demo=is_demo)
-                small, _ = self._query_count(url_name)
-                self._make_hubs(4, is_demo=is_demo)
-                large, _ = self._query_count(url_name)
-                self.assertEqual(small, large)
+    def test_managed_hub_list_is_constant_too(self):
+        self._make_hubs(2)
+        small, _ = self._query_count("hubs-mine")
+        self._make_hubs(4)
+        large, _ = self._query_count("hubs-mine")
+        self.assertEqual(small, large)
 
     def test_anonymous_viewer_is_never_a_manager(self):
         self._make_hubs(2)

@@ -78,7 +78,7 @@ const ReservationCard = React.memo(function ReservationCard({ reservation, onAct
 
 export default function MyReservationsPage() {
   usePageTitle("My Reservations");
-  const { data, loading, error, refetch, setData } = useApi("/reservations", { initialData: [] });
+  const { data, loading, error, refetch, setData } = useApi("/reservations?page_size=100", { initialData: [] });
   const reservations = asResults(data);
 
   const reservationsRef = React.useRef(reservations);
@@ -98,12 +98,15 @@ export default function MyReservationsPage() {
         method: "PATCH",
         body: { status },
       });
-      await refetch();
-      toast.success(`Reservation ${status.replaceAll("_", " ")}.`);
     } catch (requestError) {
       setData(snapshot);
       toast.error(requestError.message);
+      return;
     }
+    toast.success(`Reservation ${status.replaceAll("_", " ")}.`);
+    // The change is saved. If re-reading the list fails, the optimistic row
+    // above is still right, so it must not be rolled back or reported as an error.
+    refetch().catch(() => undefined);
   }, [refetch, setData]);
 
   const incoming = reservations.filter((reservation) => reservation.relationship === "owner");

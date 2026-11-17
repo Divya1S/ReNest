@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 from typing import Any, Callable, Iterable, Optional
 
+from django.core.cache import cache
 from django.db.models import QuerySet
 from django.utils import timezone
 
@@ -216,26 +217,43 @@ SCHEDULED_JOB_SETS: dict[str, list[tuple[str, Callable[[], Any]]]] = {
 }
 
 
+# How long one run of a job set may hold its lock. A run that outlives this
+# is treated as dead, so a crashed process cannot block the schedule for good.
+JOB_SET_LOCK_SECONDS = {"tick": 15 * 60, "daily": 60 * 60, "weekly": 60 * 60}
+
+
 def run_scheduled_jobs(job_sets: Iterable[str]) -> dict[str, dict[str, Any]]:
     """Run the named job sets ("tick", "daily", "weekly" or "all") in-process.
 
     Every job runs inside its own try/except so one failure never blocks the
     rest; the return value reports per-job success, a numeric result when the
     job produces one, and a short error message otherwise.
+
+    A job set never runs twice at once. The hosted cron retries a request
+    that is slow to answer while the first one is still working, and two
+    overlapping runs send the same saved-search alert twice. The second
+    caller gets each job back marked "skipped".
     """
     requested = list(job_sets)
     if "all" in requested:
         requested = list(SCHEDULED_JOB_SETS)
     results: dict[str, dict[str, Any]] = {}
     for job_set in dict.fromkeys(requested):
-        for name, job in SCHEDULED_JOB_SETS.get(job_set, []):
-            if name in results:
-                continue
-            try:
-                value = job()
-            except Exception as exc:  # noqa: BLE001 - reported to the caller, not swallowed
-                logger.exception("Scheduled job %s failed", name)
-                results[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
-            else:
-                results[name] = {"ok": True, "result": value if isinstance(value, (int, dict)) else None}
+        jobs = [(name, job) for name, job in SCHEDULED_JOB_SETS.get(job_set, []) if name not in results]
+        lock_key = f"scheduled-jobs:{job_set}:running"
+        if not cache.add(lock_key, "1", JOB_SET_LOCK_SECONDS.get(job_set, 15 * 60)):
+            for name, _job in jobs:
+                results[name] = {"ok": True, "result": None, "skipped": "a previous run is still in progress"}
+            continue
+        try:
+            for name, job in jobs:
+                try:
+                    value = job()
+                except Exception as exc:  # noqa: BLE001 - reported to the caller, not swallowed
+                    logger.exception("Scheduled job %s failed", name)
+                    results[name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:300]}
+                else:
+                    results[name] = {"ok": True, "result": value if isinstance(value, (int, dict)) else None}
+        finally:
+            cache.delete(lock_key)
     return results

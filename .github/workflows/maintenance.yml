@@ -68,4 +68,6 @@ jobs:
             -d "{\"jobs\": [\"${JOBS}\"]}" \
             | tee maintenance.json
           echo
-          python3 -c "import json; d=json.load(open('maintenance.json')); print('ok:', d.get('ok'), '|', json.dumps(d.get('results'), indent=1))"
+          # The endpoint answers 200 with a per-job report; fail the run when
+          # any job failed so a broken job shows up as a red workflow.
+          python3 -c "import json, sys; d=json.load(open('maintenance.json')); print('ok:', d.get('ok'), '|', json.dumps(d.get('results'), indent=1)); sys.exit(0 if d.get('ok') else 1)"

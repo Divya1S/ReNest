@@ -115,7 +115,7 @@ test.describe("Header while the session is being checked", () => {
 
 test.describe("Retry buttons", () => {
   for (const { name, path, api, heading } of [
-    { name: "Saved items", path: "/saved", api: "**/api/saved-listings", heading: /nothing saved yet/i },
+    { name: "Saved items", path: "/saved", api: /\/api\/saved-listings(\?|$)/, heading: /nothing saved yet/i },
     { name: "Alerts", path: "/notifications", api: "**/api/notifications", heading: /caught up|no unread|unread now/i },
   ]) {
     test(`${name}: Try Again re-requests the page's own endpoint`, async ({ page }) => {

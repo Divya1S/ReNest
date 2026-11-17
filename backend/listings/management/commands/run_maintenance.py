@@ -33,7 +33,9 @@ class Command(BaseCommand):
         results = run_scheduled_jobs(requested)
         failed = [name for name, result in results.items() if not result["ok"]]
         for name, result in results.items():
-            if result["ok"]:
+            if result.get("skipped"):
+                self.stdout.write(f"  skip  {name}: {result['skipped']}")
+            elif result["ok"]:
                 self.stdout.write(f"  ok    {name}: {result['result']}")
             else:
                 self.stdout.write(self.style.ERROR(f"  FAIL  {name}: {result['error']}"))

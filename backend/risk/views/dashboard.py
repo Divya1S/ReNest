@@ -192,7 +192,7 @@ class PolicyView(APIView):
 
     def get(self, request: Request) -> Response:
         policy = get_active_policy()
-        return Response(self._payload(policy.sensitivity, policy))
+        return Response(self._payload(policy.sensitivity, policy, staff=bool(request.user.is_staff)))
 
     def put(self, request: Request) -> Response:
         serializer = PolicyUpdateSerializer(data=request.data)
@@ -203,18 +203,21 @@ class PolicyView(APIView):
             reason=serializer.validated_data["reason"],
             request_id=_request_id(request),
         )
-        return Response(self._payload(policy.sensitivity, policy))
+        return Response(self._payload(policy.sensitivity, policy, staff=True))
 
     @staticmethod
-    def _payload(sensitivity: int, policy: Any) -> dict[str, Any]:
+    def _payload(sensitivity: int, policy: Any, *, staff: bool) -> dict[str, Any]:
         thresholds = thresholds_for(sensitivity)
+        # Who changed the policy is staff information, like reviewer identity
+        # (risk/services/privacy.py); customers see the policy, not its editor.
+        editor = getattr(policy.updated_by, "display_name", None) if staff and policy.updated_by_id else None
         return {
             "name": policy.name,
             "sensitivity": sensitivity,
             "review_threshold": thresholds.review,
             "block_threshold": thresholds.block,
             "updated_at": policy.updated_at.isoformat() if policy.updated_at else None,
-            "updated_by": getattr(policy.updated_by, "display_name", None) if policy.updated_by_id else None,
+            "updated_by": editor,
             "model_version": MODEL_VERSION,
             "curve": [
                 {"sensitivity": s, "review": thresholds_for(s).review, "block": thresholds_for(s).block}

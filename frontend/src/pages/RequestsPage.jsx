@@ -241,26 +241,36 @@ export default function RequestsPage() {
     setSearchParams(params, { replace: true, preventScrollReset: true });
   }, [category, search, setSearchParams]);
 
+  const loadSequence = React.useRef(0);
+  const hasLoaded = React.useRef(false);
+
   const loadData = React.useCallback(async () => {
-    setLoading(true);
+    const sequence = ++loadSequence.current;
+    // Skeleton on the first load only. Swapping the whole page for it on
+    // every search keystroke unmounted the search box mid-typing.
+    if (!hasLoaded.current) setLoading(true);
     setError("");
     try {
-      const params = new URLSearchParams();
+      // The whole board and all of the user's active listings (the "offer a
+      // match" picker), not just the first page of each.
+      const params = new URLSearchParams({ page_size: "100" });
       if (category) params.set("category", category);
       if (search) params.set("search", search);
-      const query = params.toString() ? `?${params.toString()}` : "";
       const [requestData, listingData, matchData] = await Promise.all([
-        apiFetch(`/requests${query}`),
-        apiFetch("/listings?mine=1&status=active"),
+        apiFetch(`/requests?${params.toString()}`),
+        apiFetch("/listings?mine=1&status=active&page_size=100"),
         apiFetch("/match-center"),
       ]);
+      // A newer search started while this one was in flight: its answer wins.
+      if (sequence !== loadSequence.current) return;
       setRequests(asResults(requestData));
       setMyListings(asResults(listingData));
       setMatchCenter(matchData);
+      hasLoaded.current = true;
     } catch (requestError) {
-      setError(requestError.message);
+      if (sequence === loadSequence.current) setError(requestError.message);
     } finally {
-      setLoading(false);
+      if (sequence === loadSequence.current) setLoading(false);
     }
   }, [category, search]);
 

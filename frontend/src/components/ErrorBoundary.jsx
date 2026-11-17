@@ -4,6 +4,13 @@ import React from "react";
 import { Sentry } from "../sentry";
 
 const RELOAD_FLAG = "renest:chunk-reload";
+const RELOAD_COOLDOWN_MS = 60_000;
+
+/** Whether this tab already reloaded itself for a missing chunk a moment ago. */
+function reloadedRecently() {
+  const last = Number(sessionStorage.getItem(RELOAD_FLAG) || 0);
+  return Date.now() - last < RELOAD_COOLDOWN_MS;
+}
 
 function isChunkLoadError(error) {
   return /dynamically imported module|Importing a module script failed|Loading chunk|Failed to fetch/i.test(
@@ -25,12 +32,16 @@ export class ErrorBoundary extends React.Component {
 
     // A tab opened before a deploy still holds the old index.html and asks for
     // chunk filenames that no longer exist. React.lazy caches the rejection, so
-    // "Try Again" can never succeed; only a reload can. The sessionStorage
-    // flag makes this a one-shot so a genuine load failure cannot loop.
-    if (isChunkLoadError(error) && !sessionStorage.getItem(RELOAD_FLAG)) {
+    // "Try Again" can never succeed; only a reload can. The timestamp in
+    // sessionStorage limits that to one reload a minute: if the chunk still
+    // cannot be loaded after it (blocked, or genuinely missing), the error UI
+    // is shown instead of reloading for ever.
+    if (isChunkLoadError(error)) {
       try {
-        sessionStorage.setItem(RELOAD_FLAG, "1");
-        window.location.reload();
+        if (!reloadedRecently()) {
+          sessionStorage.setItem(RELOAD_FLAG, String(Date.now()));
+          window.location.reload();
+        }
       } catch {
         // Storage unavailable: fall through to the error UI.
       }
@@ -43,14 +54,7 @@ export class ErrorBoundary extends React.Component {
     const { hasError, error } = this.state;
     const { children, fallback: Fallback } = this.props;
 
-    if (!hasError) {
-      try {
-        sessionStorage.removeItem(RELOAD_FLAG);
-      } catch {
-        // Storage unavailable; the flag simply expires with the session.
-      }
-      return children;
-    }
+    if (!hasError) return children;
 
     if (Fallback) return <Fallback error={error} reset={this.reset} />;
 

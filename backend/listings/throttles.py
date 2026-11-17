@@ -33,6 +33,17 @@ class ReservationCreateThrottle(WriteOnlyUserRateThrottle):
     scope = "reservation_create"
 
 
+class ScanPublishThrottle(WriteOnlyUserRateThrottle):
+    """Bulk publish from a room scan.
+
+    One request creates many listings, each with its own moderation check,
+    request matching and partner webhooks, so it needs a limit of its own:
+    ListingCreateThrottle only covers POST /api/listings.
+    """
+
+    scope = "scan_publish"
+
+
 class PushSubscribeThrottle(WriteOnlyUserRateThrottle):
     scope = "push_subscribe"
 

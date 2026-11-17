@@ -46,14 +46,6 @@ class DonationHubDetailView(generics.RetrieveAPIView):
         return DonationHub.objects.filter(active=True)
 
 
-class PreviewDonationHubListView(generics.ListAPIView):
-    serializer_class = DonationHubSerializer
-    permission_classes = [permissions.AllowAny]
-
-    def get_queryset(self) -> "QuerySet[DonationHub]":
-        return DonationHub.objects.filter(active=True, is_demo=True)
-
-
 class HubManagerUpdateView(APIView):
     """PATCH open_instructions / capacity / active for hubs the user manages (staff: any hub)."""
 

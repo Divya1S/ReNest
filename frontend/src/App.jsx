@@ -4,7 +4,6 @@ import {
   createBrowserRouter,
   createRoutesFromElements,
   Navigate,
-  Outlet,
   Route,
   RouterProvider,
 } from "react-router-dom";
@@ -63,10 +62,6 @@ const RiskInvestigatorPage = lazy(routeLoaders.riskInvestigator);
 const AgentSandboxPage = lazy(routeLoaders.agentSandbox);
 const RiskHealthPage = lazy(routeLoaders.riskHealth);
 
-function ProtectedLayout() {
-  return <Outlet />;
-}
-
 const router = createBrowserRouter(
   createRoutesFromElements(
     <>
@@ -91,39 +86,37 @@ const router = createBrowserRouter(
         <Route path="/browse" element={<BrowsePage />} />
         <Route path="/listings/:listingId" element={<ListingDetailPage />} />
         <Route element={<RequireAuth />}>
-          <Route element={<ProtectedLayout />}>
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/requests" element={<RequestsPage />} />
-            <Route path="/notifications" element={<NotificationsPage />} />
-            <Route path="/trust" element={<TrustPage />} />
-            <Route path="/scan" element={<ScanPage />} />
-            <Route path="/scan/:sessionId" element={<ScanStudioPage />} />
-            <Route path="/plan/:sessionId" element={<MoveOutPlanPage />} />
-            <Route path="/clearout/:sessionId" element={<ClearoutBoardPage />} />
-            <Route path="/publish/:sessionId" element={<PublishQueuePage />} />
-            <Route path="/saved" element={<SavedPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/listings/new" element={<ListingFormPage />} />
-            <Route path="/listings/:listingId/edit" element={<ListingFormPage />} />
-            <Route path="/my-listings" element={<MyListingsPage />} />
-            <Route path="/my-reservations" element={<MyReservationsPage />} />
-            <Route path="/handoffs/:reservationId" element={<HandoffHubPage />} />
-            <Route path="/hubs/:hubId/manage" element={<HubManagerPage />} />
-            <Route path="/analytics" element={<CampusAnalyticsPage />} />
-            <Route path="/leaderboard" element={<LeaderboardPage />} />
-            <Route path="/assistant" element={<AssistantPage />} />
-            <Route path="/dispatch" element={<HubDispatchPage />} />
-            <Route path="/saved-searches" element={<SavedSearchesPage />} />
-            <Route path="/settings/notifications" element={<NotificationPreferencesPage />} />
-            <Route path="/partner" element={<PartnerPortalPage />} />
-            <Route path="/risk" element={<RiskOverviewPage />} />
-            <Route path="/risk/transactions" element={<RiskTransactionsPage />} />
-            <Route path="/risk/transactions/:publicId" element={<RiskTransactionDetailPage />} />
-            <Route path="/risk/lab" element={<FraudLabPage />} />
-            <Route path="/risk/investigator" element={<RiskInvestigatorPage />} />
-            <Route path="/risk/agents" element={<AgentSandboxPage />} />
-            <Route path="/risk/health" element={<RiskHealthPage />} />
-          </Route>
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/requests" element={<RequestsPage />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
+          <Route path="/trust" element={<TrustPage />} />
+          <Route path="/scan" element={<ScanPage />} />
+          <Route path="/scan/:sessionId" element={<ScanStudioPage />} />
+          <Route path="/plan/:sessionId" element={<MoveOutPlanPage />} />
+          <Route path="/clearout/:sessionId" element={<ClearoutBoardPage />} />
+          <Route path="/publish/:sessionId" element={<PublishQueuePage />} />
+          <Route path="/saved" element={<SavedPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/listings/new" element={<ListingFormPage />} />
+          <Route path="/listings/:listingId/edit" element={<ListingFormPage />} />
+          <Route path="/my-listings" element={<MyListingsPage />} />
+          <Route path="/my-reservations" element={<MyReservationsPage />} />
+          <Route path="/handoffs/:reservationId" element={<HandoffHubPage />} />
+          <Route path="/hubs/:hubId/manage" element={<HubManagerPage />} />
+          <Route path="/analytics" element={<CampusAnalyticsPage />} />
+          <Route path="/leaderboard" element={<LeaderboardPage />} />
+          <Route path="/assistant" element={<AssistantPage />} />
+          <Route path="/dispatch" element={<HubDispatchPage />} />
+          <Route path="/saved-searches" element={<SavedSearchesPage />} />
+          <Route path="/settings/notifications" element={<NotificationPreferencesPage />} />
+          <Route path="/partner" element={<PartnerPortalPage />} />
+          <Route path="/risk" element={<RiskOverviewPage />} />
+          <Route path="/risk/transactions" element={<RiskTransactionsPage />} />
+          <Route path="/risk/transactions/:publicId" element={<RiskTransactionDetailPage />} />
+          <Route path="/risk/lab" element={<FraudLabPage />} />
+          <Route path="/risk/investigator" element={<RiskInvestigatorPage />} />
+          <Route path="/risk/agents" element={<AgentSandboxPage />} />
+          <Route path="/risk/health" element={<RiskHealthPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />
       </Route>

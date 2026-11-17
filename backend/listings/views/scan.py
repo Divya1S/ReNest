@@ -25,7 +25,7 @@ from hubs.models import DonationHub
 
 from ..ai_client import ai_available
 from ..permissions import IsEmailVerified
-from ..throttles import AiDetectThrottle
+from ..throttles import AiDetectThrottle, ScanPublishThrottle
 from ..models import (
     Listing,
     MoveOutTask,
@@ -57,8 +57,13 @@ from .helpers import (
     run_listing_created_hooks,
 )
 
-logger = logging.getLogger(__name__)
 from dormcycle.typed import current_user
+
+logger = logging.getLogger(__name__)
+
+# One bulk-publish request runs the listing-created hooks for every draft in
+# it, so the batch size is bounded as well as the request rate.
+MAX_BULK_PUBLISH_ITEMS = 100
 
 
 TRIAGE_ORDER = [
@@ -699,10 +704,13 @@ class RoomScanSessionBatchUpdateView(APIView):
 class RoomScanSessionPublishSelectedView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [StrictJSONParser]
+    throttle_classes = [ScanPublishThrottle]
 
     def post(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
-        item_ids = parse_int_list(request.data.get("item_ids") or [], field="item_ids", max_items=200)
+        item_ids = parse_int_list(
+            request.data.get("item_ids") or [], field="item_ids", max_items=MAX_BULK_PUBLISH_ITEMS
+        )
 
         if not scan_session.pickup_zone or not scan_session.move_out_deadline:
             return Response(
@@ -763,10 +771,13 @@ class RoomScanSessionPublishSelectedView(APIView):
 class RoomScanSessionBulkConvertView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [StrictJSONParser]
+    throttle_classes = [ScanPublishThrottle]
 
     def post(self, request: Request, pk: int) -> Response:
         scan_session = get_object_or_404(get_scan_session_queryset(current_user(request)), pk=pk)
-        item_ids = parse_int_list(request.data.get("item_ids") or [], field="item_ids", max_items=200)
+        item_ids = parse_int_list(
+            request.data.get("item_ids") or [], field="item_ids", max_items=MAX_BULK_PUBLISH_ITEMS
+        )
         action = request.data.get("action")
 
         items = list(

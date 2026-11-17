@@ -7,7 +7,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import HandoffFeedback, Listing, ListingReport
-from ..serializers import HandoffFeedbackSerializer, ListingReportSerializer, ListingSerializer
+from ..serializers import (
+    HandoffFeedbackSerializer,
+    ListingReportSerializer,
+    ListingSerializer,
+    ReceivedListingReportSerializer,
+)
 from ..trust import build_user_trust_summary, get_pending_feedback_queryset
 from .helpers import annotate_listing_queryset
 from dormcycle.typed import current_user
@@ -31,7 +36,7 @@ class TrustOverviewView(APIView):
             .order_by("-created_at")[:8]
         )
         reports_on_my_listings = (
-            ListingReport.objects.select_related("listing", "reporter")
+            ListingReport.objects.select_related("listing")
             .filter(listing__owner=current_user(request))
             .order_by("status", "-created_at")[:8]
         )
@@ -54,10 +59,8 @@ class TrustOverviewView(APIView):
                     many=True,
                     context={"request": request},
                 ).data,
-                "reports_on_my_listings": ListingReportSerializer(
-                    reports_on_my_listings,
-                    many=True,
-                    context={"request": request},
+                "reports_on_my_listings": ReceivedListingReportSerializer(
+                    reports_on_my_listings, many=True
                 ).data,
                 "active_rescues": ListingSerializer(
                     active_rescues,

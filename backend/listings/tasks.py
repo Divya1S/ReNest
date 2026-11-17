@@ -98,12 +98,12 @@ def post_create_tasks(self: Any, listing_pk: int) -> None:
         logger.exception("Rescue-request matching failed for listing %s", listing_pk)
 
     try:
-        # Phase 18: async quality hints via the AI model
+        # Async quality hints via the AI model
         quality_coach_task.apply_async((listing_pk,), countdown=5)
     except Exception:
         logger.exception("Quality hints could not be scheduled for listing %s", listing_pk)
     try:
-        # Phase 25: lexical search vector
+        # Lexical search vector
         generate_listing_embedding.apply_async((listing_pk,), countdown=10)
     except Exception:
         logger.exception("Search vector could not be scheduled for listing %s", listing_pk)
@@ -198,30 +198,10 @@ def send_reservation_completed_email_task(self: Any, reservation_pk: int) -> Non
         _retry_unless_eager(self, exc, f"Completion email for reservation {reservation_pk}")
 
 
-@shared_task(name="listings.send_handoff_reminder_emails")
-def send_handoff_reminder_emails_task() -> int:
-    """Scheduled job (tick set): sends the 24h handoff reminders."""
-    from .transactional_emails import send_handoff_reminder_emails
-    return send_handoff_reminder_emails()
-
-
-@shared_task(name="listings.expire_listings")
-def expire_listings_task() -> int:
-    """Scheduled job (tick set): transitions overdue listings to EXPIRED.
-
-    Delegates to listings.ops so the beat schedule, the maintenance command and
-    the cron endpoint all expire listings the same way (including minting the
-    repost token the "your listing expired" email links to).
-    """
-    from .ops import expire_stale_listings
-
-    return expire_stale_listings()
-
-
 @shared_task(name="listings.send_bump_emails")
 def send_bump_emails_task() -> int:
     """
-    Scheduled daily. Emails owners of listings that nobody has viewed for
+    Scheduled (tick set). Emails owners of listings that nobody has viewed for
     3 days, at most once per listing and 100 per run. The selection rule lives
     in ops.bump_email_candidates so `send_bump_emails --dry-run` previews
     exactly this set.
@@ -405,7 +385,7 @@ def match_rescue_suggestions_task(user_pk: int) -> list:
                     "matching your rescue request"
                 ),
                 "body": f'Listings that may match your request for "{rescue.title}": {titles}',
-                "link_path": "/match-center",
+                "link_path": "/requests",
                 "priority": Notification.Priority.NORMAL,
             },
         )
@@ -510,7 +490,7 @@ def sweep_stale_confirmations_task() -> int:
     return updated
 
 
-# ─── Phase 18: Platform Intelligence ────────────────────────────────────────
+# ─── Platform Intelligence ────────────────────────────────────────
 
 
 def continuous_week_index(moment: Any) -> int:
@@ -525,16 +505,51 @@ def continuous_week_index(moment: Any) -> int:
     return int((moment.toordinal() - 1) // 7)
 
 
+def _weekly_event_counts(queryset: Any, timestamp_field: str) -> dict[tuple[str, int], int]:
+    """Event counts per (category, continuous week index).
+
+    The database groups by day, so a year of events comes back as at most
+    365 rows per category instead of one row per event.
+    """
+    import datetime
+    from collections import defaultdict
+
+    from django.db.models import Count
+    from django.db.models.functions import TruncDate
+
+    counts: dict[tuple[str, int], int] = defaultdict(int)
+    rows = (
+        queryset.annotate(event_day=TruncDate(timestamp_field, tzinfo=datetime.timezone.utc))
+        .values("listing__category", "event_day")
+        .order_by()
+        .annotate(total=Count("id"))
+    )
+    for row in rows:
+        category = row["listing__category"] or "other"
+        counts[(category, continuous_week_index(row["event_day"]))] += row["total"]
+    return counts
+
+
+def _extrapolate(weeks: list[int], values: list[float], target_week: int) -> float:
+    """Least-squares line through (week, value), read off at `target_week`."""
+    from statistics import linear_regression
+
+    # Offsets from the first week keep the arithmetic on small numbers.
+    origin = weeks[0]
+    slope, intercept = linear_regression([week - origin for week in weeks], values)
+    return slope * (target_week - origin) + intercept
+
+
 @shared_task(name="listings.recompute_demand_forecast")
 def recompute_demand_forecast_task() -> dict:
     """
     Scheduled (daily job set). Aggregates ListingViewEvent +
-    ListingInteractionEvent by category and week, fits a linear regression per
-    category over a continuous week index to predict next-week demand, and
-    upserts DemandForecast rows.
+    ListingInteractionEvent by category and week, fits a least-squares line
+    per category over a continuous week index to predict next-week demand,
+    and upserts DemandForecast rows.
     """
     import datetime
-    from collections import defaultdict
+    from statistics import quantiles
 
     from django.utils import timezone
 
@@ -543,58 +558,32 @@ def recompute_demand_forecast_task() -> dict:
     now = timezone.now()
     cutoff = now - datetime.timedelta(days=365)
 
-    # Aggregate view counts per (category, continuous week index).
-    view_counts: dict = defaultdict(int)
-    for evt in (
-        ListingViewEvent.objects
-        .filter(viewed_at__gte=cutoff)
-        .select_related("listing")
-        .values("listing__category", "viewed_at")
-    ):
-        cat = evt["listing__category"] or "other"
-        view_counts[(cat, continuous_week_index(evt["viewed_at"]))] += 1
+    view_counts = _weekly_event_counts(
+        ListingViewEvent.objects.filter(viewed_at__gte=cutoff), "viewed_at"
+    )
+    save_counts = _weekly_event_counts(
+        ListingInteractionEvent.objects.filter(action="save", created_at__gte=cutoff), "created_at"
+    )
 
-    save_counts: dict = defaultdict(int)
-    for interaction in (
-        ListingInteractionEvent.objects
-        .filter(action="save", created_at__gte=cutoff)
-        .select_related("listing")
-        .values("listing__category", "created_at")
-    ):
-        cat = interaction["listing__category"] or "other"
-        save_counts[(cat, continuous_week_index(interaction["created_at"]))] += 1
-
-    # Fit a per-category linear regression.
-    try:
-        from sklearn.linear_model import LinearRegression
-        import numpy as np
-    except ImportError:
-        logger.warning("scikit-learn not available; skipping demand forecast")
-        return {}
-
-    categories = {k[0] for k in view_counts} | {k[0] for k in save_counts}
+    categories = {category for category, _week in view_counts}
     next_week = now + datetime.timedelta(weeks=1)
     next_iso = next_week.isocalendar()
     next_index = continuous_week_index(next_week)
     results = {}
 
     for cat in categories:
-        weeks_data = sorted({week for (c, week) in view_counts if c == cat})
-        if len(weeks_data) < 3:
+        weeks = sorted(week for category, week in view_counts if category == cat)
+        if len(weeks) < 3:
             continue
 
-        X = np.array([[week] for week in weeks_data])
-        y_views = np.array([view_counts.get((cat, week), 0) for week in weeks_data], dtype=float)
-        y_saves = np.array([save_counts.get((cat, week), 0) for week in weeks_data], dtype=float)
+        views = [float(view_counts[(cat, week)]) for week in weeks]
+        saves = [float(save_counts.get((cat, week), 0)) for week in weeks]
 
-        reg_v = LinearRegression().fit(X, y_views)
-        reg_s = LinearRegression().fit(X, y_saves)
+        pred_views = max(0.0, _extrapolate(weeks, views, next_index))
+        pred_saves = max(0.0, _extrapolate(weeks, saves, next_index))
 
-        pred_views = max(0.0, float(reg_v.predict([[next_index]])[0]))
-        pred_saves = max(0.0, float(reg_s.predict([[next_index]])[0]))
-
-        # is_peak: at or above 75th percentile for this category
-        p75 = float(np.percentile(y_views, 75)) if len(y_views) else 0.0
+        # is_peak: at or above the 75th percentile of this category's weeks
+        p75 = quantiles(views, n=4, method="inclusive")[2]
         is_peak = pred_views >= p75
 
         DemandForecast.objects.update_or_create(
@@ -649,7 +638,7 @@ def clean_quality_hints(raw: Any) -> list[dict[str, str]]:
 @shared_task(name="listings.quality_coach")
 def quality_coach_task(listing_pk: int) -> list:
     """
-    Phase 18: fires after listing creation.
+    Fires after listing creation.
     Calls the AI model to produce up to 2 specific improvement suggestions for
     the listing and stores them in listing.quality_hints (JSON).
 
@@ -695,12 +684,24 @@ def quality_coach_task(listing_pk: int) -> list:
     return hints
 
 
+# An owner needs this many finished handoffs before a rate says anything.
+COMPLETION_RATE_MIN_OUTCOMES = 5
+
+
 @shared_task(name="listings.recompute_completion_rates")
 def recompute_completion_rates_task() -> int:
-    """
-    Phase 18: fires weekly on Monday morning.
-    Recomputes completion_rate for all users with >= 5 reservations as owner.
-    Owners with completion_rate < 0.3 are suppressed from browse.
+    """Scheduled (weekly job set). Recompute each owner's handoff completion rate.
+
+    The rate is completed / (completed + confirmed but never completed), for
+    owners with at least COMPLETION_RATE_MIN_OUTCOMES such outcomes. Browse
+    hides owners below 0.3 (see browse_listing_queryset).
+
+    Only handoffs the owner accepted and that then ran their course count.
+    Requests a claimant cancelled, and ones still open, used to sit in the
+    denominator, so anybody could push another owner's rate under the
+    threshold, and their listings out of the marketplace, by reserving and
+    cancelling a few times. An owner who cancels a confirmed handoff is
+    already penalised through trust strikes.
     """
     from django.contrib.auth import get_user_model
     from django.db.models import Count, Q
@@ -710,32 +711,40 @@ def recompute_completion_rates_task() -> int:
     User = get_user_model()
 
     qs = (
-        Reservation.objects.filter(listing__is_demo=False)
+        Reservation.objects.filter(
+            listing__is_demo=False,
+            status__in=(Reservation.Status.COMPLETED, Reservation.Status.EXPIRED_UNRESOLVED),
+        )
         .values("listing__owner_id")
+        .order_by()
         .annotate(
             total=Count("id"),
             completed=Count("id", filter=Q(status=Reservation.Status.COMPLETED)),
         )
-        .filter(total__gte=5)
+        .filter(total__gte=COMPLETION_RATE_MIN_OUTCOMES)
     )
+    rates = {row["listing__owner_id"]: row["completed"] / row["total"] for row in qs}
 
-    updated = 0
-    for row in qs:
-        owner_id = row["listing__owner_id"]
-        rate = row["completed"] / row["total"] if row["total"] else None
+    for owner_id, rate in rates.items():
         User.objects.filter(pk=owner_id).update(completion_rate=rate)
-        updated += 1
+    # An owner who no longer has enough outcomes must not keep an old rate.
+    User.objects.filter(completion_rate__isnull=False).exclude(pk__in=rates).update(completion_rate=None)
 
-    return updated
+    return len(rates)
 
 
 @shared_task(name="listings.weekly_campus_digest")
 def weekly_campus_digest_task() -> int:
-    """Email each campus manager a weekly summary of their campus activity."""
+    """Email each campus manager a weekly summary of their campus activity.
+
+    At most one digest per campus per week: the campus row is claimed through
+    last_digest_sent_at before anything is sent, so a retried or repeated
+    weekly run does not mail every manager again.
+    """
     from datetime import timedelta
 
     from django.contrib.auth import get_user_model
-    from django.db.models import Count, Sum
+    from django.db.models import Count, Q, Sum
     from django.utils import timezone
 
     from accounts.models import Campus
@@ -744,6 +753,8 @@ def weekly_campus_digest_task() -> int:
 
     User = get_user_model()
     since = timezone.now() - timedelta(days=7)
+    # Six days, not seven: the weekly run does not start at the same second.
+    digest_due_before = timezone.now() - timedelta(days=6)
     sent = 0
 
     for campus in Campus.objects.filter(active=True, onboarding_status="approved"):
@@ -751,6 +762,13 @@ def weekly_campus_digest_task() -> int:
             campus=campus, is_campus_manager=True, email_notifications=True
         )
         if not managers.exists():
+            continue
+        claimed = (
+            Campus.objects.filter(pk=campus.pk)
+            .filter(Q(last_digest_sent_at__isnull=True) | Q(last_digest_sent_at__lt=digest_due_before))
+            .update(last_digest_sent_at=timezone.now())
+        )
+        if not claimed:
             continue
 
         week_listings = Listing.objects.filter(owner__campus=campus, created_at__gte=since).count()
@@ -802,14 +820,11 @@ def weekly_campus_digest_task() -> int:
             except Exception:
                 logger.exception("weekly_campus_digest_task: failed to email %s", manager.email)
 
-        campus.last_digest_sent_at = timezone.now()
-        campus.save(update_fields=["last_digest_sent_at"])
-
     return sent
 
 
 # ---------------------------------------------------------------------------
-# Phase 25: lexical search, saved-search alerts, trending
+# Lexical search, saved-search alerts, trending
 # ---------------------------------------------------------------------------
 
 def refresh_listing_search_vector(listing: Any) -> None:
@@ -970,7 +985,7 @@ def refresh_trending_cache() -> None:
 @shared_task(name="listings.deliver_webhook", bind=True, max_retries=3)
 def deliver_webhook(self: Any, delivery_pk: int) -> None:
     """
-    Phase 27: Deliver a single WebhookDelivery to its endpoint URL.
+    Deliver a single WebhookDelivery to its endpoint URL.
     Signs the payload with HMAC-SHA256 and retries up to 3 times with exponential back-off.
     """
     import hashlib
@@ -1048,7 +1063,7 @@ def deliver_webhook(self: Any, delivery_pk: int) -> None:
 @shared_task(name="listings.flush_quiet_queue")
 def flush_quiet_queue() -> int:
     """
-    Phase 26: dispatch push notifications that were held during a user's quiet hours.
+    Dispatch push notifications that were held during a user's quiet hours.
     Runs with the tick job set; only fires payloads whose scheduled epoch has passed.
     """
     from django.contrib.auth import get_user_model as _get_user_model

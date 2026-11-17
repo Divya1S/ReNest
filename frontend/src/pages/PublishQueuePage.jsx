@@ -162,6 +162,10 @@ export default function PublishQueuePage() {
         },
       });
       setQueue(response);
+      // A batch edit can move drafts out of the queue (set to keep or toss).
+      // Left selected, they rode along invisibly into the next action.
+      const remaining = new Set((response.items || []).map((item) => item.id));
+      setSelectedIds((current) => current.filter((id) => remaining.has(id)));
       batchDraft.clearDraft({ reset: true });
       setShowBatchEditor(false);
       toast.success("Selected drafts updated.");
@@ -295,7 +299,11 @@ export default function PublishQueuePage() {
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setFilter(option.value)}
+                onClick={() => {
+                  setFilter(option.value);
+                  // Drafts hidden by the new filter must not stay selected.
+                  setSelectedIds([]);
+                }}
                 className={`scan-chip transition ${filter === option.value ? "bg-[color:var(--color-tag)] text-white shadow-[0_14px_28px_rgba(138,29,69,0.24)]" : ""}`}
               >
                 {option.label}

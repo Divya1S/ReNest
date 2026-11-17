@@ -280,7 +280,6 @@ export default function TrustPage() {
                     </span>
                   </div>
                   <p className="mt-3 text-base font-black text-[color:var(--color-ink)] dark:text-white">{report.listing_title}</p>
-                  <p className="mt-2 text-sm text-[color:var(--text-muted)]">Reported by {report.reporter.display_name}</p>
                 </div>
               )) : (
                 <div className="rounded-[2rem] border border-emerald-200 bg-emerald-50/70 p-6 text-sm text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-900/20 dark:text-emerald-200">

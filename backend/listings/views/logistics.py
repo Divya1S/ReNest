@@ -13,7 +13,7 @@ from rest_framework.views import APIView
 
 from dormcycle.parsers import StrictJSONParser
 from hubs.models import DonationHub
-from ..models import CollectionEvent, Listing, Reservation, StorageHold
+from ..models import CollectionEvent, Listing, Reservation, RoomScanItemDraft, StorageHold
 from .helpers import parse_int, parse_int_list
 from dormcycle.typed import current_user
 from typing import Any
@@ -26,6 +26,18 @@ _MAX_BATCH = 50
 _MAX_HOLD_HOURS = 24 * 14
 # Truncate to what the column can store; a longer note is a DataError on PostgreSQL.
 _HOLD_NOTE_MAX = StorageHold._meta.get_field("note").max_length or 300
+
+
+def _is_routed_to_hub(listing: Listing, hub_id: int) -> bool:
+    """Whether the listing's owner sent it, or the scan draft behind it, to this hub.
+
+    A hold takes a listing off the market, so managing a hub must not be
+    enough to hold any listing on the platform: the owner has to have routed
+    it to that hub first.
+    """
+    if listing.donation_hub_id == hub_id:
+        return True
+    return RoomScanItemDraft.objects.filter(linked_listing=listing, donation_hub_id=hub_id).exists()
 
 
 def is_hub_manager(user: Any, hub_id: Any) -> bool:
@@ -192,6 +204,11 @@ class StorageHoldListCreateView(APIView):
                 )
                 if listing is None:
                     return Response({"detail": "Listing not found."}, status=404)
+                if not (current_user(request).is_staff or _is_routed_to_hub(listing, hub_id)):
+                    return Response(
+                        {"detail": "Only listings routed to this hub can be put on hold."},
+                        status=403,
+                    )
 
                 # A hold past expires_at has auto-released. Record that, or
                 # the stale ACTIVE row would trip the one-active-hold constraint.

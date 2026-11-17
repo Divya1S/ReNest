@@ -151,12 +151,15 @@ export default function BrowsePage() {
     return () => controller.abort();
   }, [debouncedSearch, category, priceType, building, sort, page, retryKey]);
 
-  // Infinite scroll: advance page when the sentinel enters the viewport
+  // Infinite scroll: advance page when the sentinel enters the viewport.
+  // Not while a page has failed: the sentinel is still on screen then, so
+  // advancing would skip the failed page and keep requesting the ones after
+  // it. The inline Retry button reloads the same page instead.
   useEffect(() => {
     if (!sentinelRef.current) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !loadingMore && !loading) {
+        if (entries[0].isIntersecting && hasMore && !loadingMore && !loading && !error && !loadMoreError) {
           setPage((p) => p + 1);
         }
       },
@@ -164,7 +167,7 @@ export default function BrowsePage() {
     );
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [hasMore, loadingMore, loading]);
+  }, [hasMore, loadingMore, loading, error, loadMoreError]);
 
   const replaceListing = useCallback((updatedListing: Listing) => {
     setListings((current) =>

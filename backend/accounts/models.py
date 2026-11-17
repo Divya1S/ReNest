@@ -24,7 +24,7 @@ class Campus(models.Model):
     move_out_start = models.DateField(null=True, blank=True)
     move_out_end = models.DateField(null=True, blank=True)
     active = models.BooleanField(default=True)
-    # Phase 17: Revenue & Sustainability
+    # Revenue & Sustainability
     subscription_tier = models.CharField(
         max_length=16,
         choices=SubscriptionTier.choices,
@@ -41,7 +41,7 @@ class Campus(models.Model):
         help_text="Invoice recipient for campus license billing.",
     )
     stripe_customer_id = models.CharField(max_length=64, blank=True)
-    # Phase 19: Multi-Campus Expansion
+    # Multi-Campus Expansion
     class OnboardingStatus(models.TextChoices):
         PENDING = "pending", "Pending Approval"
         APPROVED = "approved", "Approved"
@@ -57,7 +57,7 @@ class Campus(models.Model):
     contact_email = models.EmailField(blank=True)
     last_digest_sent_at = models.DateTimeField(null=True, blank=True)
     annual_report = models.FileField(upload_to="campus-reports/", null=True, blank=True)
-    # Phase 27: White-label theming (primary_color, logo_url, font_family, hero_message)
+    # White-label theming (primary_color, logo_url, font_family, hero_message)
     theme = models.JSONField(
         null=True,
         blank=True,
@@ -221,12 +221,12 @@ class User(AbstractUser):
         default=0,
         help_text="0=incomplete, 1=profile_done, 2=first_listing, 3=complete",
     )
-    # Phase 21: Social & Community
+    # Social & Community
     show_on_leaderboard = models.BooleanField(
         default=True,
         help_text="Opt-in to the campus leaderboard. Default True.",
     )
-    # Phase 18: completion rate as a trust signal
+    # Completion rate as a trust signal
     completion_rate = models.FloatField(
         null=True,
         blank=True,
@@ -248,3 +248,8 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.display_name or self.email
+
+    @property
+    def public_name(self) -> str:
+        """The name other users see. Never falls back to the email address."""
+        return self.display_name or "A ReNest member"

@@ -8,11 +8,11 @@ from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
 
-from ..models import Listing, Notification, Reservation, ReservationMessage
+from ..models import Listing, ListingInteractionEvent, Notification, Reservation, ReservationMessage
 from ..permissions import IsReservationParticipant
 from ..serializers import HandoffFeedbackSerializer, ReservationMessageSerializer, ReservationSerializer
 from ..throttles import ReservationCreateThrottle
-from .helpers import LISTING_SERIALIZER_RELATIONS, annotate_listing_queryset
+from .helpers import LISTING_SERIALIZER_RELATIONS, annotate_listing_queryset, record_listing_interaction
 from dormcycle.typed import current_user
 
 
@@ -61,7 +61,10 @@ class ReservationListCreateView(generics.ListCreateAPIView):
         return participant_reservations(user).exclude(listing__is_demo=True).distinct()
 
     def perform_create(self, serializer: Any) -> None:
-        serializer.save(claimant=self.request.user)
+        reservation = serializer.save(claimant=self.request.user)
+        record_listing_interaction(
+            current_user(self.request), reservation.listing, ListingInteractionEvent.Action.RESERVE
+        )
 
 
 class ReservationDetailView(generics.RetrieveUpdateAPIView):
@@ -161,7 +164,7 @@ class ReservationMessageListCreateView(generics.ListCreateAPIView):
             if self.request.user == reservation.claimant
             else reservation.claimant
         )
-        sender_name = current_user(self.request).get_full_name() or current_user(self.request).email.split("@")[0]
+        sender_name = current_user(self.request).public_name
         Notification.objects.get_or_create(
             dedupe_key=f"chat:{msg.pk}",
             defaults=dict(

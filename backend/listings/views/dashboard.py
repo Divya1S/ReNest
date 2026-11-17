@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING, Any
 
 from django.core.cache import cache
 from django.http import StreamingHttpResponse
-from django.db.models import Count, DecimalField, F, FloatField, Min, Q, Sum, Value
-from django.db.models.functions import Greatest, TruncDate, TruncWeek
+from django.db.models import Count, DecimalField, F, Min, Q, Sum, Value
+from django.db.models.functions import Greatest, TruncWeek
 from django.utils import timezone
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions
@@ -215,7 +215,10 @@ def build_insights_payload(user: UserType, request: Request) -> dict[str, Any]:
     ]
 
     # ── weekly_activity (4 TruncWeek queries) ────────────────────────────────
-    current_week_start = (now - timedelta(days=now.weekday())).replace(
+    # Local time: TruncWeek buckets on Monday 00:00 in the active time zone,
+    # so a UTC week start never equals one of its keys and every count read 0.
+    local_now = timezone.localtime(now)
+    current_week_start = (local_now - timedelta(days=local_now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     six_weeks_ago = current_week_start - timedelta(weeks=5)

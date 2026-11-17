@@ -1,5 +1,5 @@
 """
-Phase 27: White-Label & Partner API
+White-Label & Partner API
 
 Endpoints:
   GET  /api/embed/:campus_slug/listings   - public listing feed (no auth, CORS-open)
@@ -15,8 +15,6 @@ Endpoints:
 from __future__ import annotations
 
 import hashlib
-import hmac
-import json
 import logging
 
 from django.contrib.auth.models import AnonymousUser
@@ -33,7 +31,7 @@ from rest_framework.views import APIView
 
 from ..models import Listing, PartnerAPIKey, WebhookDelivery, WebhookEndpoint
 from .helpers import parse_int, visible_listing_queryset
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -192,13 +190,20 @@ class PartnerListingsView(APIView):
         status_filter = request.query_params.get("status", "available")
         if status_filter != "all" and status_filter not in Listing.Status.values:
             return Response({"detail": "Unknown status filter."}, status=400)
+        # Listings held back by moderation never leave the platform, whatever
+        # status the partner asks for.
         listings = (
             Listing.objects.filter(owner__campus=key.campus, is_demo=False)
+            .exclude(moderation_status=Listing.ModerationStatus.FLAGGED)
             .select_related("owner")
             .order_by("-created_at")
         )
         if status_filter != "all":
             listings = listings.filter(status=status_filter)
+        if status_filter == Listing.Status.AVAILABLE:
+            # Past its deadline a listing is no longer on offer, even before
+            # the next scheduled sweep marks it expired.
+            listings = listings.filter(available_until__gte=timezone.now())
 
         page_size = parse_int(
             request.query_params.get("page_size"), field="page_size", default=50, minimum=1, maximum=200
@@ -463,19 +468,23 @@ def _sanitise_theme(raw: dict) -> dict:
     return out
 
 
-# ── Webhook dispatch helper (called from tasks.py) ─────────────────────────────
+# ── Webhook dispatch helper ────────────────────────────────────────────────────
 
-def dispatch_webhook_event(event_type: str, payload: dict, campus_name: str) -> int:
+def dispatch_webhook_event(event_type: str, payload: dict, campus_id: Optional[int]) -> int:
     """
     Fire `event_type` to all active webhook endpoints subscribed to this event
     for the given campus. Creates WebhookDelivery records and enqueues the task.
-    Returns the number of endpoints targeted.
+    Returns the number of endpoints targeted. An owner without a campus has no
+    partner to notify, and a deactivated partner key stops receiving events.
     """
     from ..tasks import deliver_webhook
 
+    if campus_id is None:
+        return 0
     endpoints = (
         WebhookEndpoint.objects.filter(
-            partner__campus__name=campus_name,
+            partner__campus_id=campus_id,
+            partner__active=True,
             active=True,
         )
         .select_related("partner")

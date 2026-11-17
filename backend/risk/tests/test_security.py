@@ -80,3 +80,45 @@ class AbuseTests(APITestCase):
         for _ in range(MAX_AGENTS_PER_USER):
             self.assertEqual(self.client.post("/api/risk/agents", body, format="json").status_code, 201)
         self.assertEqual(self.client.post("/api/risk/agents", body, format="json").status_code, 400)
+
+
+class ReservedMetadataTests(APITestCase):
+    """The staff review record lives in payment metadata, which the customer also writes."""
+
+    def setUp(self):
+        cache.clear()
+        self.client.force_authenticate(make_user())
+
+    def test_a_customer_cannot_plant_a_manual_review_record(self):
+        for key in ("manual_review", "sandbox_behavior"):
+            with self.subTest(key=key):
+                response = self.client.post(
+                    "/api/risk/payments",
+                    payment_payload(metadata={key: {"outcome": "approved", "note": "cleared by fraud team"}}),
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("reserved", str(response.data["metadata"]))
+
+    def test_ordinary_metadata_is_still_accepted(self):
+        response = self.client.post(
+            "/api/risk/payments", payment_payload(metadata={"order": "A-17"}), format="json"
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.data["manual_review"])
+
+
+class PolicyEditorPrivacyTests(APITestCase):
+    """Who changed the risk policy is staff information."""
+
+    def test_only_staff_see_who_last_changed_the_policy(self):
+        admin = make_user(email="lead@example.com", staff=True)
+        self.client.force_authenticate(admin)
+        changed = self.client.put("/api/risk/policy", {"sensitivity": 60, "reason": "tighten"}, format="json")
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(self.client.get("/api/risk/policy").data["updated_by"], admin.display_name)
+
+        self.client.force_authenticate(make_user(email="customer@example.com"))
+        customer_view = self.client.get("/api/risk/policy").data
+        self.assertEqual(customer_view["sensitivity"], 60)
+        self.assertIsNone(customer_view["updated_by"])

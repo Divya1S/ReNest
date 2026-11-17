@@ -494,13 +494,19 @@ class GeminiExplainer:
         from listings import ai_client
 
         base = self.fallback.explain(question, intent, results)
+        # The question is typed by the user, and the facts can quote text
+        # customers chose (a device id, a merchant name). All of it goes in as
+        # quoted data with the standing rule not to follow instructions in it.
+        quote = ai_client.quote_untrusted
         prompt = (
             "You are a payments risk analyst writing for a colleague. Using ONLY the facts below, "
             "answer the question in at most four plain sentences. Do not invent numbers, ids or causes. "
-            "If the facts cannot answer the question, say so.\n\n"
-            f"Question: {question}\n"
-            f"Facts (JSON): {json.dumps(base.facts)}\n"
-            f"Analyst inferences you may mention, labelled as possibilities: {json.dumps(base.inferences)}\n"
+            "If the facts cannot answer the question, say so.\n"
+            f"{ai_client.UNTRUSTED_TEXT_RULE}\n\n"
+            f"Question: {quote(question, limit=500)}\n"
+            f"Facts (JSON): {quote(json.dumps(base.facts), limit=6000)}\n"
+            "Analyst inferences you may mention, labelled as possibilities: "
+            f"{quote(json.dumps(base.inferences), limit=3000)}\n"
         )
         try:
             text = ai_client.generate_text(prompt, max_tokens=220).strip()

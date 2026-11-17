@@ -21,7 +21,7 @@ export default function AnnouncementBanner() {
   }, []);
 
   const visible = announcements.filter(
-    (a) => !dismissed.includes(a.id) && (a.is_pinned || true)
+    (a) => !dismissed.includes(a.id)
   );
 
   function dismiss(id) {

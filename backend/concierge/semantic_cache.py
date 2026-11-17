@@ -5,11 +5,14 @@ the model, chat-route queries are embedded and compared against recently
 cached answers; a close-enough match (cosine ≥ THRESHOLD) is served instantly.
 
 Deliberately narrow scope, because this is the part reviewers probe:
-  * Only "chat"-route turns are cacheable. That route can touch nothing but
-    the shared knowledge base, so entries are user-independent by
-    construction and safe to share globally. Task-route answers embed
+  * Only "chat"-route turns are cacheable, and only when nothing but the
+    knowledge-base tools ran (the engine checks). Task-route answers embed
     per-user, per-moment marketplace state; caching those would serve stale
     or (worse) someone else's data, so they are never cached.
+  * Only short questions in plain words are stored (`is_shareable`). The
+    answer is written from the asker's whole message while a later match is
+    decided on its words, so text the matcher cannot see could shape an
+    answer that everyone asking the plain question then receives.
   * The engine decides *when* to look up: only for a turn with no
     conversation behind it, or when the provider is unavailable and the
     alternative is an apology. A generic cached answer in the middle of a
@@ -27,6 +30,7 @@ which is exactly when a cached answer is worth the most.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, NotRequired, TypedDict
 
@@ -40,6 +44,10 @@ MISSES_KEY = "concierge:semcache:misses"
 THRESHOLD = 0.90          # lexical embeddings: only near-identical phrasings hit
 TTL_SECONDS = 3600        # KB content is stable; an hour balances freshness/savings
 MAX_ENTRIES = 50
+MAX_SHAREABLE_CHARS = 160
+# Letters, digits, spaces and everyday punctuation: exactly what the hashed
+# embedding tokenises, so nothing in a stored question is invisible to it.
+_SHAREABLE_RE = re.compile(r"[A-Za-z0-9 ,.'?!-]+")
 
 
 class CacheEntry(TypedDict):
@@ -105,7 +113,14 @@ def _threshold(space: str) -> float:
     return THRESHOLD if space == rag.SPACE_HASHED else 0.85
 
 
+def is_shareable(text: str) -> bool:
+    """Whether an answer to `text` may be reused for other people (see module docstring)."""
+    return len(text) <= MAX_SHAREABLE_CHARS and _SHAREABLE_RE.fullmatch(text) is not None
+
+
 def store(text: str, reply: str, ui_blocks: list[dict[str, Any]] | None = None) -> None:
+    if not is_shareable(text):
+        return
     now = time.time()
     entries = _live_entries(now)
     vectors, space = rag.embed_documents([text])

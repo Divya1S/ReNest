@@ -259,6 +259,6 @@ class QualityHintsDismissView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         from django.shortcuts import get_object_or_404
         from ..models import Listing
-        listing = get_object_or_404(Listing, pk=pk, owner=request.user)
+        get_object_or_404(Listing, pk=pk, owner=request.user)
         Listing.objects.filter(pk=pk).update(quality_hints_dismissed=True)
         return Response({"detail": "Hints dismissed."})

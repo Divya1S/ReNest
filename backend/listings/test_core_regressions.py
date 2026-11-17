@@ -686,11 +686,13 @@ class ReservationConfirmedWebhookTests(CoreTestCase):
             response = self._confirm_by_patch()
         self.assertEqual(response.status_code, 200, response.data)
         dispatch.assert_called_once()
-        event, payload, campus_name = dispatch.call_args.args
+        event, payload, campus_id = dispatch.call_args.args
         self.assertEqual(event, "reservation_confirmed")
         self.assertEqual(payload["id"], self.reservation.pk)
         self.assertEqual(payload["listing_id"], self.listing.pk)
-        self.assertEqual(campus_name, "Alder University")
+        # Addressed by the owner's verified campus, not by a campus name.
+        self.assertEqual(campus_id, self.listing.owner.campus_id)
+        self.assertIsNotNone(campus_id)
 
     def test_batch_confirm_dispatches_too(self) -> None:
         with mock.patch(

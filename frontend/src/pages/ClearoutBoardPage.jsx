@@ -76,7 +76,7 @@ export default function ClearoutBoardPage() {
   async function loadBoard() {
     const [boardData, hubsData, presetData] = await Promise.all([
       apiFetch(`/scan-sessions/${sessionId}/board`),
-      apiFetch("/hubs"),
+      apiFetch("/hubs?page_size=100"),
       apiFetch("/publish-presets"),
     ]);
     setBoard(boardData);
@@ -386,7 +386,9 @@ export default function ClearoutBoardPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="label-title">{column.label}</p>
-                <h2 className="mt-1 text-[20px] font-bold tracking-[-0.01em]">{column.items.length} items</h2>
+                <h2 className="mt-1 text-[20px] font-bold tracking-[-0.01em]">
+                  {column.items.length} {column.items.length === 1 ? "item" : "items"}
+                </h2>
               </div>
               <span className="scan-chip">{column.key}</span>
             </div>

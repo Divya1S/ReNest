@@ -256,7 +256,7 @@ class DisputeDetailView(APIView):
                 "type": Notification.Type.SYSTEM,
                 "title": f"Your dispute has been {dispute.status}",
                 "body": note or f"Staff has {dispute.status} your dispute on reservation #{dispute.reservation_id}.",
-                "link_path": f"/reservations/{dispute.reservation_id}",
+                "link_path": f"/handoffs/{dispute.reservation_id}",
                 "priority": Notification.Priority.NORMAL,
             },
         )

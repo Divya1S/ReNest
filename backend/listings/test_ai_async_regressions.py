@@ -25,13 +25,15 @@ from django.contrib.auth import get_user_model
 from django.contrib.sessions.models import Session
 from django.core import mail
 from django.core.cache import cache
+from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import InMemoryUploadedFile
 from django.core.mail import EmailMessage
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from PIL import Image
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from accounts.models import Campus
 
@@ -41,6 +43,7 @@ from .models import (
     DemandForecast,
     Dispute,
     Listing,
+    ListingInteractionEvent,
     ListingViewEvent,
     Notification,
     NotificationPreference,
@@ -1513,6 +1516,8 @@ class WebPushTests(TestCase):
         for patcher in (
             mock.patch.object(webpush, "_VAPID_PRIVATE_KEY", "private-key"),
             mock.patch.object(webpush, "_VAPID_PUBLIC_KEY", "public-key"),
+            # Push endpoints are resolved before every send; no real DNS in tests.
+            resolving_to(PUBLIC_IP),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -1541,6 +1546,26 @@ class WebPushTests(TestCase):
         self.assertEqual(call["subscription_info"]["endpoint"], "https://push.example.com/sub/1")
         self.assertEqual(call["subscription_info"]["keys"], {"p256dh": "p256", "auth": "auth"})
         self.assertIn('"title": "Hi"', call["data"])
+
+    def test_a_push_has_a_timeout_and_follows_no_redirects(self) -> None:
+        with self._sender() as sender:
+            webpush.send_push(self.subscription, title="Hi", body="There")
+        call = sender.calls[0]
+        self.assertEqual(call["timeout"], webpush.PUSH_TIMEOUT_SECONDS)
+        self.assertEqual(call["requests_session"].max_redirects, 0)
+
+    def test_an_endpoint_inside_the_network_is_never_contacted(self) -> None:
+        internal = PushSubscription.objects.create(
+            user=self.user, endpoint="https://metadata.internal.test/latest", p256dh="p256", auth="auth"
+        )
+        plain_http = PushSubscription.objects.create(
+            user=self.user, endpoint="http://push.example.com/sub/2", p256dh="p256", auth="auth"
+        )
+        with self._sender() as sender, self.assertLogs("listings.webpush", "WARNING"):
+            with resolving_to("10.0.0.8"):
+                self.assertFalse(webpush.send_push(internal, title="Hi", body="There"))
+            self.assertFalse(webpush.send_push(plain_http, title="Hi", body="There"))
+        self.assertEqual(sender.calls, [])
 
     def test_gone_subscriptions_are_deleted(self) -> None:
         for status_code in (404, 410):
@@ -1635,13 +1660,152 @@ class WebPushTests(TestCase):
         self.assertIn("not a redis sorted set", doc)
 
 
+class PushSubscribeEndpointTests(APITestCase):
+    """The browser names the URL the server will POST pushes to, so it is checked."""
+
+    KEYS = {"p256dh": "p256", "auth": "auth"}
+
+    def setUp(self) -> None:
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = make_user("subscriber@push.test")
+        self.client.force_authenticate(self.user)
+
+    def _subscribe(self, endpoint: str) -> Any:
+        return self.client.post(
+            reverse("push-subscribe"), {"endpoint": endpoint, "keys": self.KEYS}, format="json"
+        )
+
+    def test_a_public_https_endpoint_is_stored(self) -> None:
+        with resolving_to(PUBLIC_IP):
+            response = self._subscribe("https://push.example.com/sub/abc")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(PushSubscription.objects.filter(user=self.user).exists())
+
+    def test_unsafe_endpoints_are_refused(self) -> None:
+        cases = [
+            ("http://push.example.com/sub/abc", [PUBLIC_IP]),  # not https
+            ("https://internal.example.com/hook", ["10.0.0.5"]),  # private address
+            ("https://metadata.example.com/latest", ["169.254.169.254"]),  # link-local
+            ("https://push.example.com/" + "a" * 3000, [PUBLIC_IP]),  # oversized
+        ]
+        for endpoint, addresses in cases:
+            with self.subTest(endpoint=endpoint[:48]), resolving_to(*addresses):
+                response = self._subscribe(endpoint)
+                self.assertEqual(response.status_code, 400)
+        self.assertFalse(PushSubscription.objects.exists())
+
+
+class DonationReceiptPrivacyTests(APITestCase):
+    """The receipt PDF prints the donor's email; only the donor may be given its URL."""
+
+    def setUp(self) -> None:
+        self.owner = make_user("donor@receipt.test")
+        self.listing = make_listing(self.owner, status=Listing.Status.DONATED)
+        self.listing.donation_receipt.save("receipt.pdf", ContentFile(b"%PDF-1.4"), save=True)
+        self.url = reverse("listings-detail", args=[self.listing.pk])
+
+    def _receipt_url(self, user: Any = None) -> Any:
+        client = APIClient()
+        if user is not None:
+            client.force_authenticate(user)
+        response = client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return response.data["donation_receipt_url"]
+
+    def test_only_the_donor_and_staff_get_the_link(self) -> None:
+        self.assertIsNone(self._receipt_url())
+        self.assertIsNone(self._receipt_url(make_user("stranger@receipt.test")))
+        self.assertIn("donation-receipts/", self._receipt_url(self.owner))
+        self.assertIn("donation-receipts/", self._receipt_url(make_user("staff@receipt.test", is_staff=True)))
+
+    def test_generated_file_names_cannot_be_guessed_from_the_listing(self) -> None:
+        from .receipts import generate_donation_receipt
+
+        first = generate_donation_receipt(self.listing)
+        second = generate_donation_receipt(self.listing)
+        assert first is not None and second is not None
+        self.assertNotEqual(first.name, second.name)
+        self.assertRegex(first.name or "", rf"^receipt-{self.listing.pk}-[A-Za-z0-9_-]{{22}}\.pdf$")
+
+
 # ---------------------------------------------------------------------------
 # A12: scheduled jobs
 # ---------------------------------------------------------------------------
 
+class CompletionRateTests(TestCase):
+    """Browse hides owners whose completion rate is below 0.3, so the rate must be fair."""
+
+    def setUp(self) -> None:
+        self.owner = make_user("owner@rate.test")
+        self.claimant = make_user("claimant@rate.test")
+
+    def _reservations(self, status: str, count: int) -> None:
+        for _ in range(count):
+            Reservation.objects.create(
+                listing=make_listing(self.owner),
+                claimant=self.claimant,
+                status=status,
+                pickup_time_window="Friday",
+            )
+
+    def _rate(self) -> float | None:
+        tasks.recompute_completion_rates_task()
+        self.owner.refresh_from_db()
+        return self.owner.completion_rate
+
+    def test_claims_cancelled_by_someone_else_do_not_lower_an_owners_rate(self) -> None:
+        self._reservations(Reservation.Status.COMPLETED, 5)
+        # Someone reserves and cancels over and over, and leaves a few open.
+        self._reservations(Reservation.Status.CANCELLED, 40)
+        self._reservations(Reservation.Status.REQUESTED, 3)
+        self.assertEqual(self._rate(), 1.0)
+
+    def test_confirmed_handoffs_that_never_happened_count_against_the_owner(self) -> None:
+        self._reservations(Reservation.Status.COMPLETED, 1)
+        self._reservations(Reservation.Status.EXPIRED_UNRESOLVED, 4)
+        self.assertAlmostEqual(self._rate() or 0.0, 0.2)
+
+    def test_too_few_outcomes_means_no_rate_and_clears_a_stale_one(self) -> None:
+        User.objects.filter(pk=self.owner.pk).update(completion_rate=0.1)
+        self._reservations(Reservation.Status.COMPLETED, 2)
+        self._reservations(Reservation.Status.CANCELLED, 10)
+        self.assertIsNone(self._rate())
+
+
 class ScheduledJobTests(TestCase):
     def setUp(self) -> None:
         cache.clear()
+
+    def test_a_job_set_that_is_already_running_is_skipped_not_run_twice(self) -> None:
+        runs: list[str] = []
+
+        def overlapping_run() -> int:
+            runs.append("outer")
+            # The cron retried while this run was still going.
+            inner = ops.run_scheduled_jobs(["tick"])
+            self.assertEqual(inner["probe"], {
+                "ok": True, "result": None, "skipped": "a previous run is still in progress",
+            })
+            return 1
+
+        with mock.patch.dict(ops.SCHEDULED_JOB_SETS, {"tick": [("probe", overlapping_run)]}):
+            first = ops.run_scheduled_jobs(["tick"])
+            self.assertEqual(first["probe"], {"ok": True, "result": 1})
+            # The lock is released afterwards, so the next scheduled run works.
+            self.assertEqual(ops.run_scheduled_jobs(["tick"])["probe"], {"ok": True, "result": 1})
+        self.assertEqual(runs, ["outer", "outer"])
+
+    def test_the_weekly_digest_goes_out_once_per_campus_per_week(self) -> None:
+        campus = Campus.objects.create(name="Alder University", slug="alder")
+        make_user("manager@alder.test", campus=campus, is_campus_manager=True)
+
+        self.assertEqual(tasks.weekly_campus_digest_task(), 1)
+        self.assertEqual(tasks.weekly_campus_digest_task(), 0)  # a retry or a repeated run
+        self.assertEqual(len(mail.outbox), 1)
+
+        Campus.objects.filter(pk=campus.pk).update(last_digest_sent_at=timezone.now() - timedelta(days=7))
+        self.assertEqual(tasks.weekly_campus_digest_task(), 1)
 
     def test_expired_sessions_are_cleared_by_the_daily_set(self) -> None:
         now = timezone.now()
@@ -1912,3 +2076,37 @@ class DemandForecastContinuityTests(TestCase):
         self.assertAlmostEqual(forecast.predicted_views, 14.0, places=1)
         self.assertTrue(forecast.is_peak)
         self.assertAlmostEqual(results["lighting"]["predicted_views"], 14.0, places=3)
+
+    def test_saves_are_forecast_and_thin_categories_are_skipped(self) -> None:
+        owner = make_user("owner@forecast.test")
+        saver = make_user("saver@forecast.test")
+        steady = make_listing(owner)
+        sparse = make_listing(owner, title="Shelf", category=Listing.Category.STORAGE)
+
+        def stamp(monday: datetime.date) -> datetime.datetime:
+            return datetime.datetime.combine(monday, datetime.time(12, 0), tzinfo=datetime.timezone.utc)
+
+        # Three weeks of history: views flat at 3, saves falling 3, 2, 1.
+        mondays = [datetime.date(2025, 12, 22), datetime.date(2025, 12, 29), datetime.date(2026, 1, 5)]
+        for week, monday in enumerate(mondays):
+            for n in range(3):
+                event = ListingViewEvent.objects.create(listing=steady, session_key=f"w{week}-v{n}")
+                ListingViewEvent.objects.filter(pk=event.pk).update(viewed_at=stamp(monday))
+            for n in range(3 - week):
+                save = ListingInteractionEvent.objects.create(user=saver, listing=steady, action="save")
+                ListingInteractionEvent.objects.filter(pk=save.pk).update(created_at=stamp(monday))
+        # Two weeks are not enough to fit a trend.
+        for week, monday in enumerate(mondays[:2]):
+            event = ListingViewEvent.objects.create(listing=sparse, session_key=f"sparse-{week}")
+            ListingViewEvent.objects.filter(pk=event.pk).update(viewed_at=stamp(monday))
+
+        with mock.patch("django.utils.timezone.now", return_value=self.NOW):
+            results = tasks.recompute_demand_forecast_task()
+
+        self.assertEqual(set(results), {"lighting"})
+        forecast = DemandForecast.objects.get(category="lighting", week_number=4, year=2026)
+        self.assertAlmostEqual(forecast.predicted_views, 3.0, places=1)
+        # Saves fall by one a week from 1 in 2026-W02; a count cannot go below zero.
+        self.assertEqual(forecast.predicted_saves, 0.0)
+        self.assertTrue(forecast.is_peak)
+        self.assertFalse(DemandForecast.objects.filter(category="storage").exists())

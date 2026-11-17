@@ -52,6 +52,10 @@ ModelCall = Callable[..., Any]
 
 MAX_TOOL_ITERATIONS = 6       # tool rounds in a task turn
 CHAT_TOOL_ITERATIONS = 3      # tool rounds in a chat turn
+# All a chat turn may use: the shared knowledge base and follow-up chips.
+# Nothing here reads a user's own data, which is what lets the engine share
+# chat answers between users.
+CHAT_TOOL_NAMES = frozenset({"search_help", "suggest_followups"})
 MAX_PLAN_STEPS = 4
 
 # Upper bounds on model calls in one turn. A tool loop makes one opening call
@@ -191,8 +195,8 @@ def _run_chat(
 ) -> dict[str, Any]:
     collector = UiCollector()
     notify({"phase": "thinking"})
-    help_tools = [t for t in TOOLS if t["name"] == "search_help"]
-    suggest_tools = [d for d in UI_TOOL_DECLARATIONS if d["name"] == "suggest_followups"]
+    help_tools = [t for t in TOOLS if t["name"] in CHAT_TOOL_NAMES]
+    suggest_tools = [d for d in UI_TOOL_DECLARATIONS if d["name"] in CHAT_TOOL_NAMES]
     loop = _tool_loop(
         user,
         call,
@@ -293,12 +297,16 @@ def _make_plan(
     if not isinstance(raw, dict):  # valid JSON, wrong shape (a list or a bare string)
         raw = {}
     known = {t["name"] for t in TOOLS} | UI_TOOL_NAMES
+    # The planner's JSON is not schema-checked: each level may be the wrong type.
+    steps_value, criteria_value = raw.get("steps"), raw.get("success_criteria")
+    raw_steps: list[Any] = steps_value if isinstance(steps_value, list) else []
+    raw_criteria: list[Any] = criteria_value if isinstance(criteria_value, list) else []
     steps = [
-        {"tool": step.get("tool", ""), "why": str(step.get("why", ""))[:120]}
-        for step in (raw.get("steps") or [])
-        if isinstance(step, dict) and step.get("tool") in known
+        {"tool": step["tool"], "why": str(step.get("why", ""))[:120]}
+        for step in raw_steps
+        if isinstance(step, dict) and isinstance(step.get("tool"), str) and step["tool"] in known
     ][:MAX_PLAN_STEPS]
-    criteria = [str(c)[:160] for c in (raw.get("success_criteria") or []) if str(c).strip()][:3]
+    criteria = [str(c)[:160] for c in raw_criteria if str(c).strip()][:3]
     return {
         "goal": str(raw.get("goal", ""))[:200] or f"Answer: {text[:120]}",
         "steps": steps or [{"tool": "search_help", "why": "no plan produced; answer from grounded sources"}],
@@ -437,6 +445,10 @@ def _tool_loop(
     # question twice gets the same answer back without a second query, and a
     # repeated UI call cannot render the same block twice.
     seen: dict[str, tuple[dict[str, Any], bool]] = {}
+    # Function calling has no strict mode, so the model can name a tool that
+    # exists but was not offered for this route. The chat route's promise to
+    # touch only the knowledge base is enforced here, not left to the model.
+    allowed = {declaration["name"] for declaration in declarations}
 
     response = call(model=model, contents=contents, config=config)
     for iteration in range(max_iterations):
@@ -451,6 +463,9 @@ def _tool_loop(
             duplicate = key in seen
             if duplicate:
                 tool_result, is_error = seen[key]
+            elif name not in allowed:
+                tool_result, is_error = {"ok": False, "error": f"Unknown tool: {name}"}, True
+                seen[key] = (tool_result, is_error)
             else:
                 fresh_calls += 1
                 result.used_tools.append(name)

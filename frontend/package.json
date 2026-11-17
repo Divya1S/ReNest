@@ -6,9 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "cap:sync": "npx cap sync",
-    "cap:open:ios": "npx cap open ios",
-    "cap:open:android": "npx cap open android",
     "test": "vitest run",
     "e2e": "playwright test",
     "e2e:ui": "playwright test --ui",
@@ -17,14 +14,7 @@
     "lint:fix": "eslint src/ --fix"
   },
   "dependencies": {
-    "@capacitor/app": "^7.0.0",
-    "@capacitor/camera": "^7.0.0",
-    "@capacitor/core": "^7.0.0",
-    "@capacitor/preferences": "^7.0.0",
-    "@capacitor/push-notifications": "^7.0.0",
     "@sentry/react": "^10.52.0",
-    "@tailwindcss/vite": "^4.2.4",
-    "@vitejs/plugin-react": "^6.0.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
     "leaflet": "^1.9.4",
@@ -35,20 +25,20 @@
     "react-router-dom": "^7.14.2",
     "recharts": "^3.8.1",
     "sonner": "^2.0.7",
-    "tailwind-merge": "^3.5.0",
-    "tailwindcss": "^4.2.4",
-    "vite": "^8.0.10"
+    "tailwind-merge": "^3.5.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@playwright/test": "^1.59.1",
     "@sentry/vite-plugin": "^5.2.1",
+    "@tailwindcss/vite": "^4.2.4",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
     "axe-core": "^4.11.4",
     "eslint": "^9.39.4",
     "eslint-plugin-import": "^2.32.0",
@@ -56,8 +46,10 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.6.0",
     "jsdom": "^27.0.1",
+    "tailwindcss": "^4.2.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.70.0",
+    "vite": "^8.0.10",
     "vitest": "^3.2.4",
     "vitest-axe": "^0.1.0"
   }

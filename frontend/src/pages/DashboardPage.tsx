@@ -418,8 +418,8 @@ export default function DashboardPage() {
                   className="min-w-[280px] md:min-w-[320px] flex-shrink-0 bg-[color:var(--color-surface)] rounded-[20px] shadow-[0px_6px_20px_rgba(0,0,0,0.04)] border border-black/10 dark:border-white/10 overflow-hidden"
                 >
                   <div className="h-40 bg-[color:var(--color-surface-2)] relative">
-                    {item.image_url ? (
-                      <img src={item.image_url} alt={item.title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
+                    {item.source_image_detail?.image_url ? (
+                      <img src={item.source_image_detail.image_url} alt={item.title} loading="lazy" decoding="async" className="h-full w-full object-cover" />
                     ) : (
                       <ListingPlaceholder category={item.category} glyphSize={30} draft />
                     )}

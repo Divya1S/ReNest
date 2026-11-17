@@ -49,7 +49,7 @@ export default function ScanPage() {
   });
 
   async function loadSessions() {
-    const data = await apiFetch("/scan-sessions");
+    const data = await apiFetch("/scan-sessions?page_size=100");
     setSessions(asResults(data));
   }
 

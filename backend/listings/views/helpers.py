@@ -20,6 +20,7 @@ from rest_framework.exceptions import ValidationError
 from ..models import (
     BlockedUser,
     Listing,
+    ListingInteractionEvent,
     ListingReport,
     Reservation,
     RescueRequest,
@@ -84,14 +85,15 @@ LISTING_SERIALIZER_RELATIONS = ("owner", "source_scan_session", "scan_draft_sour
 _ACTIVE_LISTING_STATUSES = (Listing.Status.AVAILABLE, Listing.Status.RESERVED)
 
 
-def owner_campus_name(owner: Any) -> str:
-    """Campus name partner webhooks are addressed by.
+def owner_campus_id(owner: Any) -> Optional[int]:
+    """The campus a partner webhook about this owner's activity is addressed to.
 
-    The verified campus foreign key wins; the free-text profile field is
-    only a fallback for accounts that were never matched to a campus.
+    Only the verified campus foreign key counts. The free-text campus_name on
+    a profile is editable by its user, and matching on it let an account with
+    no campus send its events to any campus's partner endpoints by typing
+    that campus's name.
     """
-    campus = getattr(owner, "campus", None)
-    return campus.name if campus else (getattr(owner, "campus_name", "") or "")
+    return getattr(owner, "campus_id", None)
 
 
 def _is_signed_in(user: Any) -> bool:
@@ -166,6 +168,32 @@ def marketplace_listing_queryset(user: Any = None) -> QuerySet[Listing]:
     return browse_listing_queryset(user)
 
 
+def record_listing_interaction(user: Any, listing: Listing, action: str) -> None:
+    """Log one view, save or reserve per user, listing and day.
+
+    These rows drive the personalised ordering in browse (category affinity:
+    reserve counts 3, save 2, view 1) and the demand forecast's saves. Only
+    views used to be written, so the other two weights never applied.
+
+    One row per day at most: the unique constraint on (user, listing, action,
+    day) makes get_or_create safe under concurrency, so refreshing a page or
+    toggling a save cannot grow the table without bound. Never raises: a
+    lost signal must not fail the request that produced it.
+    """
+    try:
+        _, created = ListingInteractionEvent.objects.get_or_create(
+            user=user, listing=listing, action=action, day=timezone.localdate()
+        )
+        if not created:
+            return
+        if ListingInteractionEvent.objects.filter(user=user).count() % 10 == 0:
+            from ..tasks import recompute_category_affinity_task
+
+            recompute_category_affinity_task.delay(user.pk)
+    except Exception:
+        logger.exception("could not record %s interaction for user %s", action, user.pk)
+
+
 def run_listing_created_hooks(listing: Listing) -> None:
     """Side effects every newly created listing needs, whichever path made it.
 
@@ -189,7 +217,7 @@ def run_listing_created_hooks(listing: Listing) -> None:
         dispatch_webhook_event(
             "listing_created",
             {"id": listing.pk, "title": listing.title, "category": listing.category, "status": listing.status},
-            owner_campus_name(listing.owner),
+            owner_campus_id(listing.owner),
         )
     except Exception:
         logger.exception("listing_created webhook dispatch failed for listing %s", listing.pk)

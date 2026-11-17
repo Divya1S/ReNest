@@ -2,12 +2,12 @@
 Web Push notification helpers.
 
 VAPID keys are read from environment variables:
-  VAPID_PRIVATE_KEY  - base64url-encoded private key (generate once with gen_vapid_keys())
+  VAPID_PRIVATE_KEY  - base64url-encoded private key
   VAPID_PUBLIC_KEY   - base64url-encoded public key  (served to the frontend)
   VAPID_CLAIMS_SUB   - mailto: or https: subscriber identifier
 
-Generate a key pair (run once, store results in .env):
-  python manage.py shell -c "from listings.webpush import gen_vapid_keys; gen_vapid_keys()"
+Generate a key pair once and store it in .env:
+  npx web-push generate-vapid-keys
 """
 from __future__ import annotations
 
@@ -25,25 +25,22 @@ _VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
 _VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
 _VAPID_CLAIMS_SUB = os.getenv("VAPID_CLAIMS_SUB", "mailto:admin@renest.app")
 
+PUSH_TIMEOUT_SECONDS = 10
+MAX_ENDPOINT_LENGTH = 2048
 
-def gen_vapid_keys() -> None:
-    """Print a fresh VAPID key pair to stdout. Run once; store in .env."""
-    try:
-        from py_vapid import Vapid
-    except ImportError:
-        print("pywebpush not installed. Run: pip install pywebpush")
-        return
-    v = Vapid()
-    v.generate_keys()
-    print("VAPID_PRIVATE_KEY =", v.private_key.private_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.PEM,
-        format=__import__("cryptography.hazmat.primitives.serialization", fromlist=["PrivateFormat"]).PrivateFormat.Raw,
-        encryption_algorithm=__import__("cryptography.hazmat.primitives.serialization", fromlist=["NoEncryption"]).NoEncryption(),
-    ).hex())
-    print("VAPID_PUBLIC_KEY  =", v.public_key.public_bytes(
-        encoding=__import__("cryptography.hazmat.primitives.serialization", fromlist=["Encoding"]).Encoding.X962,
-        format=__import__("cryptography.hazmat.primitives.serialization.ec", fromlist=["EllipticCurvePublicFormat"]).EllipticCurvePublicFormat.UncompressedPoint,
-    ).hex())
+
+def push_endpoint_error(endpoint: str) -> str | None:
+    """Why `endpoint` is not a safe place to deliver a push, or None when it is.
+
+    The browser supplies the endpoint and the server later POSTs to it, so it
+    gets the same checks as a partner webhook: https, and a host that
+    resolves to public addresses only.
+    """
+    from .net_safety import public_https_url_error
+
+    if len(endpoint) > MAX_ENDPOINT_LENGTH:
+        return "The push endpoint is too long."
+    return public_https_url_error(endpoint, noun="push endpoint")
 
 
 def send_push(subscription: PushSubscription, *, title: str, body: str, url: str = "/dashboard") -> bool:
@@ -57,9 +54,17 @@ def send_push(subscription: PushSubscription, *, title: str, body: str, url: str
         return False
 
     try:
-        from pywebpush import webpush, WebPushException
+        import requests
+        from pywebpush import webpush
     except ImportError:
         logger.warning("pywebpush not installed, Web Push skipped")
+        return False
+
+    # Checked again at send time: rows stored before the subscribe endpoint
+    # validated them, and hosts whose DNS has changed since, are refused here.
+    endpoint_error = push_endpoint_error(subscription.endpoint)
+    if endpoint_error:
+        logger.warning("Web Push skipped for subscription %s: %s", subscription.pk, endpoint_error)
         return False
 
     payload = json.dumps({
@@ -77,12 +82,19 @@ def send_push(subscription: PushSubscription, *, title: str, body: str, url: str
         },
     }
 
+    session = requests.Session()
+    # A redirect would lead somewhere the check above never saw.
+    session.max_redirects = 0
     try:
         webpush(
             subscription_info=subscription_info,
             data=payload,
             vapid_private_key=_VAPID_PRIVATE_KEY,
             vapid_claims={"sub": _VAPID_CLAIMS_SUB},
+            # Without a timeout a silent endpoint holds the request (or the
+            # worker) that triggered the push open indefinitely.
+            timeout=PUSH_TIMEOUT_SECONDS,
+            requests_session=session,
         )
         return True
     except Exception as exc:
@@ -101,7 +113,7 @@ def send_push_to_user(user: Any, *, title: str, body: str, url: str = "/dashboar
     """
     Send a push notification to all subscriptions for a user.
 
-    Respects Phase 26 preferences:
+    Respects the user's notification preferences:
     - If channel = off or email → skips push entirely.
     - If current time is within the user's quiet window → holds the message in
       the user's quiet queue (see `_enqueue_quiet`) instead of sending.

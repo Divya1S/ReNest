@@ -111,7 +111,7 @@ function ErrorPanel({ message, onRetry }) {
 }
 
 export default function LeaderboardPage() {
-  usePageTitle("Leaderboard | ReNest");
+  usePageTitle("Leaderboard");
 
   const [tab, setTab] = useState("people");
   const [period, setPeriod] = useState("all");

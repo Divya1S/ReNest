@@ -64,9 +64,11 @@ function NavItem({ to, icon: Icon, children, onClick, prefetchRouteKey, prefetch
 }
 
 const MORE_MENU_ITEMS = [
-  { to: "/requests", label: "Requests", icon: ListChecks, routeKey: "requests", data: ["/requests", "/match-center"] },
-  { to: "/saved", label: "Saved Items", icon: Bookmark, routeKey: "saved", data: "/saved-listings" },
-  { to: "/hubs", label: "Donation Hubs", icon: MapPinned, routeKey: "hubs", data: "/hubs" },
+  // `data` primes the API cache on hover, so it is only set for pages that
+  // read that cache key through useApi. Requests and Hubs fetch for themselves.
+  { to: "/requests", label: "Requests", icon: ListChecks, routeKey: "requests" },
+  { to: "/saved", label: "Saved Items", icon: Bookmark, routeKey: "saved", data: "/saved-listings?page_size=100" },
+  { to: "/hubs", label: "Donation Hubs", icon: MapPinned, routeKey: "hubs" },
   { to: "/trust", label: "Trust Center", icon: Shield, routeKey: "trust", data: "/trust/me" },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy, routeKey: "leaderboard" },
   { to: "/assistant", label: "Assistant", icon: Sparkles, routeKey: "assistant" },
@@ -386,7 +388,7 @@ export default function AppFrame() {
                 <>
                   <NavItem to="/dashboard" prefetchRouteKey="dashboard" prefetchData="/dashboard">Dashboard</NavItem>
                   <NavItem to="/browse" prefetchRouteKey="browse">Browse</NavItem>
-                  <NavItem to="/scan" prefetchRouteKey="scan" prefetchData="/scan-sessions">Scan</NavItem>
+                  <NavItem to="/scan" prefetchRouteKey="scan">Scan</NavItem>
                   <NavItem to="/notifications" prefetchRouteKey="notifications" prefetchData="/notifications">
                     Alerts
                     {unreadNotifications ? (
@@ -403,7 +405,7 @@ export default function AppFrame() {
               ) : (
                 <>
                   <NavItem to="/browse" prefetchRouteKey="browse">Browse</NavItem>
-                  <NavItem to="/hubs" prefetchRouteKey="hubs" prefetchData="/hubs">Hubs</NavItem>
+                  <NavItem to="/hubs" prefetchRouteKey="hubs">Hubs</NavItem>
                 </>
               )}
             </nav>
@@ -526,7 +528,7 @@ export default function AppFrame() {
                   <>
                     <NavItem to="/dashboard" icon={LayoutDashboard} prefetchRouteKey="dashboard" prefetchData="/dashboard">Dashboard</NavItem>
                     <NavItem to="/browse" icon={Search} prefetchRouteKey="browse">Browse</NavItem>
-                    <NavItem to="/scan" icon={Camera} prefetchRouteKey="scan" prefetchData="/scan-sessions">Scan</NavItem>
+                    <NavItem to="/scan" icon={Camera} prefetchRouteKey="scan">Scan</NavItem>
                     <NavItem to="/notifications" icon={Bell} prefetchRouteKey="notifications" prefetchData="/notifications">
                       Alerts
                       {unreadNotifications ? (
@@ -538,19 +540,20 @@ export default function AppFrame() {
                     <p className="mt-4 mb-1 px-3 text-[0.66rem] font-semibold uppercase tracking-[0.16em] text-[color:var(--text-muted)]">
                       More
                     </p>
-                    <NavItem to="/requests" icon={ListChecks} prefetchRouteKey="requests" prefetchData={["/requests", "/match-center"]}>Requests</NavItem>
-                    <NavItem to="/saved" icon={Bookmark} prefetchRouteKey="saved" prefetchData="/saved-listings">Saved</NavItem>
-                    <NavItem to="/hubs" icon={MapPinned} prefetchRouteKey="hubs" prefetchData="/hubs">Hubs</NavItem>
+                    <NavItem to="/requests" icon={ListChecks} prefetchRouteKey="requests">Requests</NavItem>
+                    <NavItem to="/saved" icon={Bookmark} prefetchRouteKey="saved" prefetchData="/saved-listings?page_size=100">Saved</NavItem>
+                    <NavItem to="/hubs" icon={MapPinned} prefetchRouteKey="hubs">Hubs</NavItem>
                     <NavItem to="/trust" icon={Shield} prefetchRouteKey="trust" prefetchData="/trust/me">Trust Center</NavItem>
                     <NavItem to="/leaderboard" icon={Trophy} prefetchRouteKey="leaderboard">Leaderboard</NavItem>
                     <NavItem to="/assistant" icon={Sparkles} prefetchRouteKey="assistant">Assistant</NavItem>
+                    <NavItem to="/risk" icon={ShieldCheck} prefetchRouteKey="riskOverview">Risk Intelligence</NavItem>
                   </>
                 ) : authLoading ? (
                   <NavItem to="/browse" icon={Search} prefetchRouteKey="browse">Browse</NavItem>
                 ) : (
                   <>
                     <NavItem to="/browse" icon={Search} prefetchRouteKey="browse">Browse</NavItem>
-                    <NavItem to="/hubs" icon={MapPinned} prefetchRouteKey="hubs" prefetchData="/hubs">Hubs</NavItem>
+                    <NavItem to="/hubs" icon={MapPinned} prefetchRouteKey="hubs">Hubs</NavItem>
                   </>
                 )}
               </nav>

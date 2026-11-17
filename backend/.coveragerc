@@ -4,8 +4,7 @@ omit =
     */migrations/*
     */__pycache__/*
     */tests*
-    # Legacy monolith superseded by the listings/views/ package
-    listings/views.py
+    */test_*.py
     # Seed data script, not production code
     listings/management/commands/seed_demo.py
 
@@ -14,5 +13,5 @@ omit =
     */migrations/*
     */__pycache__/*
     */tests*
-    listings/views.py
+    */test_*.py
     listings/management/commands/seed_demo.py

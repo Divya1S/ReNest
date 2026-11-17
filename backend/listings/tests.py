@@ -487,6 +487,10 @@ class ListingApiTests(APITestCase):
         self.assertEqual(response.data["campus_snapshot"]["open_reports"], 1)
         self.assertGreaterEqual(response.data["campus_snapshot"]["open_requests"], 1)
         self.assertGreaterEqual(len(response.data["weekly_activity"]), 1)
+        # The rows created above belong to the current week's bucket.
+        this_week = response.data["weekly_activity"][-1]
+        self.assertGreaterEqual(this_week["rescued"], 1)
+        self.assertGreaterEqual(this_week["requests"], 1)
         self.assertGreaterEqual(len(response.data["category_market_map"]), 1)
         self.assertGreaterEqual(len(response.data["recommendations"]), 1)
         self.assertIn("requests_you_can_fulfill", response.data["ops_snapshot"])

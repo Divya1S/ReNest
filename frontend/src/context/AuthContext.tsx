@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 
+import { clearAllDrafts } from "../hooks/usePersistentDraftState";
 import { apiFetch, fetchCsrfCookie, setApiAuthHandlers } from "../lib/api";
 import { clearApiCache } from "../lib/apiCache";
 import { dropBrowserPushSubscription, removePushSubscription } from "../lib/push";
@@ -27,6 +28,18 @@ interface AuthContextValue {
 // Upper bound on the push clean-up that runs before logout. Signing out must
 // never wait on a slow push service.
 const PUSH_CLEANUP_BUDGET_MS = 6000;
+
+const PARTNER_KEY_STORAGE = "renest_partner_key";
+
+/** What this browser keeps for the signed-in account, removed when the session ends. */
+function clearBrowserState(): void {
+  clearAllDrafts();
+  try {
+    window.sessionStorage.removeItem(PARTNER_KEY_STORAGE);
+  } catch {
+    // Storage unavailable: nothing was kept.
+  }
+}
 
 const defaultAuthContext: AuthContextValue = {
   user: null,
@@ -76,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       onSessionExpired({ message }) {
         if (!userRef.current) return; // anonymous visitor, nothing expired
         clearApiCache();
+        clearBrowserState();
         setUser(null);
         setAuthNotice(message);
         // No session left to call /push/unsubscribe with, so at least stop
@@ -165,6 +179,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearTimeout(budgetTimer);
     await apiFetch("/auth/logout", { method: "POST", body: {} });
     clearApiCache();
+    clearBrowserState();
     setAuthNotice("");
     setUser(null);
   }, []);

@@ -231,7 +231,10 @@ def sync_user_notifications(user: UserType) -> dict[str, int]:
             to_update.append(notification)
 
     if to_create:
-        Notification.objects.bulk_create(to_create)
+        # Two requests can sync the same user at once (the badge and the inbox
+        # load together); the unique dedupe_key decides, and the loser must
+        # not turn into a 500.
+        Notification.objects.bulk_create(to_create, ignore_conflicts=True)
     if to_update:
         Notification.objects.bulk_update(
             to_update,

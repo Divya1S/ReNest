@@ -54,6 +54,22 @@ _PUBLISH_CANDIDATE = frozenset([
 ])
 
 
+def save_validated_fields(instance: Any, validated_data: dict[str, Any], *, also: tuple[str, ...] = ()) -> Any:
+    """Apply `validated_data` and write only those columns.
+
+    ModelSerializer.update saves the whole row from the copy that was loaded
+    when the request started. Anything another request changed in between is
+    written back to its old value: a claim that reserved a listing while its
+    owner was uploading a new photo left the listing "available" with a live
+    reservation on it. Limiting the write to the edited columns leaves the
+    status, moderation and PIN columns to the code that owns them.
+    """
+    for field, value in validated_data.items():
+        setattr(instance, field, value)
+    instance.save(update_fields=[*validated_data, *also, "updated_at"])
+    return instance
+
+
 def is_cross_campus_claim(user: Any, owner: Any) -> bool:
     """Whether `user` claiming from `owner` would cross a campus boundary.
 
@@ -291,10 +307,18 @@ class ListingSerializer(serializers.ModelSerializer):
         )
 
     def get_donation_receipt_url(self, obj: Listing) -> str | None:
+        """Link to the receipt PDF, for the donor (and staff) only.
+
+        The receipt names the donor and prints their email address, and the
+        listing detail endpoint is public.
+        """
         request = self.context.get("request")
-        if obj.donation_receipt and request:
-            return request.build_absolute_uri(obj.donation_receipt.url)
-        return None
+        if not obj.donation_receipt or request is None:
+            return None
+        user = request.user
+        if not user.is_authenticated or not (obj.owner_id == user.id or user.is_staff):
+            return None
+        return request.build_absolute_uri(obj.donation_receipt.url)
 
     def validate_image(self, value: Any) -> Any:
         if value:
@@ -377,9 +401,11 @@ class ListingSerializer(serializers.ModelSerializer):
     def update(self, instance: Listing, validated_data: dict[str, Any]) -> Listing:
         # Replacing the cover invalidates its rendition; the post_save signal
         # regenerates it from the new image.
+        also: tuple[str, ...] = ()
         if "image" in validated_data:
             instance.image_thumb = None
-        return super().update(instance, validated_data)
+            also = ("image_thumb",)
+        return save_validated_fields(instance, validated_data, also=also)
 
     def _is_list_row(self) -> bool:
         """Whether this listing is one row of a list response.
@@ -518,7 +544,17 @@ class ListingSerializer(serializers.ModelSerializer):
         return draft.id if draft else None
 
     def get_source_scan_name(self, obj: Any) -> str | None:
-        return obj.source_scan_session.name if obj.source_scan_session_id else None
+        """The owner's label for the room scan, shown to the owner only.
+
+        People name a scan after their room ("Maple Hall 204 clear-out"),
+        which is not something every visitor to a public listing should read.
+        """
+        if not obj.source_scan_session_id:
+            return None
+        request = self.context.get("request")
+        if request is None or not request.user.is_authenticated or obj.owner_id != request.user.id:
+            return None
+        return obj.source_scan_session.name
 
     @extend_schema_field(OpenApiTypes.DECIMAL)
     def get_estimated_student_savings(self, obj: Listing) -> Decimal:
@@ -643,9 +679,9 @@ class RoomScanItemDraftSerializer(serializers.ModelSerializer):
             "updated_at",
         )
 
-    def validate_hotspot_box(self, value: dict[str, Any]) -> dict[str, Any]:
+    def validate_hotspot_box(self, value: Any) -> dict[str, Any]:
         required_keys = {"x", "y", "width", "height"}
-        if not required_keys.issubset(value.keys()):
+        if not isinstance(value, dict) or not required_keys.issubset(value.keys()):
             raise serializers.ValidationError("Hotspot box must include x, y, width, and height.")
 
         for key in required_keys:
@@ -903,8 +939,12 @@ class ListingReportSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+        # `listing` is read-only: the view names it (the URL), and the checks
+        # below run on that same listing. When it was read from the body, a
+        # report could be validated against one listing and saved on another.
         read_only_fields = (
             "id",
+            "listing",
             "reporter",
             "status",
             "reviewed_at",
@@ -917,7 +957,7 @@ class ListingReportSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
         request = self.context["request"]
-        listing = attrs.get("listing") or getattr(self.instance, "listing", None)
+        listing = self.context.get("listing") or getattr(self.instance, "listing", None)
 
         if listing is None:
             raise serializers.ValidationError({"listing": "A listing is required."})
@@ -934,6 +974,21 @@ class ListingReportSerializer(serializers.ModelSerializer):
 
     def get_listing_title(self, obj: Any) -> str:
         return obj.listing.title
+
+
+class ReceivedListingReportSerializer(serializers.ModelSerializer):
+    """A report as the reported listing's owner may see it.
+
+    No reporter and no free-text details: telling an owner who reported them
+    turns a safety report into a retaliation target.
+    """
+
+    listing_title = serializers.CharField(source="listing.title", read_only=True)
+
+    class Meta:
+        model = ListingReport
+        fields = ("id", "listing", "listing_title", "reason", "status", "created_at")
+        read_only_fields = fields
 
 
 class RescueRequestSerializer(serializers.ModelSerializer):
@@ -1276,7 +1331,7 @@ class ReservationSerializer(serializers.ModelSerializer):
     def update(self, instance: Reservation, validated_data: dict[str, Any]) -> Reservation:
         previous_status = instance.status
         next_status = validated_data.pop("status", previous_status)
-        reservation = super().update(instance, validated_data) if validated_data else instance
+        reservation = save_validated_fields(instance, validated_data) if validated_data else instance
 
         if next_status != previous_status:
             from .services import apply_status_transition
@@ -1541,7 +1596,7 @@ class ReservationMessageSerializer(serializers.ModelSerializer):
         read_only_fields = ("id", "sender_name", "is_mine", "created_at")
 
     def get_sender_name(self, obj: ReservationMessage) -> str:
-        return obj.sender.get_full_name() or obj.sender.email.split("@")[0]
+        return obj.sender.public_name
 
     def get_is_mine(self, obj: ReservationMessage) -> bool:
         request = self.context.get("request")

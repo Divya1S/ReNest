@@ -26,7 +26,7 @@ function SavedCardSkeleton() {
 
 export default function SavedPage() {
   usePageTitle("Saved Items");
-  const { data, loading, error, retry, setData } = useApi("/saved-listings", {
+  const { data, loading, error, retry, setData } = useApi("/saved-listings?page_size=100", {
     initialData: { results: [], count: 0 },
   });
   const savedListings = data?.results ?? [];

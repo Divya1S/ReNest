@@ -34,7 +34,7 @@ describe.each([
   {
     name: "SavedPage",
     Page: SavedPage,
-    url: "/api/saved-listings",
+    url: "/api/saved-listings?page_size=100",
     success: { count: 0, results: [] },
     loaded: /nothing saved yet/i,
   },

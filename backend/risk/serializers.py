@@ -32,6 +32,9 @@ from .services.simulation import DEFAULT_COUNT, MAX_COUNT, MIN_COUNT
 MAX_AMOUNT = Decimal("1000000")
 MAX_METADATA_BYTES = 2048
 MAX_METADATA_KEYS = 20
+# Keys the server writes into a payment's metadata itself. A customer who
+# could supply "manual_review" would hand staff a forged review record.
+RESERVED_METADATA_KEYS = frozenset({"manual_review", "sandbox_behavior"})
 
 
 def _validate_amount_for_currency(amount: Decimal, currency: str) -> Decimal:
@@ -48,6 +51,9 @@ def _validate_metadata(value: Any) -> dict[str, Any]:
         raise serializers.ValidationError("metadata must be an object.")
     if len(value) > MAX_METADATA_KEYS:
         raise serializers.ValidationError(f"metadata may hold at most {MAX_METADATA_KEYS} keys.")
+    reserved = sorted(RESERVED_METADATA_KEYS.intersection(value))
+    if reserved:
+        raise serializers.ValidationError(f"metadata may not use reserved keys: {', '.join(reserved)}.")
     if len(json.dumps(value, default=str)) > MAX_METADATA_BYTES:
         raise serializers.ValidationError(f"metadata may be at most {MAX_METADATA_BYTES} bytes.")
     # Credentials and card data have no business in payment metadata; they are

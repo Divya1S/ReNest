@@ -100,8 +100,10 @@ export default function ListingDetailPage() {
         body: { listing: Number(listingId), pickup_time_window: pickupWindow },
       });
       toast.success("Reservation requested. The owner can now confirm the handoff.");
-      await refetch();
       setPickupWindow("");
+      // The reservation exists. A failed re-read must not reach the catch
+      // below, which would undo the optimistic state and report an error.
+      refetch().catch(() => undefined);
     } catch (err) {
       setData((cur) => (cur ? { ...cur, can_reserve: true, reservation_count: (cur.reservation_count ?? 1) - 1 } : cur) as Listing);
       const msg = (err as Error).message;

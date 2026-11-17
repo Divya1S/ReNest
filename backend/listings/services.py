@@ -106,7 +106,7 @@ def dispatch_reservation_confirmed_webhook(reservation: Reservation) -> None:
     confirm cannot disagree about whether partners hear about it.
     """
     try:
-        from .views.helpers import owner_campus_name
+        from .views.helpers import owner_campus_id
         from .views.partner import dispatch_webhook_event
 
         # All delivery rows for one event are written together or not at all.
@@ -114,7 +114,7 @@ def dispatch_reservation_confirmed_webhook(reservation: Reservation) -> None:
             dispatch_webhook_event(
                 "reservation_confirmed",
                 {"id": reservation.pk, "listing_id": reservation.listing_id, "status": reservation.status},
-                owner_campus_name(reservation.listing.owner),
+                owner_campus_id(reservation.listing.owner),
             )
     except Exception:
         logger.exception("reservation_confirmed webhook dispatch failed for reservation %s", reservation.pk)
@@ -189,10 +189,18 @@ def complete_reservation(reservation: Reservation, *, notify: bool = True) -> Re
     reservation.handoff_pin = ""
     reservation.save(update_fields=["status", "handoff_pin", "updated_at"])
 
-    RescueRequest.objects.filter(
-        matched_listing=listing,
-        status=RescueRequest.Status.MATCHED,
-    ).update(status=RescueRequest.Status.FULFILLED, updated_at=timezone.now())
+    # Offering a listing to a request does not reserve it, so the person who
+    # collected it may not be the seeker it was offered to. Only the
+    # collector's own request is fulfilled; anyone else matched to this
+    # listing goes back to looking, because the item is gone.
+    matched = RescueRequest.objects.filter(matched_listing=listing, status=RescueRequest.Status.MATCHED)
+    now = timezone.now()
+    matched.filter(seeker_id=reservation.claimant_id).update(
+        status=RescueRequest.Status.FULFILLED, updated_at=now
+    )
+    matched.exclude(seeker_id=reservation.claimant_id).update(
+        matched_listing=None, status=RescueRequest.Status.OPEN, updated_at=now
+    )
     listing.status = Listing.Status.PICKED_UP
     listing.save(update_fields=["status", "updated_at"])
 
@@ -237,9 +245,12 @@ def cancel_reservation(
         .exists()
     )
     if not other_claim:
+        # Only the claimant's own match is undone. A listing that was offered
+        # to someone else is available to them again once this claim is gone.
         RescueRequest.objects.filter(
             matched_listing=listing,
             status=RescueRequest.Status.MATCHED,
+            seeker_id=reservation.claimant_id,
         ).update(matched_listing=None, status=RescueRequest.Status.OPEN, updated_at=timezone.now())
         # Only a listing this reservation was holding goes back on the shelf.
         # A donated, picked-up or already expired listing stays where it is.
@@ -283,7 +294,6 @@ def apply_status_transition(
     reservation: Reservation,
     next_status: str,
     *,
-    previous_status: str | None = None,
     actor: Any = None,
 ) -> Reservation:
     """Dispatch a status change requested through PATCH /reservations/:id.
@@ -291,16 +301,9 @@ def apply_status_transition(
     COMPLETED is deliberately absent: a handoff is completed only by the
     owner entering the claimant's PIN (see ReservationVerifyPinView), so this
     dispatcher must not offer a way around it.
-
-    `previous_status` is accepted for existing callers but no longer decides
-    anything: each service reads the status under its own lock.
     """
     if next_status == Reservation.Status.CONFIRMED:
         return confirm_reservation(reservation)
     if next_status == Reservation.Status.CANCELLED:
         return cancel_reservation(reservation, actor=actor)
     raise ReservationConflict("That status change is not supported.")
-
-
-def any_status(*statuses: Any) -> list[str]:
-    return [str(s) for s in statuses]
