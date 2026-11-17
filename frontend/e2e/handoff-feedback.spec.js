@@ -236,6 +236,22 @@ test.describe("Handoff completion by PIN", () => {
     });
   }
 
+  test("the page fits a phone screen without scrolling sideways", async ({ page }) => {
+    // The pickup step tracker is one unbreakable row. It used to stretch the
+    // page to 402 px on a 390 px phone, cutting the chat panel off at the edge.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockHandoff(page, () => ({ ...OWNER_RESERVATION, status: "confirmed" }));
+
+    await page.goto(`/handoffs/${RESERVATION_ID}`);
+    await expect(page.getByLabel("Pickup PIN")).toBeVisible();
+
+    const { pageWidth, screenWidth } = await page.evaluate(() => ({
+      pageWidth: document.documentElement.scrollWidth,
+      screenWidth: document.documentElement.clientWidth,
+    }));
+    expect(pageWidth).toBeLessThanOrEqual(screenWidth);
+  });
+
   test("a status change made by the other party appears without a reload", async ({ page }) => {
     let status = "requested";
     await page.clock.install();

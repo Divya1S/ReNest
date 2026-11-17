@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1640 1010" width="1640" height="1010" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="t">How a sandbox payment is processed</title>
+<desc id="d">A payment request arrives with an idempotency key. If the key was used before, the earlier answer is sent back and no second payment is created. Otherwise the payment record, the customer's history lookup, the score, the decision and the events are saved together in one step. Afterwards the follow-up steps run, and an allowed payment is charged to the sandbox processor.</desc>
+<defs><marker id="arrow" viewBox="0 0 12 12" markerWidth="11" markerHeight="11" refX="10.5" refY="6" orient="auto-start-reverse"><path d="M1,1.5 L11,6 L1,10.5 z" fill="#564146"/></marker></defs>
+<rect x="1" y="1" width="1638" height="1008" rx="28" fill="#ffffff" stroke="#d8d2d6" stroke-width="2"/>
+<text x="60" y="78" font-size="32" font-weight="700" fill="#23191b" text-anchor="start">How a payment is processed</text>
+<text x="60" y="112" font-size="17" font-weight="400" fill="#564146" text-anchor="start">Sandbox payments only. No real money moves.</text>
+<rect x="60" y="160" width="336" height="104" rx="16" fill="#edf0f4" stroke="#1e304a" stroke-width="2"/>
+<text x="228.0" y="204.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">A payment request arrives</text>
+<text x="228.0" y="231.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">It carries an Idempotency-Key</text>
+<rect x="60" y="324" width="336" height="104" rx="16" fill="#fbf3e2" stroke="#b9841f" stroke-width="2"/>
+<text x="228.0" y="368.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Was this key used before?</text>
+<text x="228.0" y="395.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">A repeat of the same request</text>
+<rect x="560" y="324" width="480" height="104" rx="16" fill="#e7f1ea" stroke="#005620" stroke-width="2"/>
+<text x="800.0" y="368.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Send back the earlier answer</text>
+<text x="800.0" y="395.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">No second payment is created</text>
+<path d="M228,264 L228,324" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M396,376 L560,376" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="454.85" y="361" width="46.3" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="478" y="380.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">yes</text>
+<rect x="60" y="520" width="1520" height="220" rx="24" fill="#f5f5f7" stroke="#d8d2d6" stroke-width="1.5"/>
+<text x="1552" y="558" font-size="14" font-weight="700" fill="#8a1d45" text-anchor="end" letter-spacing="1.8">SAVED TOGETHER, OR NOT AT ALL</text>
+<rect x="100" y="580" width="256" height="120" rx="16" fill="#ffffff" stroke="#8a1d45" stroke-width="2"/>
+<text x="228.0" y="633.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Create the</text>
+<text x="228.0" y="659.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">payment record</text>
+<circle cx="102" cy="582" r="17" fill="#8a1d45"/>
+<text x="102" y="588" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">1</text>
+<rect x="396" y="580" width="256" height="120" rx="16" fill="#ffffff" stroke="#8a1d45" stroke-width="2"/>
+<text x="524.0" y="633.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Look up the</text>
+<text x="524.0" y="659.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">customer's history</text>
+<circle cx="398" cy="582" r="17" fill="#8a1d45"/>
+<text x="398" y="588" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">2</text>
+<rect x="692" y="580" width="256" height="120" rx="16" fill="#ffffff" stroke="#8a1d45" stroke-width="2"/>
+<text x="820.0" y="633.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Score the payment</text>
+<text x="820.0" y="659.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">with the rules</text>
+<circle cx="694" cy="582" r="17" fill="#8a1d45"/>
+<text x="694" y="588" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+<rect x="988" y="580" width="256" height="120" rx="16" fill="#ffffff" stroke="#8a1d45" stroke-width="2"/>
+<text x="1116.0" y="633.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Decide: allow,</text>
+<text x="1116.0" y="659.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">review or block</text>
+<circle cx="990" cy="582" r="17" fill="#8a1d45"/>
+<text x="990" y="588" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">4</text>
+<rect x="1284" y="580" width="256" height="120" rx="16" fill="#ffffff" stroke="#8a1d45" stroke-width="2"/>
+<text x="1412.0" y="633.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Write the events</text>
+<text x="1412.0" y="659.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">and the audit record</text>
+<circle cx="1286" cy="582" r="17" fill="#8a1d45"/>
+<text x="1286" y="588" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">5</text>
+<path d="M356,640 L396,640" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M652,640 L692,640" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M948,640 L988,640" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1244,640 L1284,640" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M228,428 L228,580" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="208.9" y="459" width="38.2" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="228" y="478.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">no</text>
+<rect x="60" y="850" width="190" height="104" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="155.0" y="894.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Scheduled job</text>
+<text x="155.0" y="921.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Runs on a timer</text>
+<rect x="330" y="850" width="380" height="104" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="520.0" y="894.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Follow-up steps</text>
+<text x="520.0" y="921.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Notify the customer, update counters</text>
+<rect x="850" y="850" width="380" height="104" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="1040.0" y="894.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Charge the sandbox processor</text>
+<text x="1040.0" y="921.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Retries on temporary errors</text>
+<rect x="1310" y="850" width="270" height="104" rx="16" fill="#e7f1ea" stroke="#005620" stroke-width="2"/>
+<text x="1445.0" y="895.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Payment completed</text>
+<text x="1445.0" y="921.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">or failed</text>
+<path d="M250,902 L330,902" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)" stroke-dasharray="7 6"/>
+<path d="M520,740 L520,850" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="460.4" y="780" width="119.19999999999999" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="520" y="799.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">after saving</text>
+<path d="M1040,740 L1040,850" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="943.95" y="780" width="192.1" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="1040" y="799.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">allowed payments only</text>
+<path d="M1230,902 L1310,902" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+</svg>

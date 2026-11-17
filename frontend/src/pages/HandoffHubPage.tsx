@@ -526,14 +526,16 @@ export default function HandoffHubPage() {
         </div>
       </PageSection>
 
-      <PageSection className="grid items-start gap-6 lg:grid-cols-[1fr_0.85fr]" delay={0.04}>
+      {/* grid-cols-1: without an explicit column the single mobile column grows
+          to its widest row, which pushed the whole page wider than a phone screen. */}
+      <PageSection className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_0.85fr]" delay={0.04}>
         {/* Chat is the heart of coordination, so it leads. */}
         <ReservationChat reservationId={reservationId} />
 
         <div className="space-y-6">
           {/* ONE pickup card: exactly the next action for this role at this stage. */}
           <section className="soft-panel p-6">
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
               <p className="label-title">Pickup</p>
               {stage && <StageSteps current={stage} />}
             </div>

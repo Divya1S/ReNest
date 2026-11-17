@@ -6,7 +6,7 @@ Risk Intelligence is a demo that sits inside ReNest. It takes pretend payments, 
 
 You find it at `/risk` in the app. Its API lives under `/api/risk/`.
 
-![Risk overview page with transaction counts, decisions over time and the risk distribution](screenshots/risk-overview.jpg)
+![Risk overview page with transaction counts, decisions over time and the risk distribution](screenshots/risk-overview.png)
 
 ## Why it exists
 
@@ -38,22 +38,7 @@ Every number on these pages is counted from stored records. Made-up Fraud Lab re
 
 ## How a payment is processed
 
-```mermaid
-flowchart TB
-    Client["A payment request arrives<br/>with an Idempotency-Key"] --> Check["Was this key used before?"]
-    Check -->|"yes"| Replay["Send back the earlier answer<br/>No second payment"]
-    Check -->|"no"| Save
-    subgraph TX["Saved together, or not at all"]
-        Save["Create the payment record"] --> History["Look up the customer's history"]
-        History --> Score["Score the payment with the rules"]
-        Score --> Decision["Decide: allow, review or block"]
-        Decision --> Log["Write the events and the audit record"]
-    end
-    Log --> After["Follow-up steps:<br/>notify the customer, update counters"]
-    Log -->|"allowed payments only"| Charge["Charge the sandbox processor<br/>Retries on temporary errors"]
-    Charge --> Done["Payment completed or failed"]
-    Timer["Scheduled job"] --> After
-```
+![Diagram: a payment request arrives with an idempotency key. If the key was used before, the earlier answer is sent back and no second payment is created. Otherwise five steps are saved together: create the payment record, look up the customer's history, score the payment, decide, and write the events and audit record. Afterwards the follow-up steps run, and an allowed payment is charged to the sandbox processor.](diagrams/payment-flow.svg)
 
 In words:
 
@@ -149,7 +134,7 @@ The "confidence" value is a rough indicator. It is based on how much evidence th
 
 ## Fraud Lab
 
-![Fraud Lab page: pick one of eight scenarios, a transaction count and a sensitivity, then run it](screenshots/fraud-lab.jpg)
+![Fraud Lab page: pick one of eight scenarios, a transaction count and a sensitivity, then run it](screenshots/fraud-lab.png)
 
 The Fraud Lab answers the question "how good are these rules?". It creates made-up payments where the right answer is known, runs them through the same scoring code that real payments use, and counts the results.
 

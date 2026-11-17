@@ -10,33 +10,7 @@ Everything else is optional and can be added later without changing the code.
 
 ## The parts
 
-```mermaid
-flowchart LR
-    subgraph Browser
-        SPA["Website<br/>(React app)"]
-    end
-    subgraph Server
-        API["API<br/>(Django REST Framework)"]
-        Concierge["Assistant"]
-        Workers["Background jobs<br/>(optional workers)"]
-    end
-    subgraph Storage
-        PG[("PostgreSQL<br/>database")]
-        Redis[("Redis cache<br/>(optional)")]
-        S3[("Photo storage<br/>(optional)")]
-    end
-    Gemini["Google Gemini<br/>(optional AI service)"]
-
-    SPA -->|"requests and live updates"| API
-    API --> Concierge
-    Concierge --> Gemini
-    API --> PG
-    API --> Redis
-    Workers --> PG
-    Workers --> Redis
-    Workers --> Gemini
-    API --> S3
-```
+![Diagram: the website in the browser talks to the API on the server. The server reads and writes a PostgreSQL database, an optional Redis cache and optional photo storage. The assistant and the background jobs can call Google Gemini, an optional outside AI service.](diagrams/architecture.svg)
 
 | Part | What it does | Built with |
 |---|---|---|

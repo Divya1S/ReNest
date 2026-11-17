@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1680 900" width="1680" height="900" role="img" aria-labelledby="t d" font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+<title id="t">How the parts of ReNest fit together</title>
+<desc id="d">The website in the browser talks to the API on the server. The API and the background jobs read and write the storage: a PostgreSQL database, an optional Redis cache and optional photo storage. The assistant and the background jobs can call Google Gemini, an optional AI service.</desc>
+<defs><marker id="arrow" viewBox="0 0 12 12" markerWidth="11" markerHeight="11" refX="10.5" refY="6" orient="auto-start-reverse"><path d="M1,1.5 L11,6 L1,10.5 z" fill="#564146"/></marker></defs>
+<rect x="1" y="1" width="1678" height="898" rx="28" fill="#ffffff" stroke="#d8d2d6" stroke-width="2"/>
+<text x="60" y="78" font-size="32" font-weight="700" fill="#23191b" text-anchor="start">How the parts fit together</text>
+<text x="60" y="112" font-size="17" font-weight="400" fill="#564146" text-anchor="start">The website talks only to the server. The server does all the reading and writing.</text>
+<rect x="1250" y="52" width="46" height="30" rx="8" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="1308" y="73" font-size="15.5" font-weight="400" fill="#564146" text-anchor="start">Always there</text>
+<rect x="1440" y="52" width="46" height="30" rx="8" fill="#ffffff" stroke="#1e304a" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="1498" y="73" font-size="15.5" font-weight="400" fill="#564146" text-anchor="start">Optional</text>
+<rect x="60" y="160" width="320" height="250" rx="24" fill="#f5f5f7" stroke="#d8d2d6" stroke-width="1.5"/>
+<text x="88" y="198" font-size="14" font-weight="700" fill="#8a1d45" text-anchor="start" letter-spacing="1.8">BROWSER</text>
+<rect x="90" y="228" width="260" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="220.0" y="275.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Website</text>
+<text x="220.0" y="302.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">What people see and click</text>
+<text x="220.0" y="323.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">React app</text>
+<rect x="580" y="160" width="540" height="440" rx="24" fill="#f5f5f7" stroke="#d8d2d6" stroke-width="1.5"/>
+<text x="608" y="198" font-size="14" font-weight="700" fill="#8a1d45" text-anchor="start" letter-spacing="1.8">SERVER</text>
+<rect x="610" y="228" width="480" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="850.0" y="275.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">API</text>
+<text x="850.0" y="302.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Answers every request and enforces the rules</text>
+<text x="850.0" y="323.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Django REST Framework</text>
+<rect x="610" y="428" width="225" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="722.5" y="475.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Assistant</text>
+<text x="722.5" y="502.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Answers questions,</text>
+<text x="722.5" y="523.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">looks things up</text>
+<rect x="865" y="428" width="225" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="977.5" y="475.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Background jobs</text>
+<text x="977.5" y="502.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Email and</text>
+<text x="977.5" y="523.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">scheduled work</text>
+<rect x="1300" y="160" width="320" height="600" rx="24" fill="#f5f5f7" stroke="#d8d2d6" stroke-width="1.5"/>
+<text x="1328" y="198" font-size="14" font-weight="700" fill="#8a1d45" text-anchor="start" letter-spacing="1.8">STORAGE</text>
+<rect x="1330" y="228" width="260" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2"/>
+<text x="1460.0" y="272.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">PostgreSQL</text>
+<text x="1460.0" y="298.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">database</text>
+<text x="1460.0" y="325.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Accounts, listings, messages</text>
+<rect x="1330" y="398" width="260" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="1460.0" y="455.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Redis cache</text>
+<text x="1460.0" y="482.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Short-lived data</text>
+<rect x="1330" y="568" width="260" height="130" rx="16" fill="#ffffff" stroke="#1e304a" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="1460.0" y="615.0" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Photo storage</text>
+<text x="1460.0" y="642.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Uploaded photos</text>
+<text x="1460.0" y="663.0" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">S3 or Cloudflare R2</text>
+<rect x="610" y="700" width="480" height="110" rx="16" fill="#fbf3e2" stroke="#b9841f" stroke-width="2" stroke-dasharray="9 7"/>
+<text x="850.0" y="747.5" font-size="20" font-weight="650" fill="#23191b" text-anchor="middle">Google Gemini</text>
+<text x="850.0" y="774.5" font-size="15" font-weight="400" fill="#564146" text-anchor="middle">Outside AI service</text>
+<path d="M350,293 L610,293" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+<rect x="367.75" y="243" width="224.5" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="480" y="262.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">requests and live updates</text>
+<path d="M722,358 L722,428" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M1090,293 L1300,293" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1119.2" y="243" width="151.6" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="1195" y="262.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">reads and writes</text>
+<path d="M1090,493 L1300,493" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="1119.2" y="443" width="151.6" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="1195" y="462.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">reads and writes</text>
+<path d="M722,558 L722,700" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<path d="M977,558 L977,700" fill="none" stroke="#564146" stroke-width="2.2" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<rect x="762.05" y="635" width="175.9" height="28" rx="14" fill="#ffffff" stroke="#d8d2d6" stroke-width="1.2"/>
+<text x="850" y="654.5" font-size="14.5" font-weight="500" fill="#564146" text-anchor="middle">asks the AI service</text>
+</svg>

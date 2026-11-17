@@ -4,7 +4,7 @@
 
 ReNest is a marketplace for campus move-out. Students list the things they are leaving behind, and other students on the same campus pick them up for free or for a few dollars.
 
-![ReNest landing page](docs/screenshots/landing.jpg)
+![The ReNest marketplace on a laptop screen, with a pickup chat on a phone beside it](docs/screenshots/hero.jpg)
 
 ## The problem
 
@@ -43,7 +43,7 @@ Some parts are optional and switch on with configuration: an AI assistant and AI
 
 ## Screenshots
 
-All screenshots are from the application running locally with the demo data.
+All screenshots are from the application running locally with the demo data. The image at the top of this page is two of them placed side by side.
 
 ### Finding and reserving an item
 
@@ -56,38 +56,40 @@ All screenshots are from the application running locally with the demo data.
 
 | | |
 |---|---|
-| ![A room photo with tagged items and a form for the selected item](docs/screenshots/scan-studio.jpg) | ![Board with columns for review, sell, donate, keep, toss and done](docs/screenshots/clearout-board.jpg) |
+| ![A room photo with tagged items and a form for the selected item](docs/screenshots/scan-studio.jpg) | ![Board with columns for review, sell, donate, keep, toss and done](docs/screenshots/clearout-board.png) |
 | **Scan Studio.** Draw a box around each item on your room photo and fill in the details once. | **Clear-Out Board.** Every tagged item, grouped by what you decided to do with it. |
-| ![Publish queue showing which drafts are ready and which need more details](docs/screenshots/publish-queue.jpg) | ![Move-out plan with a task checklist and progress](docs/screenshots/move-out-plan.jpg) |
+| ![Publish queue showing which drafts are ready and which need more details](docs/screenshots/publish-queue.png) | ![Move-out plan with a task checklist and progress](docs/screenshots/move-out-plan.jpg) |
 | **Publish queue.** Shows which drafts are ready and what the others are missing, then publishes in bulk. | **Move-out plan.** A checklist of move-out tasks, each timed against your deadline. |
 
 ### Handing an item over
 
 | | |
 |---|---|
-| ![Handoff page with pickup chat and a six-digit PIN](docs/screenshots/handoff-hub.jpg) | ![Dashboard with drafts ready to publish, pending pickups and savings](docs/screenshots/dashboard.jpg) |
+| ![Handoff page with pickup chat and a six-digit PIN](docs/screenshots/handoff-hub.png) | ![Dashboard with drafts ready to publish, pending pickups and savings](docs/screenshots/dashboard.png) |
 | **Handoff Hub.** Chat, pickup times, and the PIN the person collecting shows at pickup. | **Dashboard.** What needs your attention today: drafts, pickups, alerts and feedback. |
 
 ### Community
 
 | | |
 |---|---|
-| ![Request board where students post items they need](docs/screenshots/requests.jpg) | ![Directory of campus donation hubs](docs/screenshots/hubs.jpg) |
+| ![Request board where students post items they need](docs/screenshots/requests.png) | ![Directory of campus donation hubs](docs/screenshots/hubs.png) |
 | **Requests.** Ask for something you need. Owners can offer one of their listings. | **Donation hubs.** Drop-off points for items you would rather give away. |
 
 ### On a phone
 
 <p>
-  <img src="docs/screenshots/mobile-browse.jpg" alt="Marketplace on a phone screen" width="260">
+  <img src="docs/screenshots/mobile-browse.jpg" alt="Marketplace on a phone screen" width="250">
   &nbsp;&nbsp;
-  <img src="docs/screenshots/mobile-handoff.jpg" alt="Handoff page with the pickup PIN on a phone screen" width="260">
+  <img src="docs/screenshots/mobile-listing.jpg" alt="A listing with its photo on a phone screen" width="250">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/mobile-handoff.png" alt="Pickup details and chat on a phone screen" width="250">
 </p>
 
 ### Optional parts
 
 | | |
 |---|---|
-| ![Assistant page answering a question from the help guide](docs/screenshots/concierge.jpg) | ![Risk overview with transaction counts, decisions over time and risk distribution](docs/screenshots/risk-overview.jpg) |
+| ![Assistant page answering a question from the help guide](docs/screenshots/concierge.png) | ![Risk overview with transaction counts, decisions over time and risk distribution](docs/screenshots/risk-overview.png) |
 | **Assistant.** Answers questions about ReNest and looks up listings. In this screenshot the AI service did not respond, so the assistant answered from the built-in help guide and said so. | **Risk Intelligence.** A separate demo: sandbox payments scored by a rule engine. No real money is involved. |
 
 ## How it works

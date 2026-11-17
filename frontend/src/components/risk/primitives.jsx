@@ -102,7 +102,10 @@ export function MetricTile({ label, value, hint, tone = "default", icon: Icon })
 
 export function Panel({ title, description, actions, children, className, as: Tag = "section" }) {
   return (
-    <Tag className={cn("rounded-[20px] border border-black/10 bg-[color:var(--color-surface)] p-5 shadow-sm dark:border-white/10 md:p-6", className)}>
+    // min-w-0: as a grid item the panel must be allowed to be narrower than
+    // its widest child (a table), so that child scrolls inside the panel
+    // and the page itself stays within the screen.
+    <Tag className={cn("min-w-0 rounded-[20px] border border-black/10 bg-[color:var(--color-surface)] p-5 shadow-sm dark:border-white/10 md:p-6", className)}>
       {title || actions ? (
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>

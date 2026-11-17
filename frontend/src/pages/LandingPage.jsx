@@ -294,7 +294,8 @@ export default function LandingPage() {
               <Link to="/risk" className="primary-button">
                 Open the risk dashboard <ArrowRight size={16} aria-hidden="true" />
               </Link>
-              <Link to="/risk/lab" className="secondary-button !border-white/30 !text-white hover:!bg-white/10">
+              {/* !bg-transparent: the button's own white background made the white label invisible here */}
+              <Link to="/risk/lab" className="secondary-button !border-white/30 !bg-transparent !text-white hover:!bg-white/10">
                 Try the Fraud Lab
               </Link>
             </div>
