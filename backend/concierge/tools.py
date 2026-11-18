@@ -25,8 +25,9 @@ MAX_RESULTS = 6
 MAX_QUERY_TERMS = 6
 MAX_TERM_CHARS = 40
 
-# Gemini function declarations ({name, description, parameters}). Gemini has
-# no strict-schema mode, so handlers stay defensive (.get() + coercion).
+# Function declarations ({name, description, parameters}), in the shape both
+# providers accept. Neither runs them in a strict-schema mode here, so
+# handlers stay defensive (.get() + coercion).
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_listings",

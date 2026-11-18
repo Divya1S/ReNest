@@ -10,7 +10,7 @@ Everything else is optional and can be added later without changing the code.
 
 ## The parts
 
-![Diagram: the website in the browser talks to the API on the server. The server reads and writes a PostgreSQL database, an optional Redis cache and optional photo storage. The assistant and the background jobs can call Google Gemini, an optional outside AI service.](diagrams/architecture.svg)
+![Diagram: the website in the browser talks to the API on the server. The server reads and writes a PostgreSQL database, an optional Redis cache and optional photo storage. The assistant and the background jobs can call an optional outside AI service, OpenAI or Google Gemini.](diagrams/architecture.svg)
 
 | Part | What it does | Built with |
 |---|---|---|
@@ -20,7 +20,7 @@ Everything else is optional and can be added later without changing the code.
 | Background jobs | Send email and run scheduled work such as expiring old listings | Celery, or a scheduled request when there are no workers |
 | Cache | Keeps short-lived data such as rate-limit counters | Redis, or the server's own memory when Redis is not set up |
 | Photo storage | Holds uploaded photos | The server's disk, or S3-compatible storage such as Cloudflare R2 |
-| AI service | Powers the assistant and the AI helpers | Google Gemini |
+| AI service | Powers the assistant and the AI helpers | OpenAI or Google Gemini, whichever key is set |
 
 In production the server also delivers the built website, so there is only one thing to host.
 
@@ -49,10 +49,18 @@ The AI service is an outside dependency, so the assistant is built to keep worki
 
 - Each reply has a time limit, and failed calls are retried only a few times.
 - After repeated failures the assistant stops calling the service for a while.
-- When the daily allowance for the stronger AI model runs out, it switches to the lighter one.
+- When the stronger AI model is over its usage limit, it switches to the lighter one.
 - If nothing works, it answers with the matching section of the help guide and says so.
 
 A fixed set of sample questions is checked automatically on every change. Those checks do not call the AI service, so they cost nothing and give the same result every time.
+
+### Which AI service is used
+
+ReNest works with OpenAI or Google Gemini. The server uses whichever key it finds: `OPENAI_API_KEY` first, then `GEMINI_API_KEY`. Setting `AI_PROVIDER` picks one when both are present. With no key, the AI features switch off and everything else works.
+
+The rest of the code does not know which service is answering. One file, `backend/listings/openai_client.py`, translates requests and answers between the two, so the assistant, the photo helpers and the safety limits above behave the same with either. The tests replace the network with scripted answers, so no test ever calls a real AI service.
+
+The help guide's search index is tied to the service that built it, because each service describes text with its own set of numbers and the two cannot be compared. The first time a different service is used, the index is rebuilt automatically. Until then, help search falls back to plain word matching.
 
 ## Folder layout
 

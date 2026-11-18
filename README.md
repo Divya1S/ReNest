@@ -39,7 +39,14 @@ ReNest is built around that week. You take a photo of your room, tag what is wor
 - Each campus sees its own listings, with a leaderboard and impact numbers
 - The website can be installed on a phone like an app
 
-Some parts are optional and switch on with configuration: an AI assistant and AI helpers (need a free Google Gemini key), email (needs an SMTP server) and push notifications (need a key pair). There is also a separate risk-analysis demo for sandbox payments, described in [docs/risk-intelligence.md](docs/risk-intelligence.md).
+**With an AI key (optional)**
+
+- Ask the assistant to find items, check your move-out progress or explain how ReNest works
+- Let AI find the items in a room photo and start a draft listing for each one
+- Type a search in plain words and have it turned into filters
+- Have a listing description written from the title, category and condition
+
+Some parts are optional and switch on with configuration: the AI features above (need an OpenAI key or a free Google Gemini key), email (needs an SMTP server) and push notifications (need a key pair). There is also a separate risk-analysis demo for sandbox payments, described in [docs/risk-intelligence.md](docs/risk-intelligence.md).
 
 ## Screenshots
 
@@ -85,12 +92,23 @@ All screenshots are from the application running locally with the demo data. The
   <img src="docs/screenshots/mobile-handoff.png" alt="Pickup details and chat on a phone screen" width="250">
 </p>
 
-### Optional parts
+### AI features
+
+These switch on when the server has an AI key (see [Settings](#settings)). The screenshots below were taken with an OpenAI key, and every answer in them came from the AI service while the app was running. Without a key the rest of ReNest works the same.
 
 | | |
 |---|---|
-| ![Assistant page answering a question from the help guide](docs/screenshots/concierge.png) | ![Risk overview with transaction counts, decisions over time and risk distribution](docs/screenshots/risk-overview.png) |
-| **Assistant.** Answers questions about ReNest and looks up listings. In this screenshot the AI service did not respond, so the assistant answered from the built-in help guide and said so. | **Risk Intelligence.** A separate demo: sandbox payments scored by a rule engine. No real money is involved. |
+| ![Assistant answering two questions, with a listing card for a mini fan and a move-out progress card](docs/screenshots/ai-assistant.png) | ![A room photo with six items outlined by AI Detect and a draft listing for each](docs/screenshots/ai-room-scan.jpg) |
+| **Assistant.** Two questions in a row. It searched the live listings and showed the match as a card, then read the move-out progress and suggested what to do next. It only looks things up. It never reserves or posts for you. | **Room scan.** One click on AI Detect. The AI found six items in this photo, drew a box around each one and started a draft listing for each with a title, category, condition and price type. |
+| ![Marketplace search showing the filters Category: Storage and Free that the AI picked from a sentence](docs/screenshots/ai-search.jpg) | ![New listing form with a description written by AI from the title](docs/screenshots/ai-description.png) |
+| **Search in plain words.** The search typed here was "free storage for my dorm room". The AI turned it into a search word and two filters, Storage and Free. | **Listing descriptions.** "Write with AI" drafts the description from the title, category and condition. You can edit it before posting. |
+
+### Risk Intelligence
+
+| | |
+|---|---|
+| ![Risk overview with transaction counts, decisions over time and risk distribution](docs/screenshots/risk-overview.png) | ![Risk Investigator answering a question, with facts from the data, a possible interpretation and the transactions used as evidence](docs/screenshots/ai-investigator.png) |
+| **Overview.** A separate demo: sandbox payments scored by a rule engine. No real money is involved. | **Investigator.** A question in plain language. The numbers come from fixed database queries. Here the AI wrote the summary paragraph (this needs an AI key and `RISK_INVESTIGATOR_MODE=auto`). The summary is thrown away if it states a number that is not in the data. |
 
 ## How it works
 
@@ -108,7 +126,7 @@ All screenshots are from the application running locally with the demo data. The
 | Website | React, Vite and Tailwind CSS |
 | Server | Python with Django and Django REST Framework |
 | Database | PostgreSQL. SQLite works for a quick local start |
-| AI features (optional) | Google Gemini |
+| AI features (optional) | OpenAI or Google Gemini |
 | Tests | Django's test runner, Vitest and Playwright |
 
 More detail is in [docs/architecture.md](docs/architecture.md).
@@ -166,7 +184,8 @@ The ones you are most likely to set:
 
 | Setting | What it does |
 |---|---|
-| `GEMINI_API_KEY` | Turns on the assistant and the AI helpers. A free key is available at [aistudio.google.com](https://aistudio.google.com). Without it everything else works. |
+| `OPENAI_API_KEY` | Turns on the assistant and the AI helpers using OpenAI. Keys come from [platform.openai.com](https://platform.openai.com/api-keys) and are billed by use. |
+| `GEMINI_API_KEY` | The same features using Google Gemini instead. A free key is available at [aistudio.google.com](https://aistudio.google.com). Set one of the two. With neither, everything else still works. |
 | `EMAIL_HOST` and the other `EMAIL_*` settings | Send real email. Without them, emails are printed in the server terminal. |
 | `USE_SQLITE` | `1` uses a local SQLite file. `0` uses PostgreSQL. |
 
@@ -198,7 +217,7 @@ There are about 970 server tests, 260 website unit tests and 34 browser tests. T
 ## Limitations
 
 - **It is a one-person project.** It is set up for a free hosting tier and has been load tested on a laptop only, not with real traffic.
-- **The AI features depend on an outside service.** With a free Gemini key the daily limit is small. When the service is slow or over its limit, the assistant falls back to answers from the help guide and the other AI helpers switch off.
+- **The AI features depend on an outside service.** An OpenAI key is billed by use, and a free Gemini key has a small daily limit. When the service is slow or over its limit, the assistant falls back to answers from the help guide and the other AI helpers switch off.
 - **Payments are a demo.** Risk Intelligence uses sandbox payments only. The optional Stripe features need your own Stripe account and are off by default.
 - **Free hosting has trade-offs.** On the free tier the server sleeps when idle, uploaded photos need separate storage, and scheduled jobs are triggered by GitHub Actions. [docs/deployment.md](docs/deployment.md) explains each one.
 - **There is no native mobile app.** The website works on phones and can be installed from the browser.

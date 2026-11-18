@@ -76,6 +76,9 @@ services:
       - key: WEB_CONCURRENCY
         value: "1"
       # ── Secrets: fill these in the dashboard after the blueprint creates them
+      # AI features: set one of these two keys (OpenAI is used when both are set).
+      - key: OPENAI_API_KEY
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: EMAIL_HOST

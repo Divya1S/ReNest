@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 from hubs.models import DonationHub
 
-from ..ai_client import ai_available
+from ..ai_client import NOT_CONFIGURED_MESSAGE, ai_available
 from ..permissions import IsEmailVerified
 from ..throttles import AiDetectThrottle, ScanPublishThrottle
 from ..models import (
@@ -855,7 +855,7 @@ class AiDetectItemsView(APIView):
     def post(self, request: Request, pk: int) -> Response:
         if not ai_available():
             return Response(
-                {"detail": "AI detection is not configured. Add GEMINI_API_KEY to the backend .env file."},
+                {"detail": NOT_CONFIGURED_MESSAGE},
                 status=503,
             )
 

@@ -76,8 +76,9 @@ export default function PrivacyPage() {
         <Section title="AI features">
           <p>
             Room-scan photos you submit to AI detection, listing text you generate with AI
-            assistance, and the messages you send the Nest Concierge are processed by Google&apos;s
-            Gemini API to produce suggestions. Content is sent for that request only.
+            assistance, and the messages you send the Nest Concierge are processed by the AI
+            service this server is set up with (OpenAI or Google Gemini) to produce suggestions.
+            Content is sent for that request only.
           </p>
           <p>
             The concierge can read your own marketplace data (your listings, reservations and

@@ -247,7 +247,11 @@ It does not hand the question to an AI and hope for the best. It works in fixed 
 
 By default the wording comes from fixed templates and no AI is involved. That is also the mode the tests use.
 
-If a Gemini key is configured and `RISK_INVESTIGATOR_MODE` is set to `auto` or `llm`, an AI model may write the wording. The question and the facts are handed to it as quoted data, with an instruction to treat them only as data and not to follow anything written inside them. If its text mentions a number or a payment id that is not in the facts, the text is thrown away and the template answer is used. The same happens if the AI service fails.
+If an AI key (OpenAI or Gemini) is configured and `RISK_INVESTIGATOR_MODE` is set to `auto` or `llm`, an AI model may write the wording. The question and the facts are handed to it as quoted data, with an instruction to treat them only as data and not to follow anything written inside them. If its text mentions a number or a payment id that is not in the facts, the text is thrown away and the template answer is used. The same happens if the AI service fails.
+
+![Risk Investigator answer with facts from the data, a possible interpretation and the transactions used as evidence](screenshots/ai-investigator.png)
+
+*An answer in `auto` mode with an OpenAI key. The badge shows which model wrote the summary. The facts, the interpretation and the evidence list below it come from the fixed queries.*
 
 ## Agent Sandbox
 

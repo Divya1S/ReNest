@@ -1,4 +1,4 @@
-"""Plan→Execute→Reflect agent harness (Gemini).
+"""Plan→Execute→Reflect agent harness.
 
 Task-route turns run a dual-phase loop instead of a naive ReAct loop:
 
@@ -497,7 +497,7 @@ def _execute(
 ) -> tuple[dict[str, Any], bool]:
     """Run one tool call. Returns (result, is_error); never raises."""
     if name in UI_TOOL_NAMES:
-        # Gemini function calling has no strict schema mode, so a wrong-typed
+        # Function calling runs without a strict schema mode, so a wrong-typed
         # argument is a normal occurrence. Hand the model a recoverable error
         # instead of failing the turn.
         try:
@@ -567,7 +567,7 @@ def _add_trajectory_step(
     return size
 
 
-# ── Gemini response/plumbing helpers ─────────────────────────────────────────
+# ── Model response and plumbing helpers ─────────────────────────────────────
 
 def _system() -> str:
     # Developer-written text only. The rolling summary used to be appended

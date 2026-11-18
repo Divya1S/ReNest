@@ -14,8 +14,8 @@ transaction ids that back it (evidence).
 
 Provider abstraction
     `Explainer` is a Protocol. `DeterministicExplainer` is the default and
-    the mode used in tests and demos without a key. `GeminiExplainer` wraps
-    the marketplace's existing Gemini client (free tier) and is chosen only
+    the mode used in tests and demos without a key. `LlmExplainer` wraps
+    the marketplace's existing AI client (OpenAI or Gemini) and is chosen only
     when RISK_INVESTIGATOR_MODE=auto|llm and a key is configured; any
     provider failure falls back to the deterministic explainer so the
     endpoint always answers.
@@ -480,8 +480,8 @@ class DeterministicExplainer:
         return Explanation(answer=answer, facts=facts, inferences=inferences, evidence=_evidence_ids(results))
 
 
-class GeminiExplainer:
-    """Narrates the structured results with the marketplace's Gemini client.
+class LlmExplainer:
+    """Narrates the structured results with the marketplace's AI client.
     Facts and inferences still come from the deterministic explainer so the
     separation is enforced by code, not by prompt."""
 
@@ -520,7 +520,7 @@ class GeminiExplainer:
             facts=base.facts,
             inferences=base.inferences,
             evidence=base.evidence,
-            model_version=f"gemini:{ai_client._fast_model()}",
+            model_version=f"{ai_client.provider() or 'unknown'}:{ai_client._fast_model()}",
             mode=self.mode,
         )
 
@@ -629,9 +629,9 @@ def get_explainer() -> Explainer:
         from listings.ai_client import ai_available
 
         if ai_available():
-            return GeminiExplainer()
+            return LlmExplainer()
         if mode == "llm":
-            logger.warning("RISK_INVESTIGATOR_MODE=llm but no Gemini key is configured; using deterministic mode")
+            logger.warning("RISK_INVESTIGATOR_MODE=llm but no AI provider key is configured; using deterministic mode")
     return DeterministicExplainer()
 
 

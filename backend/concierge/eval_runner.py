@@ -6,7 +6,7 @@ Two tiers:
     evals/golden.json. Deterministic, free, no network; runs in CI and as part
     of the test suite. Editing exemplars, the knowledge base, or embedding
     logic without breaking these is the bar for merging.
-  * **Live**: full engine turns against the real Gemini API, graded with
+  * **Live**: full engine turns against the real AI provider, graded with
     simple containment rules. Opt-in (`run_concierge_evals --live`): costs
     tokens and needs a key, so it's a pre-release smoke check, not CI.
 """
@@ -73,7 +73,7 @@ def run_retrieval_evals(cases: list[dict[str, Any]] | None = None) -> EvalReport
 
 
 def run_live_evals(user: Any, cases: list[dict[str, Any]] | None = None) -> EvalReport:
-    """Full turns against the real provider. Requires GEMINI_API_KEY; costs tokens."""
+    """Full turns against the real provider. Requires a provider key; costs tokens."""
     from . import engine
     from .models import ConciergeThread
 

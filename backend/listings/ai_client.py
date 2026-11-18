@@ -1,11 +1,17 @@
-"""One Google Gemini client for every marketplace AI feature.
+"""One AI client for every marketplace AI feature.
 
 Scan detection, listing moderation, rescue-request matching, category
 suggestions, and listing copywriting all go through these helpers, so the
-whole platform shares one provider, one availability check
-(GEMINI_API_KEY / GOOGLE_API_KEY), and one JSON-parsing contract. The
-concierge app has its own engine (it needs tool loops and a circuit breaker);
-both speak to the same Gemini account.
+whole platform shares one provider, one availability check and one
+JSON-parsing contract. The concierge app has its own engine (it needs tool
+loops and a circuit breaker) and gets its client from `new_client` here, so
+both always speak to the same account.
+
+Two providers are supported: OpenAI (OPENAI_API_KEY) and Google Gemini
+(GEMINI_API_KEY / GOOGLE_API_KEY). `provider()` says which one is active.
+The code below is written against the google-genai call shape, and
+`openai_client` offers that same shape on top of OpenAI's API, so nothing
+past `new_client` needs to know which provider answered.
 
 Design rules:
   * Callers own their failure semantics (skip / 503 / raise): helpers raise
@@ -27,21 +33,23 @@ import base64
 import json
 import logging
 import math
-import os
 import re
 import time
 from typing import Any
 
 from django.conf import settings
 
+from dormcycle.env import ai_provider
+
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
-_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+_CLIENT_TIMEOUT_SECONDS = 30.0
 
 # Thinking tokens count toward max_output_tokens on current Gemini models, so
 # every call reserves headroom on top of the caller's visible-answer budget.
 # Vision keeps the model's default (deeper) thinking and needs more of it.
+# (The OpenAI adapter adds its own headroom for reasoning tokens on top.)
 _THINKING_HEADROOM_TOKENS = 256
 _VISION_THINKING_HEADROOM_TOKENS = 1024
 
@@ -60,38 +68,70 @@ _IMAGE_FETCH_TIMEOUT_SECONDS = 10
 _IMAGE_FETCH_DEADLINE_SECONDS = 20
 
 
+NOT_CONFIGURED_MESSAGE = (
+    "AI features are not configured. Add OPENAI_API_KEY (or GEMINI_API_KEY) to the backend .env file."
+)
+
+
 class AiNotConfigured(RuntimeError):
-    """No Gemini key present. Subclasses RuntimeError so existing
+    """No provider key present. Subclasses RuntimeError so existing
     `except RuntimeError` → 503 handling keeps working unchanged."""
 
 
+def provider() -> str:
+    """The active AI provider: "openai", "gemini", or "" when no key is set.
+
+    Read from the environment on every call (see dormcycle.env.ai_provider
+    for the rules), so a key added or removed takes effect without a code
+    change.
+    """
+    return ai_provider()
+
+
 def ai_available() -> bool:
-    return any(os.getenv(var, "").strip() for var in _KEY_ENV_VARS)
+    return bool(provider())
 
 
 def _require_key() -> None:
     if not ai_available():
-        raise AiNotConfigured("GEMINI_API_KEY is not configured.")
+        raise AiNotConfigured(NOT_CONFIGURED_MESSAGE)
 
 
-_CACHED_CLIENT: Any = None
+def new_client(timeout_seconds: float = _CLIENT_TIMEOUT_SECONDS) -> Any:
+    """A client for the active provider.
+
+    Both kinds answer the same two calls, `models.generate_content` and
+    `models.embed_content`, and read their key from the environment. Neither
+    retries on its own: callers own retries, time budgets and the circuit
+    breaker, so they need to see every real failure.
+    """
+    if provider() == "openai":
+        from .openai_client import OpenAIClient
+
+        return OpenAIClient(timeout_seconds=timeout_seconds)
+    from google import genai
+
+    return genai.Client(http_options={"timeout": int(timeout_seconds * 1000)})  # ms
+
+
+# (provider name, client). Keyed by provider so a changed key is picked up.
+_CACHED_CLIENT: tuple[str, Any] | None = None
 
 
 def _client() -> Any:
-    """Process-lifetime Gemini client.
+    """Process-lifetime client for the helpers in this module.
 
     Must be cached: genai.Client closes its httpx connections in __del__, so
     the transient `_client().models.generate_content(...)` pattern lets the
     Client be garbage-collected mid-call (only `.models` stays referenced) and
     every request dies with "Cannot send a request, as the client has been
-    closed."
+    closed." Caching also lets the OpenAI client reuse its connection.
     """
     global _CACHED_CLIENT
-    if _CACHED_CLIENT is None:
-        from google import genai
-
-        _CACHED_CLIENT = genai.Client(http_options={"timeout": 30_000})  # ms
-    return _CACHED_CLIENT
+    name = provider()
+    if _CACHED_CLIENT is None or _CACHED_CLIENT[0] != name:
+        _CACHED_CLIENT = (name, new_client())
+    return _CACHED_CLIENT[1]
 
 
 def _fast_model() -> str:
@@ -130,7 +170,14 @@ def _utility_config(
 
 
 def _server_retry_hint(exc: BaseException) -> float | None:
-    """Seconds the provider asked us to wait (RetryInfo.retryDelay), if any."""
+    """Seconds the provider asked us to wait, if it said.
+
+    OpenAI sends a Retry-After header (the adapter keeps it as `retry_after`);
+    Gemini puts RetryInfo.retryDelay in the error body.
+    """
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+        return float(retry_after)
     details = getattr(exc, "details", None)
     error = details.get("error") if isinstance(details, dict) else None
     entries = error.get("details") if isinstance(error, dict) else None
@@ -226,7 +273,7 @@ def trim_to_sentence(text: str) -> str:
 
 
 def extract_text(response: Any) -> str:
-    """Concatenated text parts of a Gemini response ('' when none)."""
+    """Concatenated text parts of a model response ('' when none)."""
     candidates = getattr(response, "candidates", None) or []
     if not candidates:
         return ""

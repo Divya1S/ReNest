@@ -25,6 +25,7 @@ from rest_framework.throttling import BaseThrottle
 from rest_framework.views import APIView
 
 from ..ai_client import (
+    NOT_CONFIGURED_MESSAGE,
     AiNotConfigured,
     ai_available,
     fetch_image_bytes,
@@ -613,7 +614,7 @@ _CONDITION_LABELS = {
 
 
 def _generate_copy(prompt: str, max_tokens: int = 300) -> str:
-    # Raises AiNotConfigured (a RuntimeError) when no Gemini key is present,
+    # Raises AiNotConfigured (a RuntimeError) when no AI key is present,
     # which callers translate into a 503.
     return generate_text(prompt, max_tokens=max_tokens).strip()
 
@@ -1178,7 +1179,7 @@ class VisionAutofillView(APIView):
             return Response({"detail": "image_url is required."}, status=400)
 
         if not ai_available():
-            return Response({"detail": "GEMINI_API_KEY is not configured."}, status=503)
+            return Response({"detail": NOT_CONFIGURED_MESSAGE}, status=503)
 
         prompt = (
             "You are helping a college student post a dorm-item listing on a campus marketplace.\n\n"

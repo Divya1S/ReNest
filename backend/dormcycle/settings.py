@@ -14,6 +14,7 @@ if load_dotenv:
 
 from .env import (
     DEFAULT_DEV_SECRET_KEY,
+    ai_model_default,
     env_bool,
     env_float,
     env_int,
@@ -476,23 +477,28 @@ REST_FRAMEWORK = {
     "NUM_PROXIES": env_int("DJANGO_NUM_PROXIES", 0 if DEBUG else 1),
 }
 
-# ── Platform AI (Google Gemini) ──────────────────────────────────────────────
-# Marketplace AI features (room-scan detection, moderation pre-screen, rescue
-# matching, category suggestions, listing copywriting) share one provider with
-# the concierge: Gemini via GEMINI_API_KEY. All features degrade gracefully
-# when the key is absent.
-AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "gemini-flash-latest")
-AI_MODEL_VISION = os.getenv("AI_MODEL_VISION", "gemini-flash-latest")
-AI_MODEL_EMBEDDING = os.getenv("AI_MODEL_EMBEDDING", "gemini-embedding-001")
+# ── Platform AI (OpenAI or Google Gemini) ───────────────────────────────────
+# One provider serves every AI feature: the assistant, room-scan detection,
+# the moderation pre-screen, request matching, category suggestions and
+# listing copywriting. OPENAI_API_KEY selects OpenAI; otherwise
+# GEMINI_API_KEY selects Gemini; AI_PROVIDER forces one when both are set
+# (dormcycle.env.ai_provider, read at request time). With no key every AI
+# feature switches off and the rest of the app is unaffected. Only the model
+# names are fixed here, to the defaults of the provider found at startup.
+AI_MODEL_FAST = os.getenv("AI_MODEL_FAST", "").strip() or ai_model_default("AI_MODEL_FAST")
+AI_MODEL_VISION = os.getenv("AI_MODEL_VISION", "").strip() or ai_model_default("AI_MODEL_VISION")
+AI_MODEL_EMBEDDING = os.getenv("AI_MODEL_EMBEDDING", "").strip() or ai_model_default("AI_MODEL_EMBEDDING")
 
-# ── Nest Concierge (AI assistant, Google Gemini) ─────────────────────────────
-# Fully additive feature: with no GEMINI_API_KEY (or CONCIERGE_ENABLED=0) the
+# ── Nest Concierge (AI assistant) ────────────────────────────────────────────
+# Fully additive feature: with no provider key (or CONCIERGE_ENABLED=0) the
 # endpoints answer with a graceful "offline" payload and the rest of the app
 # is unaffected. The semantic router sends simple conversational queries to
 # the FAST model and multi-step tasks to the REASONING model.
 CONCIERGE_ENABLED = env_bool("CONCIERGE_ENABLED", True)
-CONCIERGE_MODEL_REASONING = os.getenv("CONCIERGE_MODEL_REASONING", "gemini-pro-latest")
-CONCIERGE_MODEL_FAST = os.getenv("CONCIERGE_MODEL_FAST", "gemini-flash-latest")
+CONCIERGE_MODEL_REASONING = (
+    os.getenv("CONCIERGE_MODEL_REASONING", "").strip() or ai_model_default("CONCIERGE_MODEL_REASONING")
+)
+CONCIERGE_MODEL_FAST = os.getenv("CONCIERGE_MODEL_FAST", "").strip() or ai_model_default("CONCIERGE_MODEL_FAST")
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
 # Set REDIS_URL in production (e.g. redis://localhost:6379/1).

@@ -49,7 +49,7 @@ cd backend
 ## Ground rules
 
 - **API contract.** List endpoints return DRF's paginated envelope (`{count, next, previous, results}`), 24 rows a page. Frontend code reads results through `asResults()` in `frontend/src/lib/api.ts` and never assumes a bare array. A page that shows a whole list asks for `?page_size=100`.
-- **AI features are optional.** Every AI code path must keep working, in a reduced form, when `GEMINI_API_KEY` is unset or the provider fails. The concierge's tools are read-only; `ConciergeStateIntegrityTests` enforces this.
+- **AI features are optional.** Every AI code path must keep working, in a reduced form, when no AI key (`OPENAI_API_KEY` or `GEMINI_API_KEY`) is set or the provider fails. The concierge's tools are read-only; `ConciergeStateIntegrityTests` enforces this.
 - **What other users see.** Nest `PublicUserSerializer`, never `UserSerializer`, and take a person's name from `User.public_name`. Neither exposes any part of an email address.
 - **State changes go through the service layer.** Reservations move between states only in `listings/services.py`. Serializers save only the columns that were edited (`save_validated_fields`), so an edit cannot overwrite a status another request just changed.
 - **Migrations.** Ship schema changes with their migration in the same pull request and keep them reversible where practical. When a new constraint could fail on existing rows, split the work: one data migration that repairs the rows, then a second migration that adds the constraint (see `listings/migrations/0041_prepare_integrity_constraints.py` and `0042_integrity_constraints.py`).

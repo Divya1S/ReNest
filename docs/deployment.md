@@ -19,7 +19,7 @@ You get:
 
 | Setting | What it turns on |
 |---|---|
-| `GEMINI_API_KEY` | The assistant, item detection in room photos and AI-written descriptions. A free key is available at [aistudio.google.com](https://aistudio.google.com). |
+| `OPENAI_API_KEY` or `GEMINI_API_KEY` | The assistant, item detection in room photos and AI-written descriptions. Set one of the two. An OpenAI key comes from [platform.openai.com](https://platform.openai.com/api-keys) and is billed by use. A Gemini key from [aistudio.google.com](https://aistudio.google.com) is free with a small daily limit. |
 | `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` | Real email: password resets and pickup reminders. Any email provider with SMTP works. |
 | `AWS_S3_BUCKET_NAME` (and `AWS_S3_ENDPOINT_URL` for Cloudflare R2) | Photo storage that survives a redeploy. The bucket also needs a CORS rule that allows `PUT` from your site's address, because photos upload straight from the browser. |
 | `PLATFORM_ADMIN_EMAIL` | The inbox that receives requests from new campuses. Defaults to `DEFAULT_FROM_EMAIL`. |

@@ -1,4 +1,4 @@
-"""Operational core of the Nest Concierge (Google Gemini).
+"""Operational core of the Nest Concierge.
 
 This module owns everything *around* the model conversation: provider client,
 bounded retries with backoff, a hard per-turn time budget, a cache-backed
@@ -10,12 +10,15 @@ concierge.router.
 
 The whole package stays isolated from the marketplace: failures here surface
 as a degraded chat reply, never as an error in any marketplace flow.
+
+The model provider (OpenAI or Google Gemini) is whichever one the platform is
+configured for: the client comes from listings.ai_client.new_client, and both
+providers answer in the same shape, so nothing below depends on which it is.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -25,6 +28,8 @@ from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.db.models import F
 from django.utils import timezone
+
+from listings import ai_client
 
 from . import orchestrator, rag, router, semantic_cache
 from .models import ConciergeMessage, ConciergeThread, ConciergeTurnOutcome
@@ -66,7 +71,7 @@ DEGRADED_REPLY = (
 QUOTA_REPLY = (
     "My AI provider says this server's daily request allowance is used up, so I can't "
     "answer right now. Everything else in ReNest works normally. I'll be back when the "
-    "quota resets (free Gemini keys reset daily; a paid key removes the limit)."
+    "provider's limit resets."
 )
 OFFLINE_REPLY = (
     "The concierge isn't configured on this server yet, but all of ReNest works without it. "
@@ -118,7 +123,7 @@ class TurnBudgetExceeded(TimeoutError):
 
 
 def _has_api_key() -> bool:
-    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    return ai_client.ai_available()
 
 
 def is_enabled() -> bool:
@@ -126,12 +131,10 @@ def is_enabled() -> bool:
 
 
 def _get_client() -> Any:
-    from google import genai
-
-    # The client reads GEMINI_API_KEY / GOOGLE_API_KEY from the environment.
-    # SDK-level retries stay off (single attempt per HTTP call) so the engine's
-    # retry loop and circuit breaker see every real failure.
-    return genai.Client(http_options={"timeout": int(REQUEST_TIMEOUT_SECONDS * 1000)})  # ms
+    # The client reads its key from the environment and makes a single attempt
+    # per HTTP call, so the engine's retry loop and circuit breaker see every
+    # real failure.
+    return ai_client.new_client(REQUEST_TIMEOUT_SECONDS)
 
 
 def _fast_model() -> str:

@@ -18,6 +18,65 @@ KNOWN_DEV_SECRET_KEYS = frozenset({
 })
 
 
+# ── AI provider ──────────────────────────────────────────────────────────────
+# One provider serves every AI feature. Which one is decided here and nowhere
+# else, so the settings defaults and the runtime client can never disagree.
+AI_PROVIDER_KEY_VARS = {
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+}
+
+# Default model for each job, per provider. Any of them can be overridden with
+# the matching environment variable (see backend/.env.example).
+AI_MODEL_DEFAULTS = {
+    "openai": {
+        "AI_MODEL_FAST": "gpt-6-luna",                # short utility calls, high volume
+        "AI_MODEL_VISION": "gpt-6.2-sol",             # finding items in room photos
+        "AI_MODEL_EMBEDDING": "text-embedding-3-small",
+        "CONCIERGE_MODEL_REASONING": "gpt-6.2-sol",   # multi-step assistant turns
+        "CONCIERGE_MODEL_FAST": "gpt-6.1-terra",      # simple assistant replies
+    },
+    "gemini": {
+        "AI_MODEL_FAST": "gemini-flash-latest",
+        "AI_MODEL_VISION": "gemini-flash-latest",
+        "AI_MODEL_EMBEDDING": "gemini-embedding-001",
+        "CONCIERGE_MODEL_REASONING": "gemini-pro-latest",
+        "CONCIERGE_MODEL_FAST": "gemini-flash-latest",
+    },
+}
+
+
+def ai_provider(environ=None) -> str:
+    """The configured AI provider: "openai", "gemini", or "" when there is none.
+
+    AI_PROVIDER names one explicitly. Left unset, OpenAI is used when
+    OPENAI_API_KEY is present and Gemini otherwise. A provider only counts
+    when its key is set, so a typo in AI_PROVIDER switches AI off instead of
+    silently falling through to the other account.
+    """
+    environ = os.environ if environ is None else environ
+
+    def has_key(provider):
+        return any(str(environ.get(name, "")).strip() for name in AI_PROVIDER_KEY_VARS[provider])
+
+    chosen = str(environ.get("AI_PROVIDER", "")).strip().lower()
+    if chosen:
+        return chosen if chosen in AI_PROVIDER_KEY_VARS and has_key(chosen) else ""
+    for provider in ("openai", "gemini"):
+        if has_key(provider):
+            return provider
+    return ""
+
+
+def ai_model_default(setting_name, environ=None) -> str:
+    """The model a setting falls back to: the active provider's default.
+
+    With no provider configured the Gemini names are kept, which is what
+    these settings held before a second provider existed.
+    """
+    return AI_MODEL_DEFAULTS[ai_provider(environ) or "gemini"][setting_name]
+
+
 def is_default_secret_key(secret_key: str) -> bool:
     """True when the key is one of the published development placeholders.
 

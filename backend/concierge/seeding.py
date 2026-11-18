@@ -134,7 +134,9 @@ def _reseed_reason() -> str | None:
     # every slug and used to be ignored until someone reseeded by hand.
     if {slug: (title, content) for slug, title, content, _ in rows} != knowledge.by_slug:
         return "stored corpus differs from the bundled file"
-    if all(space == rag.SPACE_HASHED for *_, space in rows) and rag.remote_available():
+    # Real embeddings are available, but the stored vectors are hashed or
+    # came from a provider that is no longer the active one.
+    if rag.remote_available() and all(space != rag.remote_space() for *_, space in rows):
         return "upgrade to remote embedding space"
     return None
 
@@ -143,8 +145,9 @@ def ensure_seeded() -> None:
     """Seed the knowledge base on first use so the concierge works zero-config.
 
     Also reseeds when (a) the bundled markdown changed (deploys pick up KB
-    edits without a manual command), or (b) a hashed-space corpus can be
-    upgraded to real semantic embeddings now that the API key is available.
+    edits without a manual command), or (b) the corpus can be upgraded to the
+    active provider's semantic embeddings (a key was added, or the provider
+    changed).
     Writes only concierge-owned tables; safe to call from the request path:
     one small query when nothing changed.
     """

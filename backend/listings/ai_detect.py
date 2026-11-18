@@ -40,7 +40,7 @@ _PROMPT = (
 
 def detect_items_in_image(image_file: Any) -> Any:
     """
-    Call Gemini vision to detect rescue-worthy items in a room photo.
+    Call the vision model to detect rescue-worthy items in a room photo.
 
     Accepts a filesystem path or a Django File/FieldFile; file objects are
     read through the storage API, so this works identically on local disk and

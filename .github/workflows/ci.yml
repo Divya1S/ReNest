@@ -54,6 +54,7 @@ jobs:
         working-directory: backend
         # AI keys stay unset so no test can reach a live provider.
         env:
+          OPENAI_API_KEY: ""
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
         run: python manage.py test --verbosity 2
@@ -71,6 +72,7 @@ jobs:
         working-directory: backend
         env:
           # Deliberately unset: offline evals must pass without any AI key.
+          OPENAI_API_KEY: ""
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
         run: |
@@ -121,6 +123,7 @@ jobs:
       - name: Run tests (PostgreSQL)
         working-directory: backend
         env:
+          OPENAI_API_KEY: ""
           GEMINI_API_KEY: ""
           GOOGLE_API_KEY: ""
         run: python manage.py test --noinput --verbosity 2

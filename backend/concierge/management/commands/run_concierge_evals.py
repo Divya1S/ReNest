@@ -8,8 +8,8 @@ from concierge import eval_runner
 class Command(BaseCommand):
     help = (
         "Run the concierge golden-set evals. Offline checks (router, retrieval) "
-        "always run; --live also runs full turns against the real Gemini API "
-        "(needs GEMINI_API_KEY, costs tokens). Exits non-zero on any failure."
+        "always run; --live also runs full turns against the real AI provider "
+        "(needs OPENAI_API_KEY or GEMINI_API_KEY, costs tokens). Exits non-zero on any failure."
     )
 
     def add_arguments(self, parser: Any) -> None:
@@ -22,7 +22,7 @@ class Command(BaseCommand):
             from concierge import engine
 
             if not engine.is_enabled():
-                raise CommandError("--live requires GEMINI_API_KEY (and CONCIERGE_ENABLED).")
+                raise CommandError("--live requires OPENAI_API_KEY or GEMINI_API_KEY (and CONCIERGE_ENABLED).")
             from django.contrib.auth import get_user_model
 
             user, _ = get_user_model().objects.get_or_create(
